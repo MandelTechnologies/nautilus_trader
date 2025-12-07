@@ -116,16 +116,18 @@ def setup_credentials_env(config: dict) -> None:
             "https://paper-api.alpaca.markets" if is_paper else "https://api.alpaca.markets"
         )
 
-    # Capital settings
-    os.environ["BOTFOLIO_INITIAL_CAPITAL"] = str(config.get("initialCapital", 100000))
-    os.environ["BOTFOLIO_VIRTUAL_CASH"] = str(config.get("virtualCash", 100000))
+    # Capital settings - CRITICAL for position isolation
+    initial_capital = config.get("initialCapital", 100000)
+    virtual_cash = config.get("virtualCash", 100000)
+    os.environ["BOTFOLIO_INITIAL_CAPITAL"] = str(initial_capital)
+    os.environ["BOTFOLIO_VIRTUAL_CASH"] = str(virtual_cash)
+    log(f"Position isolation: initial_capital=${initial_capital}, virtual_cash=${virtual_cash}")
 
     # Position isolation: Store bot's positions for restoration on startup
     # This ensures each bot only sees its own positions, even when sharing an Alpaca account
     positions = config.get("positions", [])
     os.environ["BOTFOLIO_POSITIONS"] = json.dumps(positions)
-    if positions:
-        log(f"Position isolation: {len(positions)} position(s) to restore")
+    log(f"Position isolation: {len(positions)} position(s) to restore: {positions}")
 
 
 def main():
@@ -196,6 +198,13 @@ def main():
             f.write(strategy_code)
 
         log(f"Code written to {script_path}")
+        
+        # Verify position isolation env vars are set before execution
+        log(f"Env check - BOTFOLIO_BOT_ID: {os.environ.get('BOTFOLIO_BOT_ID', 'NOT SET')}")
+        log(f"Env check - BOTFOLIO_INITIAL_CAPITAL: {os.environ.get('BOTFOLIO_INITIAL_CAPITAL', 'NOT SET')}")
+        log(f"Env check - BOTFOLIO_VIRTUAL_CASH: {os.environ.get('BOTFOLIO_VIRTUAL_CASH', 'NOT SET')}")
+        log(f"Env check - BOTFOLIO_POSITIONS: {os.environ.get('BOTFOLIO_POSITIONS', 'NOT SET')[:100]}...")
+        
         log("Executing strategy...")
         sys.stdout.flush()
 

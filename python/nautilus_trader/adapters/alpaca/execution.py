@@ -175,6 +175,11 @@ class AlpacaExecutionClient(LiveExecutionClient):
         # This prevents bots from seeing/using capital allocated to other bots
         virtual_cash_str = os.environ.get("BOTFOLIO_VIRTUAL_CASH")
         initial_capital_str = os.environ.get("BOTFOLIO_INITIAL_CAPITAL")
+        
+        self._log.info(
+            f"Position isolation check: BOTFOLIO_VIRTUAL_CASH={virtual_cash_str!r}, "
+            f"BOTFOLIO_INITIAL_CAPITAL={initial_capital_str!r}"
+        )
 
         if virtual_cash_str:
             # Use bot's tracked virtual cash (updated as trades execute)
