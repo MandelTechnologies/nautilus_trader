@@ -4,11 +4,6 @@ Position restoration for bot-folio position isolation.
 When multiple bots share the same Alpaca account, each bot needs to track
 only its own positions. This module restores a bot's positions from the
 backend database into the Nautilus cache on startup.
-
-IMPORTANT: Position restoration requires instruments to be loaded first.
-Call `restore_positions_from_env` from strategy's `on_start()` method,
-or use `get_restored_position_qty` to get the bot's position quantity
-for a specific instrument.
 """
 import json
 import os
@@ -32,9 +27,6 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.position import Position
-
-# Global cache of position data from environment (parsed once)
-_position_data_cache: list[dict] | None = None
 
 
 def _log(message: str, logger: Any = None) -> None:
@@ -189,75 +181,4 @@ def restore_positions_from_env(
     _log(f"Position isolation: restored {restored_count} position(s)", logger)
 
     return restored_count
-
-
-def _get_position_data() -> list[dict]:
-    """Parse and cache position data from environment."""
-    global _position_data_cache
-    if _position_data_cache is not None:
-        return _position_data_cache
-
-    positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
-    try:
-        _position_data_cache = json.loads(positions_json)
-    except json.JSONDecodeError:
-        _position_data_cache = []
-
-    return _position_data_cache
-
-
-def get_restored_position_qty(symbol: str) -> Decimal:
-    """
-    Get the bot's restored position quantity for a symbol.
-
-    This reads from the BOTFOLIO_POSITIONS environment variable without
-    requiring instruments to be loaded. Use this in strategy logic to
-    know the bot's starting position before the first trade.
-
-    Parameters
-    ----------
-    symbol : str
-        The symbol to look up (e.g., "BTC/USD").
-
-    Returns
-    -------
-    Decimal
-        The position quantity (positive for long, negative for short, 0 if none).
-
-    Example
-    -------
-    >>> # In strategy's on_start or on_bar:
-    >>> from nautilus_trader.botfolio.position_restore import get_restored_position_qty
-    >>> restored_qty = get_restored_position_qty("BTC/USD")
-    >>> if restored_qty > 0:
-    ...     self.log.info(f"Bot has restored position of {restored_qty} BTC")
-
-    """
-    positions = _get_position_data()
-    for pos in positions:
-        if pos.get("symbol") == symbol:
-            return Decimal(str(pos.get("quantity", 0)))
-    return Decimal("0")
-
-
-def get_restored_position_avg_price(symbol: str) -> Decimal:
-    """
-    Get the bot's restored position average price for a symbol.
-
-    Parameters
-    ----------
-    symbol : str
-        The symbol to look up (e.g., "BTC/USD").
-
-    Returns
-    -------
-    Decimal
-        The average price, or 0 if no position.
-
-    """
-    positions = _get_position_data()
-    for pos in positions:
-        if pos.get("symbol") == symbol:
-            return Decimal(str(pos.get("averagePrice", 0)))
-    return Decimal("0")
 

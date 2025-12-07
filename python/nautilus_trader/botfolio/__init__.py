@@ -2,18 +2,12 @@
 
 from nautilus_trader.botfolio.config import BotfolioConfig, get_config
 from nautilus_trader.botfolio.event_emitter import EventEmitter, EventEmitterConfig
-from nautilus_trader.botfolio.position_restore import (
-    get_restored_position_avg_price,
-    get_restored_position_qty,
-    restore_positions_from_env,
-)
+from nautilus_trader.botfolio.position_restore import restore_positions_from_env
 
 __all__ = [
     "BotfolioConfig",
     "get_config",
     "EventEmitter",
     "EventEmitterConfig",
-    "get_restored_position_avg_price",
-    "get_restored_position_qty",
     "restore_positions_from_env",
 ]
