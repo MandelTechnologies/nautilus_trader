@@ -21,6 +21,7 @@ from nautilus_trader.model.events import OrderAccepted
 from nautilus_trader.model.events import PositionChanged
 from nautilus_trader.model.events import PositionClosed
 from nautilus_trader.model.events import PositionOpened
+from nautilus_trader.model.objects import Price
 from nautilus_trader.model.position import Position
 
 
@@ -209,7 +210,7 @@ class EventEmitter(Actor):
             "avg_px_open": str(position.avg_px_open),
             "avg_px_close": str(position.avg_px_close) if position.avg_px_close else None,
             "realized_pnl": str(position.realized_pnl) if position.realized_pnl else None,
-            "unrealized_pnl": str(position.unrealized_pnl(position.avg_px_open)) if position.is_open else None,
+            "unrealized_pnl": str(position.unrealized_pnl(Price(position.avg_px_open, position.price_precision))) if position.is_open else None,
             "ts_opened": position.ts_opened,
             "ts_closed": position.ts_closed if position.is_closed else None,
             "event_id": str(event.id),
