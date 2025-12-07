@@ -138,7 +138,7 @@ class EventEmitter(Actor):
             "instrument_id": str(event.instrument_id),
             "strategy_id": str(event.strategy_id),
             "account_id": str(event.account_id),
-            "event_id": str(event.event_id),
+            "event_id": str(event.id),
             "ts_event": event.ts_event,
         })
 
@@ -159,7 +159,7 @@ class EventEmitter(Actor):
             "liquidity_side": event.liquidity_side.name,
             "commission": str(event.commission) if event.commission else None,
             "position_id": str(event.position_id) if event.position_id else None,
-            "event_id": str(event.event_id),
+            "event_id": str(event.id),
             "ts_event": event.ts_event,
         })
 
@@ -171,7 +171,7 @@ class EventEmitter(Actor):
             "strategy_id": str(event.strategy_id),
             "account_id": str(event.account_id),
             "reason": event.reason,
-            "event_id": str(event.event_id),
+            "event_id": str(event.id),
             "ts_event": event.ts_event,
         })
 
@@ -183,7 +183,7 @@ class EventEmitter(Actor):
             "instrument_id": str(event.instrument_id),
             "strategy_id": str(event.strategy_id),
             "account_id": str(event.account_id),
-            "event_id": str(event.event_id),
+            "event_id": str(event.id),
             "ts_event": event.ts_event,
         })
 
@@ -212,7 +212,7 @@ class EventEmitter(Actor):
             "unrealized_pnl": str(position.unrealized_pnl(position.avg_px_open)) if position.is_open else None,
             "ts_opened": position.ts_opened,
             "ts_closed": position.ts_closed if position.is_closed else None,
-            "event_id": str(event.event_id),
+            "event_id": str(event.id),
             "ts_event": event.ts_event,
         })
 
