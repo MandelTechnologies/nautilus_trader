@@ -450,3 +450,44 @@ class AlpacaHttpClient:
                 params={"feed": feed},
             )
 
+    async def get_latest_bar(
+        self,
+        symbol: str,
+        timeframe: str = "1Min",
+        feed: str = "iex",
+    ) -> dict[str, Any]:
+        """
+        Get the latest bar for a symbol at a specific timeframe.
+        
+        Parameters
+        ----------
+        symbol : str
+            The symbol (e.g., "AAPL" or "BTC/USD").
+        timeframe : str, default "1Min"
+            The bar timeframe: "1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month".
+        feed : str, default "iex"
+            The data feed for stocks ("iex" or "sip"). Ignored for crypto.
+        
+        Returns
+        -------
+        dict
+            The latest bar data from Alpaca.
+        
+        Note: Bars are created shortly after the period ends, so the "latest"
+        bar is the most recently completed bar at the specified timeframe.
+        """
+        is_crypto = self._is_crypto_symbol(symbol)
+        
+        if is_crypto:
+            return await self._request(
+                "GET",
+                f"{self._data_base_url}/v1beta3/crypto/us/latest/bars",
+                params={"symbols": symbol, "timeframe": timeframe},
+            )
+        else:
+            return await self._request(
+                "GET",
+                f"{self._data_base_url}/v2/stocks/{symbol}/bars/latest",
+                params={"feed": feed, "timeframe": timeframe},
+            )
+

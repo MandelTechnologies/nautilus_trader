@@ -48,6 +48,7 @@ from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import PositionId
+from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -441,9 +442,11 @@ class AlpacaExecutionClient(LiveExecutionClient):
                 venue=ALPACA_VENUE,
             )
 
-            # Get cached order for strategy_id
+            # Get cached order for strategy_id, fallback to EXTERNAL for uncached orders.
+            # Without this fallback, trade updates from other bots sharing the same Alpaca
+            # account would crash with "strategy_id has incorrect type (expected StrategyId, got NoneType)"
             cached_order = self._cache.order(client_order_id)
-            strategy_id = cached_order.strategy_id if cached_order else None
+            strategy_id = cached_order.strategy_id if cached_order else StrategyId("EXTERNAL")
 
             ts_event = self._clock.timestamp_ns()
 

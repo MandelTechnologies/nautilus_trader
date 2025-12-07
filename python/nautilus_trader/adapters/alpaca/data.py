@@ -250,6 +250,12 @@ class AlpacaDataClient(LiveMarketDataClient):
         self._subscribed_bar_types[symbol] = command.bar_type
         self._log.info(f"Subscribed {command.bar_type} bars")
 
+        # Quick-start: Fetch and emit the latest bar immediately so strategies
+        # don't have to wait for the current bar to close (which can take up to
+        # 1+ minutes for minute bars). This allows strategies to act immediately
+        # on startup with real price data.
+        await self._emit_latest_bar(symbol, command.bar_type)
+
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         """Unsubscribe from quote ticks for an instrument."""
         symbol = command.instrument_id.symbol.value
@@ -430,6 +436,45 @@ class AlpacaDataClient(LiveMarketDataClient):
     def _handle_ws_error(self, error: str) -> None:
         """Handle WebSocket error."""
         self._log.error(f"Alpaca data WebSocket error: {error}")
+
+    async def _emit_latest_bar(self, symbol: str, bar_type: BarType) -> None:
+        """
+        Fetch and emit the latest bar for quick startup.
+        
+        This is called when subscribing to bars to provide immediate price data
+        to strategies, rather than making them wait for the current bar to close.
+        
+        The "latest" bar from Alpaca is the most recently completed bar at the
+        specified timeframe (e.g., minute, hour, day).
+        """
+        try:
+            feed = "crypto" if self._is_crypto_symbol(symbol) else self._config.data_feed
+            timeframe = self._map_bar_type_to_timeframe(bar_type)
+            response = await self._http_client.get_latest_bar(symbol, timeframe=timeframe, feed=feed)
+            
+            # Parse response - format differs between crypto and stocks
+            if self._is_crypto_symbol(symbol):
+                # Crypto: {"bars": {"BTC/USD": {...}}}
+                bars_data = response.get("bars", {})
+                bar_data = bars_data.get(symbol)
+            else:
+                # Stocks: {"bar": {...}}
+                bar_data = response.get("bar")
+            
+            if bar_data:
+                bar = self._parse_bar(bar_data, bar_type)
+                self._handle_data(bar)
+                self._log.info(
+                    f"Quick-start: Emitted latest bar for {symbol} "
+                    f"(close={bar.close}, ts={bar_data.get('t', 'unknown')})",
+                    LogColor.GREEN,
+                )
+            else:
+                self._log.warning(f"Quick-start: No latest bar available for {symbol}")
+                
+        except Exception as e:
+            # Don't fail the subscription if quick-start fails - just log and continue
+            self._log.warning(f"Quick-start: Failed to fetch latest bar for {symbol}: {e}")
 
     def _parse_bar(self, data: dict[str, Any], bar_type: BarType) -> Bar:
         """Parse bar data from Alpaca response."""
