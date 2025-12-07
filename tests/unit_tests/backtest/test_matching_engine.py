@@ -30,6 +30,7 @@ from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
@@ -912,3 +913,303 @@ class TestOrderMatchingEngine:
         assert filled_events[0].ts_event == trade_ts, (
             f"Fill should occur at trade timestamp {trade_ts}, got {filled_events[0].ts_event}"
         )
+
+    def test_trade_execution_partial_fill_capped_by_trade_size(self) -> None:
+        # Regression test: when a trade tick is smaller than the order quantity,
+        # the fill should be limited to the trade tick size (partial fill).
+        #
+        # Scenario (the bug was reported in GitHub issue):
+        # 1. BUY LIMIT placed with qty=100,000
+        # 2. SELLER trade occurs with qty=200
+        # 3. Expected: Order should be PARTIALLY filled for qty=200, leaving 99,800
+        # 4. Bug (before fix): Order was FULLY filled for qty=100,000
+
+        # Arrange - Create L2_MBP matching engine
+        matching_engine_l2 = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            trade_execution=True,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Set initial market state via OrderBookDeltas (L2 style)
+        snapshot = TestDataStubs.order_book_snapshot(
+            instrument=self.instrument,
+            bid_price=1000.00,
+            ask_price=1010.00,
+            bid_size=100.0,
+            ask_size=100.0,
+            bid_levels=1,
+            ask_levels=1,
+        )
+        matching_engine_l2.process_order_book_deltas(snapshot)
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        # Place large BUY LIMIT order (100 qty)
+        order = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("1005.00"),
+            quantity=self.instrument.make_qty(100.0),
+        )
+        matching_engine_l2.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act - Small SELLER trade at 1005.00 (only 10 qty)
+        trade = TestDataStubs.trade_tick(
+            instrument=self.instrument,
+            price=1005.00,
+            size=10.0,
+            aggressor_side=AggressorSide.SELLER,
+        )
+        matching_engine_l2.process_trade_tick(trade)
+
+        # Assert - Order should be PARTIALLY filled for 10 qty (not 100)
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1, "Order should receive exactly one partial fill"
+        assert filled_events[0].last_qty == self.instrument.make_qty(10.0), (
+            f"Fill qty should be capped at trade size 10, got {filled_events[0].last_qty}"
+        )
+
+    def test_trade_execution_multiple_partial_fills_accumulate(self) -> None:
+        # Test that multiple trade ticks accumulate partial fills correctly.
+        #
+        # Scenario:
+        # 1. BUY LIMIT placed with qty=100
+        # 2. First SELLER trade with qty=30
+        # 3. Second SELLER trade with qty=50
+        # 4. Expected: Two partial fills of 30 and 50
+
+        # Arrange - Create L2_MBP matching engine
+        matching_engine_l2 = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            trade_execution=True,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Set initial market state
+        snapshot = TestDataStubs.order_book_snapshot(
+            instrument=self.instrument,
+            bid_price=1000.00,
+            ask_price=1010.00,
+            bid_size=100.0,
+            ask_size=100.0,
+            bid_levels=1,
+            ask_levels=1,
+        )
+        matching_engine_l2.process_order_book_deltas(snapshot)
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        # Place BUY LIMIT order (100 qty)
+        order = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("1005.00"),
+            quantity=self.instrument.make_qty(100.0),
+        )
+        matching_engine_l2.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act - First trade (30 qty)
+        trade1 = TestDataStubs.trade_tick(
+            instrument=self.instrument,
+            price=1005.00,
+            size=30.0,
+            aggressor_side=AggressorSide.SELLER,
+            ts_event=1,
+            ts_init=1,
+        )
+        self.clock.set_time(1)
+        matching_engine_l2.process_trade_tick(trade1)
+
+        # Act - Second trade (50 qty)
+        trade2 = TestDataStubs.trade_tick(
+            instrument=self.instrument,
+            price=1005.00,
+            size=50.0,
+            aggressor_side=AggressorSide.SELLER,
+            ts_event=2,
+            ts_init=2,
+        )
+        self.clock.set_time(2)
+        matching_engine_l2.process_trade_tick(trade2)
+
+        # Assert - Should have two partial fills with correct quantities
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 2, "Order should receive two partial fills"
+        assert filled_events[0].last_qty == self.instrument.make_qty(30.0), (
+            f"First fill should be 30, got {filled_events[0].last_qty}"
+        )
+        assert filled_events[1].last_qty == self.instrument.make_qty(50.0), (
+            f"Second fill should be 50, got {filled_events[1].last_qty}"
+        )
+
+    def test_trade_execution_complete_fill_when_trade_exceeds_order(self) -> None:
+        # Test that when trade size exceeds remaining order quantity,
+        # the fill is capped at the remaining order quantity.
+        #
+        # Scenario:
+        # 1. BUY LIMIT placed with qty=50
+        # 2. SELLER trade with qty=100 (larger than order)
+        # 3. Expected: Order fully filled for 50 (not 100)
+
+        # Arrange - Create L2_MBP matching engine
+        matching_engine_l2 = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            trade_execution=True,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Set initial market state
+        snapshot = TestDataStubs.order_book_snapshot(
+            instrument=self.instrument,
+            bid_price=1000.00,
+            ask_price=1010.00,
+            bid_size=100.0,
+            ask_size=100.0,
+            bid_levels=1,
+            ask_levels=1,
+        )
+        matching_engine_l2.process_order_book_deltas(snapshot)
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        # Place small BUY LIMIT order (50 qty)
+        order = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("1005.00"),
+            quantity=self.instrument.make_qty(50.0),
+        )
+        matching_engine_l2.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act - Large trade (100 qty, more than order size)
+        trade = TestDataStubs.trade_tick(
+            instrument=self.instrument,
+            price=1005.00,
+            size=100.0,
+            aggressor_side=AggressorSide.SELLER,
+        )
+        matching_engine_l2.process_trade_tick(trade)
+
+        # Assert - Order should be filled for 50 (min of order size and trade size)
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1
+        assert filled_events[0].last_qty == self.instrument.make_qty(50.0), (
+            f"Fill qty should be capped at order size 50, got {filled_events[0].last_qty}"
+        )
+
+    def test_trade_execution_multiple_orders_do_not_exceed_trade_size(self) -> None:
+        # Test that when multiple orders match the same trade tick,
+        # the total filled quantity does not exceed the trade tick size.
+        #
+        # Scenario:
+        # 1. Two BUY LIMIT orders: 40 qty and 60 qty
+        # 2. SELLER trade with qty=50
+        # 3. Expected: First order fills 40, second order fills 10 (remaining trade size)
+        # 4. Total filled = 50 (equals trade size, not 100)
+
+        # Arrange - Create L2_MBP matching engine
+        matching_engine_l2 = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            trade_execution=True,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Set initial market state
+        snapshot = TestDataStubs.order_book_snapshot(
+            instrument=self.instrument,
+            bid_price=1000.00,
+            ask_price=1010.00,
+            bid_size=100.0,
+            ask_size=100.0,
+            bid_levels=1,
+            ask_levels=1,
+        )
+        matching_engine_l2.process_order_book_deltas(snapshot)
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        # Place first BUY LIMIT order (40 qty)
+        order1 = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("1005.00"),
+            quantity=self.instrument.make_qty(40.0),
+            client_order_id=ClientOrderId("O-001"),
+        )
+        matching_engine_l2.process_order(order1, self.account_id)
+
+        # Place second BUY LIMIT order (60 qty)
+        order2 = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("1005.00"),
+            quantity=self.instrument.make_qty(60.0),
+            client_order_id=ClientOrderId("O-002"),
+        )
+        matching_engine_l2.process_order(order2, self.account_id)
+        messages.clear()
+
+        # Act - Trade tick with 50 qty (less than combined order qty of 100)
+        trade = TestDataStubs.trade_tick(
+            instrument=self.instrument,
+            price=1005.00,
+            size=50.0,
+            aggressor_side=AggressorSide.SELLER,
+        )
+        matching_engine_l2.process_trade_tick(trade)
+
+        # Assert - Total filled should not exceed trade size
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        total_filled = sum(f.last_qty.as_double() for f in filled_events)
+
+        assert total_filled <= 50.0, (
+            f"Total filled qty {total_filled} exceeds trade size 50"
+        )
+        # First order (40) should be fully filled, second order gets remaining (10)
+        assert len(filled_events) == 2, f"Expected 2 fills, got {len(filled_events)}"
+        assert filled_events[0].last_qty == self.instrument.make_qty(40.0)
+        assert filled_events[1].last_qty == self.instrument.make_qty(10.0)

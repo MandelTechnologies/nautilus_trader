@@ -163,6 +163,7 @@ runs:
       if: inputs.build-type != 'pre-commit'
       # https://github.com/Mozilla-Actions/sccache-action
       uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      continue-on-error: true # Build continues without cache if sccache setup fails
 
     # > --------------------------------------------------
     # > Python

@@ -217,8 +217,8 @@ def test_tardis_load_depth10_from_snapshot5(
     for i in range(5, 10):
         assert deltas[0].ask_counts[i] == 0
 
-    # Verify metadata
-    assert deltas[0].flags == 128
+    # Verify metadata (flags = F_SNAPSHOT | F_LAST = 32 + 128 = 160)
+    assert deltas[0].flags == 160
     assert deltas[0].ts_event == 1598918403696000000
     assert deltas[0].ts_init == 1598918403810979000
     assert deltas[0].sequence == 0
@@ -317,8 +317,8 @@ def test_tardis_load_depth10_from_snapshot25(
         assert deltas[0].bid_counts[i] == 1
         assert deltas[0].ask_counts[i] == 1
 
-    # Verify metadata
-    assert deltas[0].flags == 128
+    # Verify metadata (flags = F_SNAPSHOT | F_LAST = 32 + 128 = 160)
+    assert deltas[0].flags == 160
     assert deltas[0].ts_event == 1598918403696000000
     assert deltas[0].ts_init == 1598918403810979000
     assert deltas[0].sequence == 0

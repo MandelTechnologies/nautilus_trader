@@ -4696,9 +4696,9 @@ mod tests {
 
     #[rstest]
     fn test_account_balance_roundtrip() {
-        let total = Money::from_raw(1000_00, Currency::USD());
-        let locked = Money::from_raw(100_00, Currency::USD());
-        let free = Money::from_raw(900_00, Currency::USD());
+        let total = Money::from_raw(100_000, Currency::USD());
+        let locked = Money::from_raw(10_000, Currency::USD());
+        let free = Money::from_raw(90_000, Currency::USD());
         let balance = AccountBalance::new(total, locked, free);
         let bytes = serialize_account_balance(&balance).unwrap();
         let decoded = deserialize_account_balance(&bytes).unwrap();
@@ -4707,8 +4707,8 @@ mod tests {
 
     #[rstest]
     fn test_margin_balance_roundtrip() {
-        let initial = Money::from_raw(5000_00, Currency::USD());
-        let maintenance = Money::from_raw(2500_00, Currency::USD());
+        let initial = Money::from_raw(500_000, Currency::USD());
+        let maintenance = Money::from_raw(250_000, Currency::USD());
         let instrument_id = InstrumentId::from("BTC-USD-PERP.BINANCE");
         let balance = MarginBalance::new(initial, maintenance, instrument_id);
         let bytes = serialize_margin_balance(&balance).unwrap();

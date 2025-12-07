@@ -14,7 +14,7 @@ An integration adapter is *typically* comprised of the following main components
 ## Instrument providers
 
 Instrument providers do as their name suggests - instantiating Nautilus
-`Instrument` objects by parsing the raw API of the publisher or venue.
+`Instrument` objects by parsing the raw API responses from a venue.
 
 The use cases for the instruments available from an `InstrumentProvider` are either:
 
@@ -26,6 +26,7 @@ The use cases for the instruments available from an `InstrumentProvider` are eit
 Here is an example of discovering the current instruments for the Binance Futures testnet:
 
 ```python
+import asyncio
 import os
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
@@ -34,23 +35,31 @@ from nautilus_trader.adapters.binance.futures.providers import BinanceFuturesIns
 from nautilus_trader.common.component import LiveClock
 
 
-clock = LiveClock()
-account_type = BinanceAccountType.USDT_FUTURES
+async def main():
+    clock = LiveClock()
 
-client = get_cached_binance_http_client(
-    clock=clock,
-    account_type=account_type,
-    api_key=os.getenv("BINANCE_FUTURES_TESTNET_API_KEY"),
-    api_secret=os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET"),
-    is_testnet=True,
-)
+    client = get_cached_binance_http_client(
+        clock=clock,
+        account_type=BinanceAccountType.USDT_FUTURES,
+        api_key=os.getenv("BINANCE_FUTURES_TESTNET_API_KEY"),
+        api_secret=os.getenv("BINANCE_FUTURES_TESTNET_API_SECRET"),
+        is_testnet=True,
+    )
 
-provider = BinanceFuturesInstrumentProvider(
-    client=client,
-    account_type=BinanceAccountType.USDT_FUTURES,
-)
+    provider = BinanceFuturesInstrumentProvider(
+        client=client,
+        account_type=BinanceAccountType.USDT_FUTURES,
+    )
 
-await provider.load_all_async()
+    await provider.load_all_async()
+
+    # Access loaded instruments
+    instruments = provider.list_all()
+    print(f"Loaded {len(instruments)} instruments")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ### Live trading
@@ -74,94 +83,53 @@ InstrumentProviderConfig(load_ids=["BTCUSDT-PERP.BINANCE", "ETHUSDT-PERP.BINANCE
 
 ## Data clients
 
-### Requests
+Data clients handle market data subscriptions and requests for a venue. They connect to venue APIs
+and normalize incoming data into Nautilus types.
 
-An `Actor` or `Strategy` can request custom data from a `DataClient` by sending a `DataRequest`. If the client that receives the
-`DataRequest` implements a handler for the request, data will be returned to the `Actor` or `Strategy`.
+### Requesting data
 
-#### Example
-
-An example of this is a `DataRequest` for an `Instrument`, which the `Actor` class implements (copied below). Any `Actor` or
-`Strategy` can call a `request_instrument` method with an `InstrumentId` to request the instrument from a `DataClient`.
-
-In this particular case, the `Actor` implements a separate method `request_instrument`. A similar type of
-`DataRequest` could be instantiated and called from anywhere and/or anytime in the actor/strategy code.
-
-A simplified version of `request_instrument` for an actor/strategy is:
+Actors and strategies can request data using built-in methods. The data is returned via callbacks:
 
 ```python
-# actor.pyx::request_instrument
+from nautilus_trader.model import Instrument, InstrumentId
+from nautilus_trader.trading.strategy import Strategy
 
-cpdef void request_instrument(self, InstrumentId instrument_id, ClientId client_id=None):
-    """
-    Request `Instrument` data for the given instrument ID.
 
-    Parameters
-    ----------
-    instrument_id : InstrumentId
-        The instrument ID for the request.
-    client_id : ClientId, optional
-        The specific client ID for the command.
-        If ``None`` then will be inferred from the venue in the instrument ID.
-    """
-    Condition.not_none(instrument_id, "instrument_id")
+class MyStrategy(Strategy):
+    def on_start(self) -> None:
+        # Request an instrument definition
+        self.request_instrument(InstrumentId.from_str("BTCUSDT-PERP.BINANCE"))
 
-    cdef RequestInstrument request = RequestInstrument(
-        instrument_id=instrument_id,
-        start=None,
-        end=None,
-        client_id=client_id,
-        venue=instrument_id.venue,
-        callback=self._handle_instrument_response,
-        request_id=UUID4(),
-        ts_init=self._clock.timestamp_ns(),
-        params=None,
-    )
+        # Request historical bars
+        self.request_bars(BarType.from_str("BTCUSDT-PERP.BINANCE-1-HOUR-LAST-EXTERNAL"))
 
-    self._send_data_req(request)
+    def on_instrument(self, instrument: Instrument) -> None:
+        self.log.info(f"Received instrument: {instrument.id}")
+
+    def on_historical_data(self, data) -> None:
+        self.log.info(f"Received historical data: {data}")
 ```
 
-A simplified version of the request handler implemented in a `LiveMarketDataClient` that will retrieve the data
-and send it back to actors/strategies is for example:
+### Subscribing to data
+
+For real-time data, use subscription methods:
 
 ```python
-# data_client.py::request_instrument
+def on_start(self) -> None:
+    # Subscribe to live trade updates
+    self.subscribe_trade_ticks(InstrumentId.from_str("BTCUSDT-PERP.BINANCE"))
 
-def request_instrument(self, request: RequestInstrument) -> None:
-    self.create_task(self._request_instrument(request))
+    # Subscribe to live bars
+    self.subscribe_bars(BarType.from_str("BTCUSDT-PERP.BINANCE-1-MINUTE-LAST-EXTERNAL"))
 
-# binance/data.py::_request_instrument
+def on_trade_tick(self, tick: TradeTick) -> None:
+    self.log.info(f"Trade: {tick}")
 
-async def _request_instrument(self, request: RequestInstrument) -> None:
-    instrument: Instrument | None = self._instrument_provider.find(request.instrument_id)
-
-    if instrument is None:
-        self._log.error(f"Cannot find instrument for {request.instrument_id}")
-        return
-
-    self._handle_instrument(instrument, request.id, request.params)
+def on_bar(self, bar: Bar) -> None:
+    self.log.info(f"Bar: {bar}")
 ```
 
-The `DataEngine` which is an important component in Nautilus links a request with a `DataClient`.
-For example a simplified version of handling an instrument request is:
-
-```python
-# engine.pyx::_handle_request
-
-self._msgbus.register(endpoint="DataEngine.request", handler=self.request)
-
-cpdef void request(self, RequestData request):
-    self._handle_request(request)
-
-cpdef void _handle_request(self, RequestData request):
-    cdef DataClient client = self._clients.get(request.client_id)
-
-    if client is None:
-        client = self._routing_map.get(request.venue, self._default_client)
-
-    if isinstance(request, RequestInstrument):
-        self._handle_request_instrument(client, request)
-
-cpdef void _handle_request_instrument(self, DataClient client, RequestInstrument request):
-    client.request_instrument(request)
-```
+:::tip
+See the [Actors](actors.md) documentation for a complete reference of available
+request and subscription methods with their corresponding callbacks.
+:::

@@ -62,10 +62,13 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use nautilus_core::consts::NAUTILUS_USER_AGENT;
+use nautilus_core::{UnixNanos, consts::NAUTILUS_USER_AGENT, time::get_atomic_clock_realtime};
 use nautilus_model::{
-    identifiers::InstrumentId,
+    data::{Bar, BarType, bar::get_bar_interval_ns},
+    identifiers::{AccountId, InstrumentId},
     instruments::{Instrument, InstrumentAny},
+    reports::{FillReport, OrderStatusReport, PositionStatusReport},
+    types::{Price, Quantity},
 };
 use nautilus_network::{
     http::HttpClient,
@@ -81,6 +84,7 @@ use super::error::DydxHttpError;
 use crate::common::{
     consts::{DYDX_HTTP_URL, DYDX_TESTNET_HTTP_URL},
     enums::DydxCandleResolution,
+    parse::extract_raw_symbol,
 };
 
 /// Default dYdX Indexer REST API rate limit.
@@ -948,6 +952,66 @@ impl DydxHttpClient {
             .map_err(Into::into)
     }
 
+    /// Requests historical bars for a symbol and converts to Nautilus Bar objects.
+    ///
+    /// Fetches candle data and converts to Nautilus `Bar` objects using the
+    /// provided `BarType`. Results are ordered by timestamp ascending (oldest first).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails, response cannot be parsed,
+    /// or the instrument is not found in the cache.
+    pub async fn request_bars(
+        &self,
+        bar_type: BarType,
+        resolution: DydxCandleResolution,
+        limit: Option<u32>,
+        from_iso: Option<DateTime<Utc>>,
+        to_iso: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<Vec<Bar>> {
+        let instrument_id = bar_type.instrument_id();
+        let symbol = instrument_id.symbol;
+
+        // Get instrument for precision info
+        let instrument = self
+            .get_instrument(&symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {symbol}"))?;
+
+        // dYdX API expects ticker format "BTC-USD", not "BTC-USD-PERP"
+        let ticker = extract_raw_symbol(symbol.as_str());
+        let response = self
+            .request_candles(ticker, resolution, limit, from_iso, to_iso)
+            .await?;
+
+        let ts_init = get_atomic_clock_realtime().get_time_ns();
+        let interval_ns = get_bar_interval_ns(&bar_type);
+
+        let mut bars = Vec::with_capacity(response.candles.len());
+
+        for candle in response.candles {
+            // Calculate ts_event: startedAt + interval (end of bar)
+            let started_at_nanos = candle.started_at.timestamp_nanos_opt().ok_or_else(|| {
+                anyhow::anyhow!("Timestamp out of range for candle at {}", candle.started_at)
+            })?;
+            let ts_event = UnixNanos::from(started_at_nanos as u64) + interval_ns;
+
+            let bar = Bar::new(
+                bar_type,
+                Price::from_decimal_dp(candle.open, instrument.price_precision())?,
+                Price::from_decimal_dp(candle.high, instrument.price_precision())?,
+                Price::from_decimal_dp(candle.low, instrument.price_precision())?,
+                Price::from_decimal_dp(candle.close, instrument.price_precision())?,
+                Quantity::from_decimal_dp(candle.base_token_volume, instrument.size_precision())?,
+                ts_event,
+                ts_init,
+            );
+
+            bars.push(bar);
+        }
+
+        Ok(bars)
+    }
+
     /// Exposes raw HTTP client for testing and advanced use cases.
     ///
     /// This provides access to the underlying [`DydxRawHttpClient`] for cases
@@ -995,6 +1059,189 @@ impl DydxHttpClient {
     #[must_use]
     pub fn clob_pair_id_mapping(&self) -> &Arc<DashMap<u32, InstrumentId>> {
         &self.clob_pair_id_to_instrument
+    }
+
+    /// Requests order status reports for a subaccount.
+    ///
+    /// Fetches orders from the dYdX Indexer API and converts them to Nautilus
+    /// `OrderStatusReport` objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or parsing fails.
+    pub async fn request_order_status_reports(
+        &self,
+        address: &str,
+        subaccount_number: u32,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        let ts_init = nautilus_core::time::get_atomic_clock_realtime().get_time_ns();
+
+        // Convert instrument_id to market filter
+        let market = instrument_id.map(|id| {
+            let symbol = id.symbol.to_string();
+            // Remove -PERP suffix if present to get the dYdX market format (e.g., ETH-USD)
+            symbol.trim_end_matches("-PERP").to_string()
+        });
+
+        let orders = self
+            .inner
+            .get_orders(address, subaccount_number, market.as_deref(), None)
+            .await?;
+
+        let mut reports = Vec::new();
+
+        for order in orders {
+            // Get instrument by clob_pair_id
+            let instrument = match self.get_instrument_by_clob_id(order.clob_pair_id) {
+                Some(inst) => inst,
+                None => {
+                    tracing::warn!(
+                        "Skipping order {}: no cached instrument for clob_pair_id {}",
+                        order.id,
+                        order.clob_pair_id
+                    );
+                    continue;
+                }
+            };
+
+            // Filter by instrument_id if specified
+            if instrument_id.is_some_and(|filter_id| instrument.id() != filter_id) {
+                continue;
+            }
+
+            match super::parse::parse_order_status_report(&order, &instrument, account_id, ts_init)
+            {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    tracing::warn!("Failed to parse order {}: {e}", order.id);
+                }
+            }
+        }
+
+        Ok(reports)
+    }
+
+    /// Requests fill reports for a subaccount.
+    ///
+    /// Fetches fills from the dYdX Indexer API and converts them to Nautilus
+    /// `FillReport` objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or parsing fails.
+    pub async fn request_fill_reports(
+        &self,
+        address: &str,
+        subaccount_number: u32,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<FillReport>> {
+        let ts_init = nautilus_core::time::get_atomic_clock_realtime().get_time_ns();
+
+        // Convert instrument_id to market filter
+        let market = instrument_id.map(|id| {
+            let symbol = id.symbol.to_string();
+            symbol.trim_end_matches("-PERP").to_string()
+        });
+
+        let fills_response = self
+            .inner
+            .get_fills(address, subaccount_number, market.as_deref(), None)
+            .await?;
+
+        let mut reports = Vec::new();
+
+        for fill in fills_response.fills {
+            // Get instrument by market ticker
+            let market = &fill.market;
+            let symbol = ustr::Ustr::from(&format!("{market}-PERP"));
+            let instrument = match self.get_instrument(&symbol) {
+                Some(inst) => inst,
+                None => {
+                    tracing::warn!(
+                        "Skipping fill {}: no cached instrument for market {}",
+                        fill.id,
+                        fill.market
+                    );
+                    continue;
+                }
+            };
+
+            // Filter by instrument_id if specified
+            if instrument_id.is_some_and(|filter_id| instrument.id() != filter_id) {
+                continue;
+            }
+
+            match super::parse::parse_fill_report(&fill, &instrument, account_id, ts_init) {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    tracing::warn!("Failed to parse fill {}: {e}", fill.id);
+                }
+            }
+        }
+
+        Ok(reports)
+    }
+
+    /// Requests position status reports for a subaccount.
+    ///
+    /// Fetches positions from the dYdX Indexer API and converts them to Nautilus
+    /// `PositionStatusReport` objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the HTTP request fails or parsing fails.
+    pub async fn request_position_status_reports(
+        &self,
+        address: &str,
+        subaccount_number: u32,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        let ts_init = nautilus_core::time::get_atomic_clock_realtime().get_time_ns();
+
+        let subaccount_response = self
+            .inner
+            .get_subaccount(address, subaccount_number)
+            .await?;
+
+        let mut reports = Vec::new();
+
+        for (market, position) in subaccount_response.subaccount.open_perpetual_positions {
+            // Get instrument by market ticker
+            let symbol = ustr::Ustr::from(&format!("{market}-PERP"));
+            let instrument = match self.get_instrument(&symbol) {
+                Some(inst) => inst,
+                None => {
+                    tracing::warn!(
+                        "Skipping position: no cached instrument for market {}",
+                        market
+                    );
+                    continue;
+                }
+            };
+
+            // Filter by instrument_id if specified
+            if instrument_id.is_some_and(|filter_id| instrument.id() != filter_id) {
+                continue;
+            }
+
+            match super::parse::parse_position_status_report(
+                &position,
+                &instrument,
+                account_id,
+                ts_init,
+            ) {
+                Ok(report) => reports.push(report),
+                Err(e) => {
+                    tracing::warn!("Failed to parse position for {}: {e}", market);
+                }
+            }
+        }
+
+        Ok(reports)
     }
 }
 

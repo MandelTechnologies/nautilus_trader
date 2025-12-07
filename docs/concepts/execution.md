@@ -42,34 +42,22 @@ individual order parameters (as explained below).
 
 This diagram illustrates message flow (commands and events) across the Nautilus execution components.
 
-```
-                  ┌───────────────────┐
-                  │                   │
-                  │                   │
-                  │                   │
-          ┌───────►   OrderEmulator   ├────────────┐
-          │       │                   │            │
-          │       │                   │            │
-          │       │                   │            │
-┌─────────┴──┐    └─────▲──────┬──────┘            │
-│            │          │      │           ┌───────▼────────┐   ┌─────────────────────┐   ┌─────────────────────┐
-│            │          │      │           │                │   │                     │   │                     │
-│            ├──────────┼──────┼───────────►                ├───►                     ├───►                     │
-│  Strategy  │          │      │           │                │   │                     │   │                     │
-│            │          │      │           │   RiskEngine   │   │   ExecutionEngine   │   │   ExecutionClient   │
-│            ◄──────────┼──────┼───────────┤                ◄───┤                     ◄───┤                     │
-│            │          │      │           │                │   │                     │   │                     │
-│            │          │      │           │                │   │                     │   │                     │
-└─────────┬──┘    ┌─────┴──────▼──────┐    └───────▲────────┘   └─────────────────────┘   └─────────────────────┘
-          │       │                   │            │
-          │       │                   │            │
-          │       │                   │            │
-          └───────►   ExecAlgorithm   ├────────────┘
-                  │                   │
-                  │                   │
-                  │                   │
-                  └───────────────────┘
+```mermaid
+flowchart LR
+    strategy[Strategy]
+    emulator[OrderEmulator]
+    algo[ExecAlgorithm]
+    risk[RiskEngine]
+    engine[ExecutionEngine]
+    client[ExecutionClient]
 
+    strategy <--> emulator
+    strategy <--> algo
+    strategy <--> risk
+    emulator --> risk
+    algo --> risk
+    risk <--> engine
+    engine <--> client
 ```
 
 ## Order Management System (OMS)

@@ -3568,8 +3568,8 @@ class LiveExecutionEngine(ExecutionEngine):
             if cached_order.filled_qty != quantity:
                 continue
 
-            # Match price if provided
-            if price is not None and cached_order.price is not None and cached_order.price != price:
+            # Match price if provided (market orders don't have price)
+            if price is not None and cached_order.has_price and cached_order.price != price:
                 continue
 
             # Match avg_px if provided

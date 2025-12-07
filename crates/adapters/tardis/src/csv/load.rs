@@ -138,29 +138,21 @@ pub fn load_deltas<P: AsRef<Path>>(
     while reader.read_record(&mut record)? {
         let data: TardisBookUpdateRecord = record.deserialize(None)?;
 
-        // Update precisions dynamically if not explicitly set
-        let price_updated =
-            update_precision_if_needed(&mut current_price_precision, data.price, price_precision);
-        let size_updated =
-            update_precision_if_needed(&mut current_size_precision, data.amount, size_precision);
+        update_precision_if_needed(&mut current_price_precision, data.price, price_precision);
+        update_precision_if_needed(&mut current_size_precision, data.amount, size_precision);
 
-        // If precision increased, update all previous deltas
-        if price_updated || size_updated {
-            update_deltas_precision(
-                &mut deltas,
-                price_precision,
-                size_precision,
-                current_price_precision,
-                current_size_precision,
-            );
-        }
-
-        let delta = parse_delta_record(
+        let delta = match parse_delta_record(
             &data,
             current_price_precision,
             current_size_precision,
             instrument_id,
-        );
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("Skipping invalid delta record: {e}");
+                continue;
+            }
+        };
 
         // Check if timestamp is different from last timestamp
         let ts_event = delta.ts_event;
@@ -186,6 +178,16 @@ pub fn load_deltas<P: AsRef<Path>>(
     if let Some(last_delta) = deltas.last_mut() {
         last_delta.flags = RecordFlag::F_LAST.value();
     }
+
+    // Update all deltas to use the final (maximum) precision discovered
+    // This is done once at the end instead of on every precision change (O(n) vs O(n²))
+    update_deltas_precision(
+        &mut deltas,
+        price_precision,
+        size_precision,
+        current_price_precision,
+        current_size_precision,
+    );
 
     Ok(deltas)
 }
@@ -264,7 +266,8 @@ pub fn load_depth10_from_snapshot5<P: AsRef<Path>>(
             Some(id) => *id,
             None => parse_instrument_id(&data.exchange, data.symbol),
         };
-        let flags = RecordFlag::F_LAST.value();
+        // Mark as both snapshot and last (consistent with streaming implementation)
+        let flags = RecordFlag::F_SNAPSHOT.value() | RecordFlag::F_LAST.value();
         let sequence = 0; // Sequence not available
         let ts_event = parse_timestamp(data.timestamp);
         let ts_init = parse_timestamp(data.local_timestamp);
@@ -420,7 +423,8 @@ pub fn load_depth10_from_snapshot25<P: AsRef<Path>>(
             Some(id) => *id,
             None => parse_instrument_id(&data.exchange, data.symbol),
         };
-        let flags = RecordFlag::F_LAST.value();
+        // Mark as both snapshot and last (consistent with streaming implementation)
+        let flags = RecordFlag::F_SNAPSHOT.value() | RecordFlag::F_LAST.value();
         let sequence = 0; // Sequence not available
         let ts_event = parse_timestamp(data.timestamp);
         let ts_init = parse_timestamp(data.local_timestamp);
@@ -558,16 +562,12 @@ pub fn load_quotes<P: AsRef<Path>>(
     while reader.read_record(&mut record)? {
         let data: TardisQuoteRecord = record.deserialize(None)?;
 
-        // Update precisions dynamically if not explicitly set
-        let mut precision_updated = false;
-
         if price_precision.is_none()
             && let Some(bid_price) = data.bid_price
         {
             let inferred_price_precision = infer_precision(bid_price).min(FIXED_PRECISION);
             if inferred_price_precision > current_price_precision {
                 current_price_precision = inferred_price_precision;
-                precision_updated = true;
             }
         }
 
@@ -577,19 +577,7 @@ pub fn load_quotes<P: AsRef<Path>>(
             let inferred_size_precision = infer_precision(bid_amount).min(FIXED_PRECISION);
             if inferred_size_precision > current_size_precision {
                 current_size_precision = inferred_size_precision;
-                precision_updated = true;
             }
-        }
-
-        // If precision increased, update all previous quotes
-        if precision_updated {
-            update_quotes_precision(
-                &mut quotes,
-                price_precision,
-                size_precision,
-                current_price_precision,
-                current_size_precision,
-            );
         }
 
         let quote = parse_quote_record(
@@ -607,6 +595,16 @@ pub fn load_quotes<P: AsRef<Path>>(
             break;
         }
     }
+
+    // Update all quotes to use the final (maximum) precision discovered
+    // This is done once at the end instead of on every precision change (O(n) vs O(n²))
+    update_quotes_precision(
+        &mut quotes,
+        price_precision,
+        size_precision,
+        current_price_precision,
+        current_size_precision,
+    );
 
     Ok(quotes)
 }
@@ -641,14 +639,10 @@ pub fn load_trades<P: AsRef<Path>>(
     while reader.read_record(&mut record)? {
         let data: TardisTradeRecord = record.deserialize(None)?;
 
-        // Update precisions dynamically if not explicitly set
-        let mut precision_updated = false;
-
         if price_precision.is_none() {
             let inferred_price_precision = infer_precision(data.price).min(FIXED_PRECISION);
             if inferred_price_precision > current_price_precision {
                 current_price_precision = inferred_price_precision;
-                precision_updated = true;
             }
         }
 
@@ -656,19 +650,7 @@ pub fn load_trades<P: AsRef<Path>>(
             let inferred_size_precision = infer_precision(data.amount).min(FIXED_PRECISION);
             if inferred_size_precision > current_size_precision {
                 current_size_precision = inferred_size_precision;
-                precision_updated = true;
             }
-        }
-
-        // If precision increased, update all previous trades
-        if precision_updated {
-            update_trades_precision(
-                &mut trades,
-                price_precision,
-                size_precision,
-                current_price_precision,
-                current_size_precision,
-            );
         }
 
         let size = Quantity::new_checked(data.amount, current_size_precision)?;
@@ -687,6 +669,16 @@ pub fn load_trades<P: AsRef<Path>>(
             log::warn!("Skipping zero-sized trade: {data:?}");
         }
     }
+
+    // Update all trades to use the final (maximum) precision discovered
+    // This is done once at the end instead of on every precision change (O(n) vs O(n²))
+    update_trades_precision(
+        &mut trades,
+        price_precision,
+        size_precision,
+        current_price_precision,
+        current_size_precision,
+    );
 
     Ok(trades)
 }
@@ -872,7 +864,11 @@ binance-futures,BTCUSDT,1640995204000000,1640995204100000,false,ask,50000.1234,0
         assert_eq!(depths[0].asks[0].order_id, 0);
         assert_eq!(depths[0].bid_counts[0], 1);
         assert_eq!(depths[0].ask_counts[0], 1);
-        assert_eq!(depths[0].flags, 128);
+        // F_SNAPSHOT (32) | F_LAST (128) = 160
+        assert_eq!(
+            depths[0].flags,
+            RecordFlag::F_SNAPSHOT.value() | RecordFlag::F_LAST.value()
+        );
         assert_eq!(depths[0].ts_event, 1598918403696000000);
         assert_eq!(depths[0].ts_init, 1598918403810979000);
         assert_eq!(depths[0].sequence, 0);
@@ -912,7 +908,11 @@ binance-futures,BTCUSDT,1640995204000000,1640995204100000,false,ask,50000.1234,0
         assert_eq!(depths[0].asks[0].order_id, 0);
         assert_eq!(depths[0].bid_counts[0], 1);
         assert_eq!(depths[0].ask_counts[0], 1);
-        assert_eq!(depths[0].flags, 128);
+        // F_SNAPSHOT (32) | F_LAST (128) = 160
+        assert_eq!(
+            depths[0].flags,
+            RecordFlag::F_SNAPSHOT.value() | RecordFlag::F_LAST.value()
+        );
         assert_eq!(depths[0].ts_event, 1598918403696000000);
         assert_eq!(depths[0].ts_init, 1598918403810979000);
         assert_eq!(depths[0].sequence, 0);
@@ -1125,8 +1125,11 @@ binance,BTCUSDT,1640995203000000,1640995203100000,trade4,sell,49999.123,3.0";
             assert_eq!(first.ask_counts[i], 0);
         }
 
-        // Check metadata
-        assert_eq!(first.flags, 128); // F_SNAPSHOT flag
+        // Check metadata - F_SNAPSHOT (32) | F_LAST (128) = 160
+        assert_eq!(
+            first.flags,
+            RecordFlag::F_SNAPSHOT.value() | RecordFlag::F_LAST.value()
+        );
         assert_eq!(first.ts_event.as_u64(), 1598918403696000000);
         assert_eq!(first.ts_init.as_u64(), 1598918403810979000);
         assert_eq!(first.sequence, 0);
@@ -1222,8 +1225,11 @@ binance,BTCUSDT,1640995203000000,1640995203100000,trade4,sell,49999.123,3.0";
             assert_eq!(first.ask_counts[i], 1);
         }
 
-        // Check metadata
-        assert_eq!(first.flags, 128); // F_SNAPSHOT flag
+        // Check metadata - F_SNAPSHOT (32) | F_LAST (128) = 160
+        assert_eq!(
+            first.flags,
+            RecordFlag::F_SNAPSHOT.value() | RecordFlag::F_LAST.value()
+        );
         assert_eq!(first.ts_event.as_u64(), 1598918403696000000);
         assert_eq!(first.ts_init.as_u64(), 1598918403810979000);
         assert_eq!(first.sequence, 0);

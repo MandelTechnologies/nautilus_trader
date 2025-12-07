@@ -80,7 +80,7 @@ impl KrakenSpotWebSocketClient {
                 crate::common::credential::KrakenCredential::from_env_spot(testnet)
             {
                 let (k, s) = cred.into_parts();
-                tracing::info!(
+                tracing::debug!(
                     "Loaded WebSocket credentials from environment (key={}...)",
                     &k[..8.min(k.len())]
                 );

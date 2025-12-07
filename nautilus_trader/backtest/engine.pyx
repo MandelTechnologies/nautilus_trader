@@ -3465,8 +3465,6 @@ cdef class OrderMatchingEngine:
         If all venue generated identifiers will be random UUID4's.
     use_reduce_only : bool, default True
         If the `reduce_only` execution instruction on orders will be honored.
-    auction_match_algo : Callable[[Ladder, Ladder], Tuple[List, List], optional
-        The auction matching algorithm.
     bar_adaptive_high_low_ordering : bool, default False
         Determines whether the processing order of bar prices is adaptive based on a heuristic.
         This setting is only relevant when `bar_execution` is True.
@@ -3499,7 +3497,6 @@ cdef class OrderMatchingEngine:
         bint bar_adaptive_high_low_ordering = False,
         bint trade_execution = False,
         price_protection_points=None,
-        # auction_match_algo = default_auction_match
     ) -> None:
         self._clock = clock
         self._log = Logger(name=f"{type(self).__name__}({instrument.id.venue})")
@@ -3527,20 +3524,11 @@ cdef class OrderMatchingEngine:
         self._trade_execution = trade_execution
         self._price_protection_points = price_protection_points if price_protection_points is not None else 0
 
-        # self._auction_match_algo = auction_match_algo
         self._fill_model = fill_model
         self._fee_model = fee_model
         self._book = OrderBook(
             instrument_id=instrument.id,
             book_type=book_type,
-        )
-        self._opening_auction_book = OrderBook(
-            instrument_id=instrument.id,
-            book_type=BookType.L3_MBO,
-        )
-        self._closing_auction_book = OrderBook(
-            instrument_id=instrument.id,
-            book_type=BookType.L3_MBO,
         )
 
         self._account_ids: dict[TraderId, AccountId]  = {}
@@ -3563,6 +3551,7 @@ cdef class OrderMatchingEngine:
         self._has_targets = False
         self._last_bid_bar: Bar | None = None
         self._last_ask_bar: Bar | None = None
+        self._last_trade_size: Quantity | None = None
 
         self._position_count = 0
         self._order_count = 0
@@ -3591,6 +3580,7 @@ cdef class OrderMatchingEngine:
         self._has_targets = False
         self._last_bid_bar = None
         self._last_ask_bar = None
+        self._last_trade_size = None
 
         self._position_count = 0
         self._order_count = 0
@@ -3721,16 +3711,6 @@ cdef class OrderMatchingEngine:
 
         self._book.apply_delta(delta)
 
-        # TODO: WIP to introduce flags
-        # if data.flags == TimeInForce.GTC:
-        #     self._book.apply(data)
-        # elif data.flags == TimeInForce.AT_THE_OPEN:
-        #     self._opening_auction_book.apply(data)
-        # elif data.flags == TimeInForce.AT_THE_CLOSE:
-        #     self._closing_auction_book.apply(data)
-        # else:
-        #     raise RuntimeError(data.time_in_force)
-
         self.iterate(delta.ts_init)
 
     cpdef void process_order_book_deltas(self, OrderBookDeltas deltas):
@@ -3749,16 +3729,6 @@ cdef class OrderMatchingEngine:
             self._log.debug(f"Processing {deltas!r}")
 
         self._book.apply_deltas(deltas)
-
-        # TODO: WIP to introduce flags
-        # if data.flags == TimeInForce.GTC:
-        #     self._book.apply(data)
-        # elif data.flags == TimeInForce.AT_THE_OPEN:
-        #     self._opening_auction_book.apply(data)
-        # elif data.flags == TimeInForce.AT_THE_CLOSE:
-        #     self._closing_auction_book.apply(data)
-        # else:
-        #     raise RuntimeError(data.time_in_force)
 
         self.iterate(deltas.ts_init)
 
@@ -3907,9 +3877,15 @@ cdef class OrderMatchingEngine:
             elif aggressor_side == AggressorSide.BUYER and price_raw > original_bid:
                 self._core.set_bid_raw(price_raw)
 
+            # Set last trade size for fill quantity capping
+            self._last_trade_size = tick.size
+
         self.iterate(tick.ts_init, aggressor_side)
 
         if self._trade_execution:
+            # Reset trade size after matching
+            self._last_trade_size = None
+
             # Restore original state after matching
             if aggressor_side == AggressorSide.SELLER and price_raw < original_ask:
                 self._core.set_ask_raw(original_ask)
@@ -4016,27 +3992,10 @@ cdef class OrderMatchingEngine:
             The status action to process.
 
         """
-        # # TODO: Reimplement
         if (self.market_status, status) == (MarketStatus.CLOSED, MarketStatusAction.TRADING):
             self.market_status = MarketStatus.OPEN
         elif (self.market_status, status) == (MarketStatus.CLOSED, MarketStatusAction.PRE_OPEN):
-            # Do nothing on pre-market open.
             self.market_status = MarketStatus.OPEN
-        # elif (self.market_status, status) == (MarketStatus.PRE_OPEN, MarketStatusAction.PAUSE):
-        #     # Opening auction period, run auction match on pre-open auction orderbook
-        #     self.process_auction_book(self._opening_auction_book)
-        #     self.market_status = status
-        # elif (self.market_status, status) == (MarketStatus.PAUSE, MarketStatusAction.OPEN):
-        #     # Normal market open
-        #     self.market_status = status
-        # elif (self.market_status, status) == (MarketStatus.OPEN, MarketStatusAction.PAUSE):
-        #     # Closing auction period, run auction match on closing auction orderbook
-        #     self.process_auction_book(self._closing_auction_book)
-        #     self.market_status = status
-        # elif (self.market_status, status) == (MarketStatus.PAUSE, MarketStatusAction.CLOSED):
-        #     # Market closed - nothing to do for now
-        #     # TODO - should we implement some sort of closing price message here?
-        #     self.market_status = status
 
     cpdef void process_instrument_close(self, InstrumentClose close):
         """
@@ -4055,37 +4014,6 @@ cdef class OrderMatchingEngine:
         if close.close_type == InstrumentCloseType.CONTRACT_EXPIRED:
             self._instrument_close = close
             self.iterate(close.ts_init)
-
-    cpdef void process_auction_book(self, OrderBook book):
-        Condition.not_none(book, "book")
-
-        cdef:
-            list traded_bids
-            list traded_asks
-        # Perform an auction match on this auction order book
-        # traded_bids, traded_asks = self._auction_match_algo(book.bids, book.asks)
-
-        cdef set client_order_ids = {c.value for c in self.cache.client_order_ids()}
-
-        # cdef:
-        #     BookOrder order
-        #     Order real_order
-        #     PositionId venue_position_id
-        # # Check filled orders from auction for any client orders and emit fills
-        # for order in traded_bids + traded_asks:
-        #     if order.order_id in client_order_ids:
-        #         real_order = self.cache.order(ClientOrderId(order.order_id))
-        #         venue_position_id = self._get_position_id(real_order)
-        #         self._generate_order_filled(
-        #             real_order,
-        #             self._get_venue_order_id(real_order),
-        #             venue_position_id,
-        #             Quantity(order.size, self.instrument.size_precision),
-        #             Price(order.price, self.instrument.price_precision),
-        #             self.instrument.quote_currency,
-        #             Money(0.0, self.instrument.quote_currency),
-        #             LiquiditySide.NO_LIQUIDITY_SIDE,
-        #         )
 
     cdef void _process_trade_ticks_from_bar(self, Bar bar):
         cdef double size_value = max(bar.volume.as_double() / 4.0, self.instrument.size_increment.as_double())
@@ -4455,12 +4383,11 @@ cdef class OrderMatchingEngine:
     cdef void _process_market_order(self, MarketOrder order):
         # Check AT_THE_OPEN/AT_THE_CLOSE time in force
         if order.time_in_force == TimeInForce.AT_THE_OPEN or order.time_in_force == TimeInForce.AT_THE_CLOSE:
-            self._log.error(
-                f"Market auction for time in force {time_in_force_to_str(order.time_in_force)} "
+            self._generate_order_rejected(
+                order,
+                f"time in force {time_in_force_to_str(order.time_in_force)} "
                 "is not currently supported",
             )
-            # TODO: This functionality needs reimplementing
-            # self._process_auction_market_order(order)
             return
 
         # Check market exists
@@ -4492,7 +4419,11 @@ cdef class OrderMatchingEngine:
     cdef void _process_limit_order(self, LimitOrder order):
         # Check AT_THE_OPEN/AT_THE_CLOSE time in force
         if order.time_in_force == TimeInForce.AT_THE_OPEN or order.time_in_force == TimeInForce.AT_THE_CLOSE:
-            self._process_auction_limit_order(order)
+            self._generate_order_rejected(
+                order,
+                f"time in force {time_in_force_to_str(order.time_in_force)} "
+                "is not currently supported",
+            )
             return
 
         if order.is_post_only and self._core.is_limit_matched(order.side, order.price):
@@ -4655,36 +4586,6 @@ cdef class OrderMatchingEngine:
 
         # Order is valid and accepted
         self.accept_order(order)
-
-    cdef void _process_auction_market_order(self, MarketOrder order):
-        cdef:
-            Instrument instrument = self.instrument
-            BookOrder book_order = BookOrder(
-                side=order.side,
-                price=instrument.max_price if order.is_buy_c() else instrument.min_price,
-                size=order.quantity,
-                order_id=self._clock.timestamp_ns(),
-            )
-        self._process_auction_book_order(book_order, time_in_force=order.time_in_force)
-
-    cdef void _process_auction_limit_order(self, LimitOrder order):
-        cdef:
-            Instrument instrument = self.instrument
-            BookOrder book_order = BookOrder(
-                price=order.price,
-                size=order.quantity,
-                side=order.side,
-                order_id=self._clock.timestamp_ns(),
-            )
-        self._process_auction_book_order(book_order, time_in_force=order.time_in_force)
-
-    cdef void _process_auction_book_order(self, BookOrder order, TimeInForce time_in_force):
-        if time_in_force == TimeInForce.AT_THE_OPEN:
-            self._opening_auction_book.add(order, 0, 0, 0)
-        elif time_in_force == TimeInForce.AT_THE_CLOSE:
-            self._closing_auction_book.add(order, 0, 0, 0)
-        else:
-            raise RuntimeError(time_in_force)
 
     cdef void _update_limit_order(
         self,
@@ -5273,6 +5174,41 @@ cdef class OrderMatchingEngine:
             # Fall back to standard logic
             return self.determine_limit_price_and_volume(order)
 
+    cdef Quantity determine_trade_fill_qty(self, Order order):
+        """
+        Determine the fill quantity for trade execution mode.
+
+        When trade execution mode triggers a match via the transient price override,
+        this method calculates the fill quantity as the minimum of:
+        - The order's remaining quantity (leaves_qty)
+        - The remaining trade tick size (if available)
+
+        The trade size is decremented after each fill to ensure total fills
+        across multiple orders do not exceed the trade tick's reported size.
+
+        Returns None if there is no quantity available to fill.
+        """
+        cdef uint64_t leaves_raw = order.quantity._mem.raw - order.filled_qty._mem.raw
+        if leaves_raw == 0:
+            return None
+
+        cdef uint64_t fill_raw = leaves_raw
+        cdef uint64_t remaining_raw
+
+        if self._last_trade_size is not None:
+            if self._last_trade_size._mem.raw == 0:
+                return None
+            fill_raw = min(leaves_raw, self._last_trade_size._mem.raw)
+
+            # Decrement remaining trade size for subsequent orders
+            remaining_raw = self._last_trade_size._mem.raw - fill_raw
+            self._last_trade_size = Quantity.from_raw_c(
+                remaining_raw,
+                self._last_trade_size._mem.precision,
+            )
+
+        return Quantity.from_raw_c(fill_raw, order.quantity._mem.precision)
+
     cpdef list determine_limit_price_and_volume(self, Order order):
         """
         Return the projected fills for the given *limit* order filling passively
@@ -5306,21 +5242,15 @@ cdef class OrderMatchingEngine:
 
         cdef Price triggered_price = order.get_triggered_price_c()
         cdef Price price = order.price
-        cdef Quantity leaves_qty
 
-        # Handle trade execution mode where the order is matched via transient price override
-        # but the book doesn't have liquidity at that price.
         if (
             not fills
             and order.liquidity_side == LiquiditySide.MAKER
             and self._core.is_limit_matched(order.side, order.price)
         ):
-            leaves_qty = Quantity.from_raw_c(
-                order.quantity._mem.raw - order.filled_qty._mem.raw,
-                order.quantity._mem.precision,
-            )
-            if leaves_qty.as_double() > 0:
-                fills = [(order.price, leaves_qty)]
+            fill_qty = self.determine_trade_fill_qty(order)
+            if fill_qty is not None:
+                fills = [(order.price, fill_qty)]
 
         if (
                 fills

@@ -471,9 +471,6 @@ async def main():
     api_key, api_secret = get_testnet_credentials()
 
     if api_key and api_secret:
-        print(f"Using KRAKEN_TESTNET_API_KEY: {api_key[:8]}...")
-        print(f"Using KRAKEN_TESTNET_API_SECRET: {api_secret[:8]}...\n")
-
         # Create authenticated client
         client = KrakenFuturesHttpClient(
             api_key=api_key,

@@ -52,8 +52,8 @@ config = TradingNodeConfig(
     trader_id="MyTrader-001",
 
     # Component configurations
-    cache: CacheConfig(),
-    message_bus: MessageBusConfig(),
+    cache=CacheConfig(),
+    message_bus=MessageBusConfig(),
     data_engine=LiveDataEngineConfig(),
     risk_engine=LiveRiskEngineConfig(),
     exec_engine=LiveExecEngineConfig(),
@@ -416,6 +416,10 @@ a strategy to resume its operations and continue managing existing open orders f
 
 Orders generated with strategy ID `EXTERNAL` and tag `RECONCILIATION` during position reconciliation are internal to the engine and cannot be claimed via `external_order_claims`.
 They exist solely to align position discrepancies and should not be managed by user strategies.
+
+:::tip
+To detect external orders in your strategy, check `order.strategy_id.value == "EXTERNAL"`. These orders are included in portfolio calculations and position tracking like any other order.
+:::
 
 For a full list of live trading options see the `LiveExecEngineConfig` [API Reference](../api_reference/config#class-liveexecengineconfig).
 

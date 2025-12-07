@@ -46,6 +46,7 @@ pub extern "C" fn uuid4_new() -> UUID4 {
 pub unsafe extern "C" fn uuid4_from_cstr(ptr: *const c_char) -> UUID4 {
     abort_on_panic(|| {
         assert!(!ptr.is_null(), "`ptr` was NULL");
+        // SAFETY: Caller guarantees ptr is valid per function contract
         let cstr = unsafe { CStr::from_ptr(ptr) };
         let value = cstr.to_str().expect("Failed to convert C string to UTF-8");
         UUID4::from(value)

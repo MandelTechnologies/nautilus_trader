@@ -135,9 +135,23 @@ impl LiveTimer {
     ///
     /// # Panics
     ///
-    /// Panics if Rust-based callback system is active and no time event sender has been set.
+    /// - Panics if a Rust callback is used. Rust callbacks use `Rc` internally which is not
+    ///   thread-safe. Use Python callbacks for live/async contexts, or use `TestClock` for
+    ///   Rust callbacks in single-threaded backtesting.
+    /// - Panics if Rust-based callback system is active and no time event sender has been set.
     #[allow(unused_variables)]
     pub fn start(&mut self) {
+        // SAFETY: Rust callbacks use Rc which is not Send/Sync. They cannot be safely
+        // moved into async tasks. This check enforces the invariant documented in
+        // TimeEventCallback's unsafe Send/Sync implementations.
+        // In tests, we allow Rust callbacks since the test environment is controlled.
+        #[cfg(not(test))]
+        assert!(
+            !self.callback.is_rust(),
+            "LiveTimer cannot use Rust callbacks (they are not thread-safe). \
+             Use Python callbacks for live trading, or TestClock for backtesting."
+        );
+
         let event_name = self.name;
         let stop_time_ns = self.stop_time_ns;
         let interval_ns = self.interval_ns.get();

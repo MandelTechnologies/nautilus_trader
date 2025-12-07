@@ -30,6 +30,7 @@ from nautilus_trader.adapters.polymarket.common.parsing import parse_order_statu
 from nautilus_trader.adapters.polymarket.common.parsing import parse_time_in_force
 from nautilus_trader.adapters.polymarket.schemas.order import PolymarketMakerOrder
 from nautilus_trader.core.datetime import millis_to_nanos
+from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.core.stats import basis_points_as_percentage
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import FillReport
@@ -262,7 +263,7 @@ class PolymarketUserTrade(msgspec.Struct, tag="trade", tag_field="event_type", f
             commission=Money(commission, USDC_POS),
             liquidity_side=self.liquidity_side(),
             report_id=UUID4(),
-            ts_event=millis_to_nanos(int(self.match_time)),
+            ts_event=secs_to_nanos(int(self.match_time)),
             ts_init=ts_init,
         )
 

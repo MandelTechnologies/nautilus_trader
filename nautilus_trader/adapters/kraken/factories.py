@@ -14,6 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+from functools import lru_cache
 
 from nautilus_trader.adapters.kraken.config import KrakenDataClientConfig
 from nautilus_trader.adapters.kraken.config import KrakenExecClientConfig
@@ -31,7 +32,8 @@ from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 
 
-def get_kraken_spot_http_client(
+@lru_cache(1)
+def get_cached_kraken_spot_http_client(
     api_key: str | None = None,
     api_secret: str | None = None,
     base_url: str | None = None,
@@ -43,11 +45,13 @@ def get_kraken_spot_http_client(
     proxy_url: str | None = None,
 ) -> nautilus_pyo3.KrakenSpotHttpClient:
     """
-    Return a Kraken Spot HTTP client.
+    Cache and return a Kraken Spot HTTP client.
 
     If ``api_key`` and ``api_secret`` are ``None``, then they will be sourced from the
     environment variables ``KRAKEN_API_KEY`` and ``KRAKEN_API_SECRET`` (or
     ``KRAKEN_TESTNET_API_KEY`` and ``KRAKEN_TESTNET_API_SECRET`` if testnet is True).
+
+    If a cached client with matching parameters already exists, the cached client will be returned.
 
     Parameters
     ----------
@@ -88,7 +92,8 @@ def get_kraken_spot_http_client(
     )
 
 
-def get_kraken_futures_http_client(
+@lru_cache(1)
+def get_cached_kraken_futures_http_client(
     api_key: str | None = None,
     api_secret: str | None = None,
     base_url: str | None = None,
@@ -100,12 +105,14 @@ def get_kraken_futures_http_client(
     proxy_url: str | None = None,
 ) -> nautilus_pyo3.KrakenFuturesHttpClient:
     """
-    Return a Kraken Futures HTTP client.
+    Cache and return a Kraken Futures HTTP client.
 
     If ``api_key`` and ``api_secret`` are ``None``, then they will be sourced from the
     environment variables ``KRAKEN_FUTURES_API_KEY`` and ``KRAKEN_FUTURES_API_SECRET``
     (or ``KRAKEN_FUTURES_TESTNET_API_KEY`` and ``KRAKEN_FUTURES_TESTNET_API_SECRET``
     if testnet is True).
+
+    If a cached client with matching parameters already exists, the cached client will be returned.
 
     Parameters
     ----------
@@ -146,14 +153,17 @@ def get_kraken_futures_http_client(
     )
 
 
-def get_kraken_instrument_provider(
+@lru_cache(1)
+def get_cached_kraken_instrument_provider(
     http_client_spot: nautilus_pyo3.KrakenSpotHttpClient | None,
     http_client_futures: nautilus_pyo3.KrakenFuturesHttpClient | None,
-    product_types: list[KrakenProductType],
+    product_types: tuple[KrakenProductType, ...],
     config: InstrumentProviderConfig,
 ) -> KrakenInstrumentProvider:
     """
-    Return a Kraken instrument provider.
+    Cache and return a Kraken instrument provider.
+
+    If a cached provider already exists, then that provider will be returned.
 
     Parameters
     ----------
@@ -161,7 +171,7 @@ def get_kraken_instrument_provider(
         The Kraken Spot HTTP client.
     http_client_futures : nautilus_pyo3.KrakenFuturesHttpClient, optional
         The Kraken Futures HTTP client.
-    product_types : list[KrakenProductType]
+    product_types : tuple[KrakenProductType, ...]
         The product types to load.
     config : InstrumentProviderConfig
         The instrument provider configuration.
@@ -174,7 +184,7 @@ def get_kraken_instrument_provider(
     return KrakenInstrumentProvider(
         http_client_spot=http_client_spot,
         http_client_futures=http_client_futures,
-        product_types=product_types,
+        product_types=list(product_types),
         config=config,
     )
 
@@ -220,12 +230,12 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
         product_types = list(config.product_types or (KrakenProductType.SPOT,))
         is_testnet = environment == KrakenEnvironment.TESTNET
 
-        # Create HTTP clients for each requested product type
+        # Get cached HTTP clients for each requested product type
         http_client_spot: nautilus_pyo3.KrakenSpotHttpClient | None = None
         http_client_futures: nautilus_pyo3.KrakenFuturesHttpClient | None = None
 
         if KrakenProductType.SPOT in product_types:
-            http_client_spot = get_kraken_spot_http_client(
+            http_client_spot = get_cached_kraken_spot_http_client(
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_spot,
@@ -238,7 +248,7 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
             )
 
         if KrakenProductType.FUTURES in product_types:
-            http_client_futures = get_kraken_futures_http_client(
+            http_client_futures = get_cached_kraken_futures_http_client(
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_futures,
@@ -250,10 +260,10 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
                 proxy_url=config.http_proxy_url,
             )
 
-        provider = get_kraken_instrument_provider(
+        provider = get_cached_kraken_instrument_provider(
             http_client_spot=http_client_spot,
             http_client_futures=http_client_futures,
-            product_types=product_types,
+            product_types=tuple(product_types),
             config=config.instrument_provider,
         )
 
@@ -311,12 +321,12 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
         product_types = list(config.product_types or (KrakenProductType.SPOT,))
         is_testnet = environment == KrakenEnvironment.TESTNET
 
-        # Create HTTP clients for each requested product type
+        # Get cached HTTP clients for each requested product type
         http_client_spot: nautilus_pyo3.KrakenSpotHttpClient | None = None
         http_client_futures: nautilus_pyo3.KrakenFuturesHttpClient | None = None
 
         if KrakenProductType.SPOT in product_types:
-            http_client_spot = get_kraken_spot_http_client(
+            http_client_spot = get_cached_kraken_spot_http_client(
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_spot,
@@ -329,7 +339,7 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
             )
 
         if KrakenProductType.FUTURES in product_types:
-            http_client_futures = get_kraken_futures_http_client(
+            http_client_futures = get_cached_kraken_futures_http_client(
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_futures,
@@ -341,10 +351,10 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
                 proxy_url=config.http_proxy_url,
             )
 
-        provider = get_kraken_instrument_provider(
+        provider = get_cached_kraken_instrument_provider(
             http_client_spot=http_client_spot,
             http_client_futures=http_client_futures,
-            product_types=product_types,
+            product_types=tuple(product_types),
             config=config.instrument_provider,
         )
 

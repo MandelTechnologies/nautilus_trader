@@ -353,7 +353,7 @@ impl Trader {
         // Register default time event handler for this strategy
         let actor_id = strategy.actor_id().inner();
         let callback = TimeEventCallback::from(move |event: TimeEvent| {
-            if let Some(actor) = try_get_actor_unchecked::<T>(&actor_id) {
+            if let Some(mut actor) = try_get_actor_unchecked::<T>(&actor_id) {
                 actor.handle_time_event(&event);
             } else {
                 log::error!("Strategy {actor_id} not found for time event handling");

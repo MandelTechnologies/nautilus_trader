@@ -19,7 +19,7 @@ use csv::{Reader, StringRecord};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{DEPTH10_LEN, NULL_ORDER, OrderBookDelta, OrderBookDepth10, QuoteTick, TradeTick},
-    enums::{BookAction, OrderSide, RecordFlag},
+    enums::{OrderSide, RecordFlag},
     identifiers::InstrumentId,
     types::Quantity,
 };
@@ -152,12 +152,18 @@ impl Iterator for DeltaStreamIterator {
                 Ok(true) => {
                     match self.record.deserialize::<TardisBookUpdateRecord>(None) {
                         Ok(data) => {
-                            let delta = parse_delta_record(
+                            let delta = match parse_delta_record(
                                 &data,
                                 self.price_precision,
                                 self.size_precision,
                                 self.instrument_id,
-                            );
+                            ) {
+                                Ok(d) => d,
+                                Err(e) => {
+                                    tracing::warn!("Skipping invalid delta record: {e}");
+                                    continue;
+                                }
+                            };
 
                             // Check if timestamp is different from last timestamp
                             if self.last_ts_event != delta.ts_event
@@ -165,13 +171,6 @@ impl Iterator for DeltaStreamIterator {
                             {
                                 last_delta.flags = RecordFlag::F_LAST.value();
                             }
-
-                            assert!(
-                                !(delta.action != BookAction::Delete && delta.order.size.is_zero()),
-                                "Invalid delta: action {} when size zero, check size_precision ({}) vs data; {data:?}",
-                                delta.action,
-                                self.size_precision
-                            );
 
                             self.last_ts_event = delta.ts_event;
 
@@ -208,6 +207,9 @@ impl Iterator for DeltaStreamIterator {
         if self.buffer.is_empty() {
             None
         } else {
+            // Note: We do NOT set F_LAST here when chunk is full because more deltas
+            // with the same timestamp may follow in the next chunk. F_LAST is only set
+            // when the timestamp actually changes (line 166) or at end of stream (line 200).
             Some(Ok(self.buffer.clone()))
         }
     }
@@ -284,7 +286,6 @@ impl BatchedDeltasStreamIterator {
         let mut reader = create_csv_reader(&filepath)?;
         let mut record = StringRecord::new();
 
-        // Read the first record to get instrument_id
         let first_record = if reader.read_record(&mut record)? {
             record.deserialize::<TardisBookUpdateRecord>(None)?
         } else {
@@ -371,12 +372,18 @@ impl Iterator for BatchedDeltasStreamIterator {
             match self.reader.read_record(&mut self.record) {
                 Ok(true) => {
                     let delta = match self.record.deserialize::<TardisBookUpdateRecord>(None) {
-                        Ok(data) => parse_delta_record(
+                        Ok(data) => match parse_delta_record(
                             &data,
                             self.price_precision,
                             self.size_precision,
                             Some(self.instrument_id),
-                        ),
+                        ) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                tracing::warn!("Skipping invalid delta record: {e}");
+                                continue;
+                            }
+                        },
                         Err(e) => {
                             return Some(Err(anyhow::anyhow!("Failed to deserialize record: {e}")));
                         }
@@ -858,7 +865,7 @@ impl Depth10StreamIterator {
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be opened or read.
+    /// Returns an error if the file cannot be opened or read, or if `levels` is not 5 or 25.
     pub fn new<P: AsRef<Path>>(
         filepath: P,
         chunk_size: usize,
@@ -868,6 +875,11 @@ impl Depth10StreamIterator {
         instrument_id: Option<InstrumentId>,
         limit: Option<usize>,
     ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            levels == 5 || levels == 25,
+            "Invalid levels: {levels}. Must be 5 or 25."
+        );
+
         let (final_price_precision, final_size_precision) =
             if let (Some(price_prec), Some(size_prec)) = (price_precision, size_precision) {
                 // Both precisions provided, use them directly
@@ -1868,6 +1880,31 @@ binance,BTCUSDT,1640995204000000,1640995204100000,trade5,buy,50000.1234,0.5";
         // Verify we get exactly 3 records
         let total_trades: usize = chunks.iter().map(|c| c.as_ref().unwrap().len()).sum();
         assert_eq!(total_trades, 3);
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[rstest]
+    pub fn test_depth10_invalid_levels_error_at_construction() {
+        let temp_file = std::env::temp_dir().join("test_depth10_invalid_levels.csv");
+        std::fs::write(&temp_file, "exchange,symbol,timestamp,local_timestamp\n").unwrap();
+
+        let result = Depth10StreamIterator::new(&temp_file, 10, 10, None, None, None, None);
+        assert!(result.is_err());
+        let err_msg = result.err().unwrap().to_string();
+        assert!(
+            err_msg.contains("Invalid levels"),
+            "Error should mention 'Invalid levels': {err_msg}"
+        );
+
+        let result = Depth10StreamIterator::new(&temp_file, 10, 3, None, None, None, None);
+        assert!(result.is_err());
+
+        let result = Depth10StreamIterator::new(&temp_file, 10, 5, None, None, None, None);
+        assert!(result.is_ok());
+
+        let result = Depth10StreamIterator::new(&temp_file, 10, 25, None, None, None, None);
+        assert!(result.is_ok());
 
         std::fs::remove_file(&temp_file).ok();
     }

@@ -28,15 +28,17 @@ use std::{
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::{
-    AtomicTime, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
+    AtomicTime, UUID4, consts::NAUTILUS_USER_AGENT, nanos::UnixNanos,
+    time::get_atomic_clock_realtime,
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
-    enums::{OrderSide, OrderType, TimeInForce},
+    enums::{AccountType, CurrencyType, OrderSide, OrderType, TimeInForce},
+    events::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{Price, Quantity},
+    types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use nautilus_network::{
     http::HttpClient,
@@ -657,6 +659,20 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
+    /// Get all accounts (cash and margin) with balances and margin info.
+    pub async fn get_accounts(&self) -> anyhow::Result<FuturesAccountsResponse, KrakenHttpError> {
+        if self.credential.is_none() {
+            return Err(KrakenHttpError::AuthenticationError(
+                "API credentials required for futures accounts".to_string(),
+            ));
+        }
+
+        let endpoint = "/derivatives/api/v3/accounts";
+        let url = format!("{}{endpoint}", self.base_url);
+
+        self.send_request(Method::GET, endpoint, url, true).await
+    }
+
     pub async fn send_order(
         &self,
         params: HashMap<String, String>,
@@ -1051,7 +1067,6 @@ impl KrakenFuturesHttpClient {
         let raw_symbol = instrument.raw_symbol().to_string();
         let ts_init = self.generate_ts_init();
 
-        // Kraken Futures API expects Unix timestamp in milliseconds
         let since = start.map(|dt| dt.timestamp_millis());
         let before = end.map(|dt| dt.timestamp_millis());
 
@@ -1198,7 +1213,8 @@ impl KrakenFuturesHttpClient {
             let end_ms = end.map(|dt| dt.timestamp_millis());
             let response = self.inner.get_order_events(end_ms, start_ms, None).await?;
 
-            for event in response.elements {
+            for event_wrapper in response.order_events {
+                let event = &event_wrapper.order;
                 if let Some(ref target_id) = instrument_id {
                     let instrument = self.get_cached_instrument(&target_id.symbol.inner());
                     if let Some(inst) = instrument
@@ -1210,7 +1226,7 @@ impl KrakenFuturesHttpClient {
 
                 if let Some(instrument) = self.get_instrument_by_raw_symbol(&event.symbol) {
                     match parse_futures_order_event_status_report(
-                        &event,
+                        event,
                         &instrument,
                         account_id,
                         ts_init,
@@ -1537,15 +1553,20 @@ impl KrakenFuturesHttpClient {
 
         // Fall back to querying order events
         let events_response = self.inner.get_order_events(None, None, None).await?;
-        let order_event = events_response
-            .elements
+        let event_wrapper = events_response
+            .order_events
             .iter()
-            .find(|e| e.order_id == venue_order_id)
+            .find(|e| e.order.order_id == venue_order_id)
             .ok_or_else(|| {
                 anyhow::anyhow!("Order not found in open orders or events: {venue_order_id}")
             })?;
 
-        parse_futures_order_event_status_report(order_event, &instrument, account_id, ts_init)
+        parse_futures_order_event_status_report(
+            &event_wrapper.order,
+            &instrument,
+            account_id,
+            ts_init,
+        )
     }
 
     /// Cancel an order on the Kraken Futures exchange.
@@ -1598,13 +1619,149 @@ impl KrakenFuturesHttpClient {
         let ts_init = self.generate_ts_init();
 
         // Find the most recent event for this order
-        let order_event = events_response
-            .elements
+        let event_wrapper = events_response
+            .order_events
             .iter()
-            .find(|e| e.order_id == venue_order_id_str)
+            .find(|e| e.order.order_id == venue_order_id_str)
             .ok_or_else(|| anyhow::anyhow!("Order event not found for: {venue_order_id_str}"))?;
 
-        parse_futures_order_event_status_report(order_event, &instrument, account_id, ts_init)
+        parse_futures_order_event_status_report(
+            &event_wrapper.order,
+            &instrument,
+            account_id,
+            ts_init,
+        )
+    }
+
+    /// Request account state from the Kraken Futures exchange.
+    ///
+    /// This queries the accounts endpoint and converts the response into a
+    /// Nautilus `AccountState` event containing balances and margin info.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Response parsing fails.
+    pub async fn request_account_state(
+        &self,
+        account_id: AccountId,
+    ) -> anyhow::Result<AccountState> {
+        let accounts_response = self.inner.get_accounts().await?;
+
+        if accounts_response.result != KrakenApiResult::Success {
+            let error_msg = accounts_response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("Failed to get futures accounts: {error_msg}");
+        }
+
+        let ts_init = self.generate_ts_init();
+
+        let mut balances: Vec<AccountBalance> = Vec::new();
+
+        for account in accounts_response.accounts.values() {
+            match account.account_type.as_str() {
+                "multiCollateralMarginAccount" => {
+                    for (currency_code, currency_info) in &account.currencies {
+                        if currency_info.quantity == 0.0 {
+                            continue;
+                        }
+
+                        let currency = Currency::new(
+                            currency_code.as_str(),
+                            8,
+                            0,
+                            currency_code.as_str(),
+                            CurrencyType::Crypto,
+                        );
+
+                        let total_amount = currency_info.quantity;
+                        let total = Money::new(total_amount, currency);
+
+                        // Available can exceed quantity with positive PnL, cap to satisfy invariant
+                        let available_amount = currency_info
+                            .available
+                            .unwrap_or(total_amount)
+                            .min(total_amount);
+                        let locked_amount = total_amount - available_amount;
+                        let free = Money::new(available_amount, currency);
+                        let locked = Money::new(locked_amount, currency);
+
+                        balances.push(AccountBalance::new(total, locked, free));
+                    }
+                }
+                "marginAccount" => {
+                    for (currency_code, &amount) in &account.balances {
+                        if amount == 0.0 {
+                            continue;
+                        }
+
+                        let currency = Currency::new(
+                            currency_code.as_str(),
+                            8,
+                            0,
+                            currency_code.as_str(),
+                            CurrencyType::Crypto,
+                        );
+
+                        let total = Money::new(amount, currency);
+
+                        // Available can exceed balance with positive PnL, cap to satisfy invariant
+                        let available = account
+                            .auxiliary
+                            .as_ref()
+                            .and_then(|aux| aux.af)
+                            .unwrap_or(amount)
+                            .min(amount);
+                        let locked = amount - available;
+
+                        balances.push(AccountBalance::new(
+                            total,
+                            Money::new(locked, currency),
+                            Money::new(available, currency),
+                        ));
+                    }
+                }
+                "cashAccount" => {
+                    for (currency_code, &amount) in &account.balances {
+                        if amount == 0.0 {
+                            continue;
+                        }
+
+                        let currency = Currency::new(
+                            currency_code.as_str(),
+                            8,
+                            0,
+                            currency_code.as_str(),
+                            CurrencyType::Crypto,
+                        );
+
+                        let total = Money::new(amount, currency);
+                        let locked = Money::new(0.0, currency);
+
+                        balances.push(AccountBalance::new(total, locked, total));
+                    }
+                }
+                _ => {
+                    let account_type = &account.account_type;
+                    tracing::debug!("Unknown account type: {account_type}");
+                }
+            }
+        }
+
+        Ok(AccountState::new(
+            account_id,
+            AccountType::Margin,
+            balances,
+            vec![],
+            true,
+            UUID4::new(),
+            ts_init,
+            ts_init,
+            None,
+        ))
     }
 }
 

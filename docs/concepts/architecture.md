@@ -67,22 +67,27 @@ Further reading: [High Assurance Rust](https://highassurance.rs/).
 
 ### Crash-only design
 
-NautilusTrader embraces [crash-only design](https://en.wikipedia.org/wiki/Crash-only_software),
-a philosophy where *"the only way to stop the system is to crash it"*, and *"the only way to bring it
-up is to recover from a crash"*. This approach simplifies state management and improves reliability
-by eliminating the complexity of graceful shutdown code paths that are rarely tested.
+NautilusTrader draws inspiration from [crash-only design](https://en.wikipedia.org/wiki/Crash-only_software)
+principles, particularly for handling unrecoverable faults. The core insight is that systems which
+can recover cleanly from crashes are more robust than those with separate (and rarely tested)
+graceful shutdown paths.
 
 Key principles:
 
-- **Single code path** - Recovery from crash is the primary (and only) initialization path, ensuring it is well-tested.
-- **No graceful shutdown** - The system does not attempt complex cleanup procedures that may fail or hang.
+- **Unified recovery path** - Startup and crash recovery share the same code path, ensuring it is well-tested.
 - **Externalized state** - Critical state is persisted externally (database, message bus) so crashes do not lose data.
 - **Fast restart** - The system is designed to restart quickly after a crash, minimizing downtime.
 - **Idempotent operations** - Operations are designed to be safely retried after restart.
+- **Fail-fast for unrecoverable errors** - Data corruption or invariant violations trigger immediate termination rather than attempting to continue in a compromised state.
+
+:::note
+The system does provide graceful shutdown flows (`stop`, `dispose`) for normal operation. These
+tear down clients, persist state, and flush writers. The crash-only philosophy applies specifically
+to *unrecoverable faults* where attempting graceful cleanup could cause further damage.
+:::
 
 This design complements the [fail-fast policy](#data-integrity-and-fail-fast-policy), where
-unrecoverable errors (data corruption, invariant violations) result in immediate process termination
-rather than attempting to continue in a compromised state.
+unrecoverable errors result in immediate process termination.
 
 **References:**
 
@@ -273,6 +278,41 @@ Understanding how data and execution flow through the system is crucial for effe
 
 All components follow a finite state machine pattern. The `ComponentState` enum defines both stable states and transitional states:
 
+```mermaid
+stateDiagram-v2
+    [*] --> PRE_INITIALIZED
+
+    PRE_INITIALIZED --> READY : register()
+
+    READY --> STARTING : start()
+    STARTING --> RUNNING
+
+    RUNNING --> STOPPING : stop()
+    STOPPING --> STOPPED
+
+    STOPPED --> STARTING : start()
+    STOPPED --> RESETTING : reset()
+    RESETTING --> READY
+
+    RUNNING --> RESUMING : resume()
+    RESUMING --> RUNNING
+
+    RUNNING --> DEGRADING : degrade()
+    DEGRADING --> DEGRADED
+
+    DEGRADED --> STOPPING : stop()
+    DEGRADED --> FAULTING : fault()
+
+    RUNNING --> FAULTING : fault()
+    FAULTING --> FAULTED
+
+    STOPPED --> DISPOSING : dispose()
+    FAULTED --> DISPOSING : dispose()
+    DISPOSING --> DISPOSED
+
+    DISPOSED --> [*]
+```
+
 **Stable states:**
 
 - **PRE_INITIALIZED**: Component is instantiated but not yet ready to fulfill its specification.
@@ -295,22 +335,121 @@ All components follow a finite state machine pattern. The `ComponentState` enum 
 
 Transitional states are brief intermediate states that occur during state transitions. Components should not remain in transitional states for extended periods.
 
+#### Actor vs Component traits
+
+At the Rust implementation level, the system distinguishes between two complementary traits:
+
+```mermaid
+classDiagram
+    class Actor {
+        <<trait>>
+        +id() Ustr
+        +handle(message)
+    }
+
+    class Component {
+        <<trait>>
+        +component_id() ComponentId
+        +state() ComponentState
+        +register()
+        +start()
+        +stop()
+        +reset()
+        +dispose()
+    }
+
+    class ActorRegistry {
+        +insert(actor)
+        +get(id) ActorRef
+    }
+
+    class ComponentRegistry {
+        +insert(component)
+        +get(id) ComponentRef
+    }
+
+    Actor <|.. Throttler : implements
+    Actor <|.. Strategy : implements
+    Component <|.. Strategy : implements
+    Component <|.. DataEngine : implements
+    Component <|.. ExecutionEngine : implements
+
+    ActorRegistry --> Actor : manages
+    ComponentRegistry --> Component : manages
+
+    class Throttler {
+        Actor only
+    }
+
+    class Strategy {
+        Actor + Component
+    }
+
+    class DataEngine {
+        Component only
+    }
+
+    class ExecutionEngine {
+        Component only
+    }
+```
+
+**`Actor` trait** - Message dispatch:
+
+- Provides the `handle` method for receiving messages dispatched through the actor registry.
+- Enables type-safe lookup and message dispatch by actor ID.
+- Used by components that need to receive targeted messages (strategies, throttlers).
+
+**`Component` trait** - Lifecycle management:
+
+- Manages state transitions (`start`, `stop`, `reset`, `dispose`).
+- Provides registration with the system kernel (`register`).
+- Tracks component state via the finite state machine described above.
+- Used by all system components that need lifecycle management.
+
+:::note
+All components can publish and subscribe to messages via the `MessageBus` directly - this is independent of the `Actor` trait. The `Actor` trait specifically enables the registry-based message dispatch pattern where messages are routed to a specific actor by ID.
+:::
+
+This separation allows:
+
+- **Actor-only**: Lightweight message handlers without lifecycle (e.g., `Throttler`).
+- **Component-only**: System infrastructure with lifecycle but using direct MessageBus pub/sub (e.g., `DataEngine`, `ExecutionEngine`).
+- **Both traits**: Trading strategies that need lifecycle management AND targeted message dispatch.
+
+The traits are managed by separate registries to support their different access patterns - lifecycle methods are called sequentially, while message handlers may be invoked re-entrantly during callbacks.
+
 ### Messaging
 
 To facilitate modularity and loose coupling, an extremely efficient `MessageBus` passes messages (data, commands and events) between components.
 
-From a high level architectural view, it's important to understand that the platform has been designed to run efficiently
-on a single thread, for both backtesting and live trading. Much research and testing
-resulted in arriving at this design, as it was found the overhead of context switching between threads
-didn't actually result in improved performance.
+#### Threading model
 
-When considering the logic of how your algo trading will work within the system boundary, you can expect each component to consume messages
-in a deterministic synchronous way (*similar* to the [actor model](https://en.wikipedia.org/wiki/Actor_model)).
+Within a node, the *kernel* consumes and dispatches messages on a single thread. The kernel encompasses:
+
+- The `MessageBus` and actor callback dispatch.
+- Strategy logic and order management.
+- Risk engine checks and execution coordination.
+- Cache reads and writes.
+
+This single-threaded core ensures deterministic event processing and maintains backtest-live parity—strategies
+behave identically whether running against historical data or live markets. Components consume messages
+synchronously in a pattern *similar* to the [actor model](https://en.wikipedia.org/wiki/Actor_model).
 
 :::note
 Of interest is the LMAX exchange architecture, which achieves award winning performance running on
 a single thread. You can read about their *disruptor* pattern based architecture in [this interesting article](https://martinfowler.com/articles/lmax.html) by Martin Fowler.
 :::
+
+Background services use separate threads or async runtimes:
+
+- **Network I/O** - WebSocket connections, REST clients, and async data feeds.
+- **Persistence** - DataFusion queries and database operations via multi-threaded Tokio runtime.
+- **Adapters** - Async adapter operations via thread pool executors.
+
+These services communicate results back to the kernel via the `MessageBus`. The bus itself is thread-local,
+so each thread has its own instance, with cross-thread communication occurring through channels that
+ultimately deliver events to the single-threaded core.
 
 ## Framework organization
 
@@ -356,30 +495,15 @@ Python bindings for the Rust core are provided by statically linking the Rust li
 
 ### Dependency flow
 
-```
-┌─────────────────────────┐
-│                         │
-│                         │
-│     nautilus_trader     │
-│                         │
-│     Python / Cython     │
-│                         │
-│                         │
-└────────────┬────────────┘
- C API       │
-             │
-             │
-             │
- C API       ▼
-┌─────────────────────────┐
-│                         │
-│                         │
-│      nautilus_core      │
-│                         │
-│          Rust           │
-│                         │
-│                         │
-└─────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph trader["nautilus_trader<br/>Python / Cython"]
+    end
+
+    subgraph core["nautilus_core<br/>Rust"]
+    end
+
+    trader -->|"C API"| core
 ```
 
 :::note

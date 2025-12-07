@@ -132,12 +132,16 @@ class KrakenExecutionClient(LiveExecutionClient):
         # Configuration
         self._config = config
         self._product_types = product_types
+        self._use_spot_position_reports = config.use_spot_position_reports
+        self._spot_positions_quote_currency = config.spot_positions_quote_currency
 
         self._log.info(f"Account type: {self._account_type.name}", LogColor.BLUE)
         self._log.info(f"Product types: {[str(p) for p in self._product_types]}", LogColor.BLUE)
         self._log.info(f"{config.environment=}", LogColor.BLUE)
         self._log.info(f"{config.http_proxy_url=}", LogColor.BLUE)
         self._log.info(f"{config.ws_proxy_url=}", LogColor.BLUE)
+        self._log.info(f"{config.use_spot_position_reports=}", LogColor.BLUE)
+        self._log.info(f"{config.spot_positions_quote_currency=}", LogColor.BLUE)
 
         # Set account ID
         account_id = AccountId(f"{name or KRAKEN_VENUE.value}-UNIFIED")
@@ -149,6 +153,12 @@ class KrakenExecutionClient(LiveExecutionClient):
         # HTTP API clients
         self._http_client_spot = http_client_spot
         self._http_client_futures = http_client_futures
+
+        if self._http_client_spot is not None:
+            self._http_client_spot.set_use_spot_position_reports(self._use_spot_position_reports)
+            self._http_client_spot.set_spot_positions_quote_currency(
+                self._spot_positions_quote_currency,
+            )
 
         # Log API keys for configured clients
         if http_client_spot is not None:
@@ -221,7 +231,8 @@ class KrakenExecutionClient(LiveExecutionClient):
             self._ws_client_spot.set_account_id(pyo3_account_id)
             await self._ws_client_spot.authenticate()
             self._log.info("Authenticated to spot WebSocket", LogColor.BLUE)
-            await self._ws_client_spot.subscribe_executions(snap_orders=True, snap_trades=True)
+            # Disable WebSocket snapshots - REST reconciliation handles initial state
+            await self._ws_client_spot.subscribe_executions(snap_orders=False, snap_trades=False)
             self._log.info("Subscribed to spot executions channel", LogColor.BLUE)
 
         # Connect to futures WebSocket if configured
@@ -290,6 +301,23 @@ class KrakenExecutionClient(LiveExecutionClient):
                 self._log.info(
                     f"Generated account state with {len(account_state.balances)} balance(s)",
                 )
+        elif self._http_client_futures is not None:
+            pyo3_account_state = await self._http_client_futures.request_account_state(
+                self.pyo3_account_id,
+            )
+            account_state = AccountState.from_dict(pyo3_account_state.to_dict())
+
+            self.generate_account_state(
+                balances=account_state.balances,
+                margins=account_state.margins,
+                reported=True,
+                ts_event=self._clock.timestamp_ns(),
+            )
+
+            if account_state.balances:
+                self._log.info(
+                    f"Generated account state with {len(account_state.balances)} balance(s)",
+                )
 
     async def generate_order_status_reports(
         self,
@@ -341,8 +369,13 @@ class KrakenExecutionClient(LiveExecutionClient):
                     self._log.debug(f"Received {report}", LogColor.MAGENTA)
                     reports.append(report)
 
+        except asyncio.CancelledError:
+            self._log.debug("Canceled task 'generate_order_status_reports'")
         except Exception as e:
-            self._log.exception("Failed to generate OrderStatusReports", e)
+            if "canceled" in str(e).lower():
+                self._log.debug("Canceled task 'generate_order_status_reports'")
+            else:
+                self._log.exception("Failed to generate OrderStatusReports", e)
 
         self._log_report_receipt(
             len(reports),
@@ -400,8 +433,13 @@ class KrakenExecutionClient(LiveExecutionClient):
                     self._log.debug(f"Received {report}", LogColor.MAGENTA)
                     reports.append(report)
 
+        except asyncio.CancelledError:
+            self._log.debug("Canceled task 'generate_fill_reports'")
         except Exception as e:
-            self._log.exception("Failed to generate FillReports", e)
+            if "canceled" in str(e).lower():
+                self._log.debug("Canceled task 'generate_fill_reports'")
+            else:
+                self._log.exception("Failed to generate FillReports", e)
 
         self._log_report_receipt(len(reports), "FillReport", LogLevel.INFO)
 
@@ -422,7 +460,16 @@ class KrakenExecutionClient(LiveExecutionClient):
                     command.instrument_id.value,
                 )
 
-            # Only futures has position reports
+            if self._http_client_spot is not None:
+                pyo3_reports = await self._http_client_spot.request_position_status_reports(
+                    account_id=self.pyo3_account_id,
+                    instrument_id=pyo3_instrument_id,
+                )
+                for pyo3_report in pyo3_reports:
+                    report = PositionStatusReport.from_pyo3(pyo3_report)
+                    self._log.debug(f"Received {report}", LogColor.MAGENTA)
+                    reports.append(report)
+
             if self._http_client_futures is not None:
                 pyo3_reports = await self._http_client_futures.request_position_status_reports(
                     account_id=self.pyo3_account_id,
@@ -433,8 +480,13 @@ class KrakenExecutionClient(LiveExecutionClient):
                     self._log.debug(f"Received {report}", LogColor.MAGENTA)
                     reports.append(report)
 
+        except asyncio.CancelledError:
+            self._log.debug("Canceled task 'generate_position_status_reports'")
         except Exception as e:
-            self._log.exception("Failed to generate PositionStatusReports", e)
+            if "canceled" in str(e).lower():
+                self._log.debug("Canceled task 'generate_position_status_reports'")
+            else:
+                self._log.exception("Failed to generate PositionStatusReports", e)
 
         self._log_report_receipt(
             len(reports),
@@ -526,6 +578,7 @@ class KrakenExecutionClient(LiveExecutionClient):
                     quantity=pyo3_quantity,
                     time_in_force=pyo3_time_in_force,
                     price=pyo3_price,
+                    trigger_price=pyo3_trigger_price,
                     reduce_only=order.is_reduce_only,
                     post_only=order.is_post_only,
                 )

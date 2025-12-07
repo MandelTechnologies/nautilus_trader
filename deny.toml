@@ -5,7 +5,7 @@
 # Dependency Graph Configuration
 # =============================================================================
 [graph]
-all-features = false
+all-features = true
 no-default-features = false
 
 [output]
@@ -21,10 +21,15 @@ ignore = [
   # TODO: Monitor https://github.com/alloy-rs/alloy for migration to pastey or alternative
   { id = "RUSTSEC-2024-0436", reason = "paste crate is unmaintained but a transitive dependency via alloy" },
 
+  # rustls-pemfile is unmaintained, pulled in via nautilus-network and various TLS dependencies
+  # Users are encouraged to migrate to rustls-pki-types directly but dependencies haven't updated yet
+  # This is not a security vulnerability, just a maintenance status advisory
+  # TODO: Monitor upstream TLS dependencies for migration
+  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained, transitive via nautilus-network (not a security vulnerability)" },
+
   # fast-float has soundness issues and is unmaintained, pulled in via hypersync-client
   # hypersync-client is optional (feature flag), so advisory only applies when feature is enabled
   # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for polars upgrade
-  # Consider migrating to fast-float2 fork once hypersync-client updates
   { id = "RUSTSEC-2024-0379", reason = "fast-float is transitive via hypersync-client→polars-arrow (optional dependency)" },
   { id = "RUSTSEC-2025-0003", reason = "fast-float is transitive via hypersync-client→polars-arrow (optional dependency)" },
 
@@ -38,14 +43,11 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
 
-  # rsa crate has timing sidechannel vulnerability (Marvin Attack), pulled in via sqlx-mysql
-  # Only affects MySQL connections using RSA authentication, not a risk for our PostgreSQL usage
-  # TODO: Monitor https://github.com/RustCrypto/RSA for fix
-  { id = "RUSTSEC-2023-0071", reason = "rsa timing sidechannel via sqlx-mysql, only affects MySQL RSA auth (we use PostgreSQL)" },
-
-  # rustls-pemfile is unmaintained, functionality merged into rustls-pki-types
-  # TODO: Monitor upstream nautilus_trader for migration to rustls-pki-types pem feature
-  { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained, awaiting upstream migration to rustls-pki-types" },
+  # rsa crate timing sidechannel (Marvin Attack) - transitive via sqlx-mysql
+  # We only use PostgreSQL, not MySQL, so this advisory does not affect us
+  # No fix available upstream
+  # TODO: Monitor https://github.com/RustCrypto/RSA for constant-time implementation
+  { id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql, we use PostgreSQL only (not affected)" },
 ]
 
 # =============================================================================

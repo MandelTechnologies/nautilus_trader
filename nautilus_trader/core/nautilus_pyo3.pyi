@@ -7968,6 +7968,11 @@ class KrakenSpotHttpClient:
         start: dt.datetime | None = None,
         end: dt.datetime | None = None,
     ) -> list[FillReport]: ...
+    async def request_position_status_reports(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+    ) -> list[PositionStatusReport]: ...
     async def submit_order(
         self,
         account_id: AccountId,
@@ -7978,6 +7983,7 @@ class KrakenSpotHttpClient:
         quantity: Quantity,
         time_in_force: TimeInForce,
         price: Price | None = None,
+        trigger_price: Price | None = None,
         reduce_only: bool = False,
         post_only: bool = False,
     ) -> VenueOrderId: ...
@@ -7990,6 +7996,8 @@ class KrakenSpotHttpClient:
     ) -> OrderStatusReport: ...
     async def cancel_all_orders(self) -> int: ...
     async def request_account_state(self, account_id: AccountId) -> AccountState: ...
+    def set_use_spot_position_reports(self, value: bool) -> None: ...
+    def set_spot_positions_quote_currency(self, currency: str) -> None: ...
 
 class KrakenFuturesHttpClient:
     def __init__(
@@ -8029,6 +8037,10 @@ class KrakenFuturesHttpClient:
         end: dt.datetime | None = None,
         limit: int | None = None,
     ) -> list[Bar]: ...
+    async def request_account_state(
+        self,
+        account_id: AccountId,
+    ) -> AccountState: ...
     async def request_order_status_reports(
         self,
         account_id: AccountId,

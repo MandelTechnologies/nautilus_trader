@@ -50,6 +50,7 @@ use crate::{
 pub unsafe fn bytes_to_string_vec(ptr: *const c_char) -> Vec<String> {
     assert!(!ptr.is_null(), "`ptr` was NULL");
 
+    // SAFETY: Caller guarantees ptr is valid per function contract
     let c_str = unsafe { CStr::from_ptr(ptr) };
     let bytes = c_str.to_bytes();
 
@@ -96,6 +97,7 @@ pub unsafe fn optional_bytes_to_json(ptr: *const c_char) -> Option<HashMap<Strin
     if ptr.is_null() {
         None
     } else {
+        // SAFETY: Caller guarantees ptr is valid per function contract
         let c_str = unsafe { CStr::from_ptr(ptr) };
         let bytes = c_str.to_bytes();
 
@@ -120,6 +122,7 @@ pub unsafe fn optional_bytes_to_str_map(ptr: *const c_char) -> Option<HashMap<Us
     if ptr.is_null() {
         None
     } else {
+        // SAFETY: Caller guarantees ptr is valid per function contract
         let c_str = unsafe { CStr::from_ptr(ptr) };
         let bytes = c_str.to_bytes();
 
@@ -144,6 +147,7 @@ pub unsafe fn optional_bytes_to_str_vec(ptr: *const c_char) -> Option<Vec<String
     if ptr.is_null() {
         None
     } else {
+        // SAFETY: Caller guarantees ptr is valid per function contract
         let c_str = unsafe { CStr::from_ptr(ptr) };
         let bytes = c_str.to_bytes();
 
@@ -167,6 +171,7 @@ pub unsafe fn optional_bytes_to_str_vec(ptr: *const c_char) -> Option<Vec<String
 pub unsafe extern "C" fn precision_from_cstr(ptr: *const c_char) -> u8 {
     abort_on_panic(|| {
         assert!(!ptr.is_null(), "`ptr` was NULL");
+        // SAFETY: Caller guarantees ptr is valid per function contract
         let s = unsafe { cstr_as_str(ptr) };
         precision_from_str(s)
     })
@@ -185,6 +190,7 @@ pub unsafe extern "C" fn precision_from_cstr(ptr: *const c_char) -> u8 {
 pub unsafe extern "C" fn min_increment_precision_from_cstr(ptr: *const c_char) -> u8 {
     abort_on_panic(|| {
         assert!(!ptr.is_null(), "`ptr` was NULL");
+        // SAFETY: Caller guarantees ptr is valid per function contract
         let s = unsafe { cstr_as_str(ptr) };
         min_increment_precision_from_str(s)
     })

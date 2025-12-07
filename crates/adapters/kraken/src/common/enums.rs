@@ -433,6 +433,34 @@ pub enum KrakenTriggerSignal {
     Index,
 }
 
+/// Trigger reference price for Kraken spot conditional orders.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    AsRefStr,
+    EnumString,
+    FromRepr,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", eq, eq_int)
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(ascii_case_insensitive, serialize_all = "lowercase")]
+pub enum KrakenSpotTrigger {
+    /// Last traded price in the order book.
+    Last,
+    /// Index price for the broader market.
+    Index,
+}
+
 #[derive(
     Clone,
     Copy,
@@ -481,6 +509,110 @@ pub enum KrakenFillType {
 pub enum KrakenApiResult {
     Success,
     Error,
+}
+
+/// Kraken futures instrument type.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    AsRefStr,
+    EnumString,
+    FromRepr,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", eq, eq_int)
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(ascii_case_insensitive, serialize_all = "snake_case")]
+pub enum KrakenInstrumentType {
+    /// Inverse perpetual futures (e.g., PI_XBTUSD).
+    FuturesInverse,
+    /// Flexible/linear perpetual futures (e.g., PF_XBTUSD).
+    FlexibleFutures,
+}
+
+/// Kraken futures send order status.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    AsRefStr,
+    EnumString,
+    FromRepr,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", eq, eq_int)
+)]
+#[serde(rename_all = "camelCase")]
+#[strum(ascii_case_insensitive, serialize_all = "camelCase")]
+pub enum KrakenSendStatus {
+    /// Order was successfully placed.
+    Placed,
+    /// Order was cancelled.
+    Cancelled,
+    /// Order was edited.
+    Edited,
+    /// Order not found.
+    NotFound,
+    /// Insufficient available funds.
+    InsufficientAvailableFunds,
+    /// Invalid order type.
+    InvalidOrderType,
+    /// Invalid size.
+    InvalidSize,
+    /// Would cause liquidation.
+    WouldCauseLiquidation,
+    /// Post-only order would have crossed.
+    PostWouldExecute,
+    /// Reduce-only order would increase position.
+    ReduceOnlyWouldIncreasePosition,
+}
+
+/// Kraken futures trigger side for conditional orders.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    AsRefStr,
+    EnumString,
+    FromRepr,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", eq, eq_int)
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(ascii_case_insensitive, serialize_all = "snake_case")]
+pub enum KrakenTriggerSide {
+    /// Trigger when price goes above the trigger price.
+    #[serde(rename = "trigger_above")]
+    #[strum(serialize = "trigger_above")]
+    TriggerAbove,
+    /// Trigger when price goes below the trigger price.
+    #[serde(rename = "trigger_below")]
+    #[strum(serialize = "trigger_below")]
+    TriggerBelow,
 }
 
 impl From<KrakenOrderSide> for OrderSide {

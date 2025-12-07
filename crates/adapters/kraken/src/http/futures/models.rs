@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::enums::{
     KrakenApiResult, KrakenFillType, KrakenFuturesOrderStatus, KrakenFuturesOrderType,
-    KrakenOrderSide, KrakenPositionSide, KrakenTriggerSignal,
+    KrakenInstrumentType, KrakenOrderSide, KrakenPositionSide, KrakenTriggerSide,
+    KrakenTriggerSignal,
 };
 
 // Futures Instruments Models
@@ -40,7 +41,7 @@ pub struct FuturesMarginLevel {
 pub struct FuturesInstrument {
     pub symbol: String,
     #[serde(rename = "type")]
-    pub instrument_type: String,
+    pub instrument_type: KrakenInstrumentType,
     /// Only present for inverse futures, not for flexible futures.
     #[serde(default)]
     pub underlying: Option<String>,
@@ -128,7 +129,8 @@ pub struct FuturesTicker {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesTickersResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     pub tickers: Vec<FuturesTicker>,
 }
 
@@ -180,21 +182,33 @@ pub struct FuturesOpenOrder {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesOpenOrdersResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
     pub open_orders: Vec<FuturesOpenOrder>,
 }
 
-// Futures Order Events Models
+// Futures Order Events Models (v2 API)
 
+/// Wrapper for an order event containing the order data and event type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesOrderEventWrapper {
+    pub order: FuturesOrderEvent,
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(default)]
+    pub reduced_quantity: Option<f64>,
+}
+
+/// The actual order data within an order event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesOrderEvent {
-    #[serde(rename = "order_id")]
     pub order_id: String,
-    #[serde(rename = "cli_ord_id", default)]
+    #[serde(default)]
     pub cli_ord_id: Option<String>,
     #[serde(rename = "type")]
     pub order_type: KrakenFuturesOrderType,
@@ -208,16 +222,20 @@ pub struct FuturesOrderEvent {
     pub stop_price: Option<f64>,
     pub timestamp: String,
     pub last_update_timestamp: String,
-    #[serde(rename = "reduce_only", default)]
+    #[serde(default)]
     pub reduce_only: bool,
 }
 
+/// Response from the Kraken Futures order events v2 endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesOrderEventsResponse {
-    pub result: KrakenApiResult,
-    pub server_time: String,
-    pub elements: Vec<FuturesOrderEvent>,
+    #[serde(default)]
+    pub server_time: Option<String>,
+    #[serde(default)]
+    pub order_events: Vec<FuturesOrderEventWrapper>,
+    #[serde(default)]
+    pub continuation_token: Option<String>,
 }
 
 // Futures Fills Models
@@ -247,7 +265,8 @@ pub struct FuturesFill {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesFillsResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -272,7 +291,8 @@ pub struct FuturesPosition {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesOpenPositionsResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -285,7 +305,8 @@ pub struct FuturesOpenPositionsResponse {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesSendOrderResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     pub send_status: Option<FuturesSendStatus>,
@@ -375,9 +396,9 @@ pub struct FuturesOrderTriggerData {
     #[serde(rename = "triggerPrice")]
     pub trigger_price: f64,
     #[serde(rename = "triggerSide")]
-    pub trigger_side: String,
+    pub trigger_side: KrakenTriggerSide,
     #[serde(rename = "triggerSignal")]
-    pub trigger_signal: String,
+    pub trigger_signal: KrakenTriggerSignal,
     #[serde(rename = "reduceOnly", default)]
     pub reduce_only: bool,
     pub timestamp: String,
@@ -389,7 +410,8 @@ pub struct FuturesOrderTriggerData {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelOrderResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     pub cancel_status: FuturesCancelStatus,
 }
 
@@ -407,7 +429,8 @@ pub struct FuturesCancelStatus {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesEditOrderResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     pub edit_status: FuturesEditStatus,
 }
 
@@ -425,7 +448,8 @@ pub struct FuturesEditStatus {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesBatchOrderResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     pub batch_status: Vec<FuturesSendStatus>,
 }
 
@@ -433,7 +457,8 @@ pub struct FuturesBatchOrderResponse {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelAllOrdersResponse {
     pub result: KrakenApiResult,
-    pub server_time: String,
+    #[serde(default)]
+    pub server_time: Option<String>,
     pub cancel_status: FuturesCancelAllStatus,
 }
 
@@ -524,6 +549,103 @@ pub struct FuturesPublicOrder {
     pub reduce_only: Option<bool>,
     #[serde(default)]
     pub last_update_timestamp: Option<i64>,
+}
+
+// Futures Accounts Models
+
+/// Response from the Kraken Futures accounts endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesAccountsResponse {
+    pub result: KrakenApiResult,
+    #[serde(default)]
+    pub accounts: std::collections::HashMap<String, FuturesAccount>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub server_time: Option<String>,
+}
+
+/// A Kraken Futures account (margin or multi-collateral).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesAccount {
+    #[serde(rename = "type")]
+    pub account_type: String,
+    /// Balances for margin accounts (symbol -> amount).
+    #[serde(default)]
+    pub balances: std::collections::HashMap<String, f64>,
+    /// Currencies for flex/multi-collateral accounts.
+    #[serde(default)]
+    pub currencies: std::collections::HashMap<String, FuturesFlexCurrency>,
+    /// Auxiliary info for margin accounts.
+    #[serde(default)]
+    pub auxiliary: Option<FuturesAuxiliary>,
+    /// Margin requirements.
+    #[serde(default)]
+    pub margin_requirements: Option<FuturesMarginRequirements>,
+    /// Portfolio value (for flex accounts).
+    #[serde(default)]
+    pub portfolio_value: Option<f64>,
+    /// Available margin (for flex accounts).
+    #[serde(default)]
+    pub available_margin: Option<f64>,
+    /// Initial margin (for flex accounts).
+    #[serde(default)]
+    pub initial_margin: Option<f64>,
+    /// PnL (for flex accounts).
+    #[serde(default)]
+    pub pnl: Option<f64>,
+}
+
+/// Currency info for flex/multi-collateral accounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesFlexCurrency {
+    pub quantity: f64,
+    #[serde(default)]
+    pub value: Option<f64>,
+    #[serde(default)]
+    pub collateral: Option<f64>,
+    #[serde(default)]
+    pub available: Option<f64>,
+}
+
+/// Auxiliary account info for margin accounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesAuxiliary {
+    #[serde(default)]
+    pub usd: Option<f64>,
+    /// Portfolio value.
+    #[serde(default)]
+    pub pv: Option<f64>,
+    /// Profit/loss.
+    #[serde(default)]
+    pub pnl: Option<f64>,
+    /// Available funds.
+    #[serde(default)]
+    pub af: Option<f64>,
+    #[serde(default)]
+    pub funding: Option<f64>,
+}
+
+/// Margin requirements for an account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesMarginRequirements {
+    /// Initial margin.
+    #[serde(default)]
+    pub im: Option<f64>,
+    /// Maintenance margin.
+    #[serde(default)]
+    pub mm: Option<f64>,
+    /// Liquidation threshold.
+    #[serde(default)]
+    pub lt: Option<f64>,
+    /// Termination threshold.
+    #[serde(default)]
+    pub tt: Option<f64>,
 }
 
 ////////////////////////////////////////////////////////////////////////////////

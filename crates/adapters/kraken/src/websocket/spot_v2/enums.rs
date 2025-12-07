@@ -190,6 +190,8 @@ pub enum KrakenWsOrderStatus {
     Canceled,
     /// Order has expired.
     Expired,
+    /// Conditional order has been triggered.
+    Triggered,
 }
 
 /// Liquidity indicator from trade executions.

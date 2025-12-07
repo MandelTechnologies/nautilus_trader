@@ -104,7 +104,7 @@ For datasets that don't fit in memory, use the streaming API:
 
 ```python
 def data_generator():
-    # Yield chunks of pre-sorted data
+    # Yield chunks of data (each chunk is a list of Data objects)
     yield load_chunk_1()
     yield load_chunk_2()
     yield load_chunk_3()
@@ -114,6 +114,10 @@ engine.add_data_iterator(
     generator=data_generator(),
 )
 ```
+
+:::note
+The streaming API processes data chunks on-demand during the backtest run, avoiding the need to load all data into memory upfront.
+:::
 
 :::tip Performance impact
 For a backtest with 10 instruments, each with 1M bars:
@@ -130,9 +134,10 @@ The `BacktestEngine` enforces important invariants to ensure data integrity:
 
 **Requirements:**
 
-- All data must be sorted and synced to the internal iterator before calling `run()`.
-- When using `sort=False`, you **must** call `sort_data()` or add more data with `sort=True` before running.
-- The engine validates this requirement and raises `RuntimeError` if violated.
+- All data must be sorted before calling `run()`.
+- When using `sort=False`, you **must** call `sort_data()` before running.
+- The engine validates this and raises `RuntimeError` if unsorted data is detected.
+- Calling `sort_data()` multiple times is safe (idempotent).
 
 **Safety guarantees:**
 
@@ -167,15 +172,15 @@ The `.reset()` method returns all stateful fields to their **initial value**, ex
 
 **What gets reset:**
 
-- All trading state (orders, positions, account balances)
-- Strategy state
-- Engine counters and timestamps
+- All trading state (orders, positions, account balances).
+- Strategy instances are removed (you must re-add strategies before the next run).
+- Engine counters and timestamps.
 
 **What persists:**
 
-- Data added via `.add_data()` (use `.clear_data()` to drop it)
-- Instruments (required to match the persisted data)
-- Venue configurations
+- Data added via `.add_data()` (use `.clear_data()` to remove).
+- Instruments (must match the persisted data).
+- Venue configurations.
 
 **Instrument handling:**
 
@@ -362,8 +367,8 @@ If your data source provides bars timestamped at the **opening time** (common in
 
 **Approach 2: Use `ts_init_delta` parameter**
 
-- When calling `BarDataWrangler.process()`, set `ts_init_delta` to the bar's duration in nanoseconds.
-- The wrangler will compute `ts_init = ts_event + ts_init_delta`, shifting execution timing to the close.
+- When calling `BarDataWrangler.process()`, set `ts_init_delta` to the bar's duration in nanoseconds (e.g., `60_000_000_000` for 1-minute bars).
+- The wrangler computes `ts_init = ts_event + ts_init_delta`, shifting execution timing to the close.
 - Use this when you cannot or prefer not to modify source data timestamps.
 
 Always verify your data's timestamp convention with a small sample to avoid simulation inaccuracies. Incorrect timestamp handling can lead to look-ahead bias and unrealistic backtest results.
@@ -464,6 +469,16 @@ the spread is not permanently corrupted by the transient trade price.
 
 - **SELLER trade at P**: The engine temporarily sets the Best Ask to P. Resting BUY LIMIT orders at P or higher will fill (as they are willing to buy at P or more).
 - **BUYER trade at P**: The engine temporarily sets the Best Bid to P. Resting SELL LIMIT orders at P or lower will fill (as they are willing to sell at P or less).
+
+**Fill quantity capping:**
+
+Fill quantities are capped to ensure realistic execution simulation:
+
+- **Per-order capping**: Each order's fill quantity is limited to the minimum of the order's remaining quantity and the trade tick's size. For example, if you have a BUY LIMIT order for 100,000 units and a 200-unit SELLER trade occurs at your limit price, the order will be partially filled for 200 units (not the full 100,000).
+
+- **Multi-order capping**: When multiple orders match the same trade tick, the total filled quantity across all orders will not exceed the trade tick's size. For example, if two BUY LIMIT orders (40 and 60 units) are resting and a 50-unit SELLER trade occurs, the first order fills for 40 units and the second fills for 10 units (the remaining trade size), totaling 50 units.
+
+This behavior ensures that backtests don't overstate execution volumes beyond what the historical trade data indicates was actually available in the market.
 
 **Example:**
 

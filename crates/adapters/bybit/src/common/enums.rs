@@ -17,6 +17,7 @@
 
 use std::fmt::{Display, Formatter};
 
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use nautilus_model::enums::{AggressorSide, OrderSide, TriggerType};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -350,6 +351,55 @@ pub enum BybitKlineInterval {
     Week1,
     #[serde(rename = "M")]
     Month1,
+}
+
+impl BybitKlineInterval {
+    /// Returns the end time in milliseconds for a bar that starts at `start_ms`.
+    ///
+    /// For most intervals this is simply `start_ms + duration`. For monthly bars,
+    /// this calculates the actual first millisecond of the next month to handle
+    /// variable month lengths (28-31 days).
+    #[must_use]
+    pub fn bar_end_time_ms(&self, start_ms: i64) -> i64 {
+        match self {
+            Self::Month1 => {
+                let start_dt = DateTime::from_timestamp_millis(start_ms)
+                    .unwrap_or_else(|| Utc.timestamp_millis_opt(0).unwrap());
+                let (year, month) = if start_dt.month() == 12 {
+                    (start_dt.year() + 1, 1)
+                } else {
+                    (start_dt.year(), start_dt.month() + 1)
+                };
+                Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0)
+                    .single()
+                    .map_or(start_ms + 2_678_400_000, |dt| dt.timestamp_millis())
+            }
+            _ => start_ms + self.duration_ms(),
+        }
+    }
+
+    /// Returns the fixed duration of this interval in milliseconds.
+    ///
+    /// Note: For monthly bars, use [`bar_end_time_ms`] instead as months have
+    /// variable lengths (28-31 days).
+    #[must_use]
+    pub const fn duration_ms(&self) -> i64 {
+        match self {
+            Self::Minute1 => 60_000,
+            Self::Minute3 => 180_000,
+            Self::Minute5 => 300_000,
+            Self::Minute15 => 900_000,
+            Self::Minute30 => 1_800_000,
+            Self::Hour1 => 3_600_000,
+            Self::Hour2 => 7_200_000,
+            Self::Hour4 => 14_400_000,
+            Self::Hour6 => 21_600_000,
+            Self::Hour12 => 43_200_000,
+            Self::Day1 => 86_400_000,
+            Self::Week1 => 604_800_000,
+            Self::Month1 => 2_678_400_000, // 31 days - use bar_end_time_ms() for accurate calculation
+        }
+    }
 }
 
 impl Display for BybitKlineInterval {
@@ -738,4 +788,56 @@ pub enum BybitMarginAction {
     Repay,
     /// Query current borrowed amount.
     GetBorrowAmount,
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case::minute1(BybitKlineInterval::Minute1, 60_000)]
+    #[case::minute3(BybitKlineInterval::Minute3, 180_000)]
+    #[case::minute5(BybitKlineInterval::Minute5, 300_000)]
+    #[case::minute15(BybitKlineInterval::Minute15, 900_000)]
+    #[case::minute30(BybitKlineInterval::Minute30, 1_800_000)]
+    #[case::hour1(BybitKlineInterval::Hour1, 3_600_000)]
+    #[case::hour2(BybitKlineInterval::Hour2, 7_200_000)]
+    #[case::hour4(BybitKlineInterval::Hour4, 14_400_000)]
+    #[case::hour6(BybitKlineInterval::Hour6, 21_600_000)]
+    #[case::hour12(BybitKlineInterval::Hour12, 43_200_000)]
+    #[case::day1(BybitKlineInterval::Day1, 86_400_000)]
+    #[case::week1(BybitKlineInterval::Week1, 604_800_000)]
+    #[case::month1(BybitKlineInterval::Month1, 2_678_400_000)]
+    fn test_kline_interval_duration_ms(
+        #[case] interval: BybitKlineInterval,
+        #[case] expected_ms: i64,
+    ) {
+        assert_eq!(interval.duration_ms(), expected_ms);
+    }
+
+    #[rstest]
+    fn test_bar_end_time_ms_non_monthly_adds_duration() {
+        let interval = BybitKlineInterval::Minute1;
+        let start_ms = 1704067200000i64;
+        assert_eq!(interval.bar_end_time_ms(start_ms), start_ms + 60_000);
+    }
+
+    #[rstest]
+    #[case::jan_31_days(1704067200000i64, 1706745600000i64)]
+    #[case::feb_leap_year_29_days(1706745600000i64, 1709251200000i64)]
+    #[case::apr_30_days(1711929600000i64, 1714521600000i64)]
+    #[case::dec_to_next_year(1733011200000i64, 1735689600000i64)]
+    fn test_bar_end_time_ms_monthly_variable_lengths(
+        #[case] start_ms: i64,
+        #[case] expected_end_ms: i64,
+    ) {
+        let interval = BybitKlineInterval::Month1;
+        assert_eq!(interval.bar_end_time_ms(start_ms), expected_end_ms);
+    }
 }

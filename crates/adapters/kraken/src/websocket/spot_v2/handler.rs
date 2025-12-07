@@ -552,42 +552,90 @@ impl SpotFeedHandler {
                     };
 
                     // Trade executions emit OrderStatusReport first (so engine knows the order),
-                    // then FillReport on next iteration
+                    // then FillReport on next iteration.
+                    //
+                    // Trade snapshots (initial WS messages) may lack order-level data like
+                    // order_qty, cum_qty. In these cases, skip generating OrderStatusReport
+                    // and only generate FillReport if we have complete trade data.
                     let cached_order_qty = self.order_qty_cache.get(&exec_data.order_id).copied();
 
                     if exec_data.exec_type == KrakenExecType::Trade {
-                        match parse_ws_order_status_report(
-                            &exec_data,
-                            &instrument,
-                            account_id,
-                            cached_order_qty,
-                            ts_init,
-                        ) {
-                            Ok(status_report) => {
-                                self.pending_messages.push_back(
-                                    NautilusWsMessage::OrderStatusReport(Box::new(status_report)),
-                                );
-                                match parse_ws_fill_report(
-                                    &exec_data,
-                                    &instrument,
-                                    account_id,
-                                    ts_init,
-                                ) {
-                                    Ok(fill_report) => {
-                                        self.pending_messages.push_back(
-                                            NautilusWsMessage::FillReport(Box::new(fill_report)),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::error!("Failed to parse fill report: {e}");
+                        let has_order_data = exec_data.order_qty.is_some()
+                            || cached_order_qty.is_some()
+                            || exec_data.cum_qty.is_some();
+
+                        let has_complete_trade_data = exec_data.last_qty.is_some_and(|q| q > 0.0)
+                            && exec_data.last_price.is_some_and(|p| p > 0.0);
+
+                        if has_order_data {
+                            match parse_ws_order_status_report(
+                                &exec_data,
+                                &instrument,
+                                account_id,
+                                cached_order_qty,
+                                ts_init,
+                            ) {
+                                Ok(status_report) => {
+                                    self.pending_messages.push_back(
+                                        NautilusWsMessage::OrderStatusReport(Box::new(
+                                            status_report,
+                                        )),
+                                    );
+                                    if has_complete_trade_data {
+                                        match parse_ws_fill_report(
+                                            &exec_data,
+                                            &instrument,
+                                            account_id,
+                                            ts_init,
+                                        ) {
+                                            Ok(fill_report) => {
+                                                self.pending_messages.push_back(
+                                                    NautilusWsMessage::FillReport(Box::new(
+                                                        fill_report,
+                                                    )),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                tracing::error!("Failed to parse fill report: {e}");
+                                            }
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to parse order status report for trade: {e}"
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to parse order status report for trade: {e}"
-                                );
+                        } else if has_complete_trade_data {
+                            // Trade snapshot with incomplete order data: skip OrderStatusReport,
+                            // only generate FillReport. REST API reconciliation provides order status.
+                            tracing::debug!(
+                                order_id = %exec_data.order_id,
+                                "Skipping OrderStatusReport for trade snapshot (missing order data)"
+                            );
+                            match parse_ws_fill_report(&exec_data, &instrument, account_id, ts_init)
+                            {
+                                Ok(fill_report) => {
+                                    self.pending_messages
+                                        .push_back(NautilusWsMessage::FillReport(Box::new(
+                                            fill_report,
+                                        )));
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        order_id = %exec_data.order_id,
+                                        "Failed to parse fill report from trade snapshot: {e}"
+                                    );
+                                }
                             }
+                        } else {
+                            tracing::debug!(
+                                order_id = %exec_data.order_id,
+                                last_qty = ?exec_data.last_qty,
+                                last_price = ?exec_data.last_price,
+                                "Skipping incomplete trade snapshot (missing trade data)"
+                            );
                         }
                     } else {
                         match parse_ws_order_status_report(

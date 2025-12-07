@@ -624,7 +624,7 @@ impl PyDataActor {
         // Register default time event handler for this actor
         let actor_id = inner.actor_id().inner();
         let callback = TimeEventCallback::from(move |event: TimeEvent| {
-            if let Some(actor) = try_get_actor_unchecked::<PyDataActorInner>(&actor_id) {
+            if let Some(mut actor) = try_get_actor_unchecked::<PyDataActorInner>(&actor_id) {
                 if let Err(e) = actor.on_time_event(&event) {
                     log::error!("Python time event handler failed for actor {actor_id}: {e}");
                 }

@@ -198,6 +198,37 @@ by parsing `fillTime` fields and comparing against requested start/end
 timestamps.
 :::
 
+### Spot position reports
+
+The Kraken adapter can optionally report wallet balances as position status
+reports for spot instruments. This feature is disabled by default and must be
+explicitly enabled via configuration.
+
+**How it works:**
+
+- When enabled, wallet balances are converted to `PositionStatusReport` objects.
+- Positive balances are reported as `LONG` positions.
+- Only instruments matching the configured quote currency are reported (default: `USDT`).
+- This prevents duplicate reports when the same asset is available with multiple quote currencies (e.g., BTC/USD, BTC/USDT, BTC/EUR).
+
+**Configuration:**
+
+```python
+exec_clients={
+    KRAKEN: {
+        "use_spot_position_reports": True,
+        "spot_positions_quote_currency": "USDT",  # Default
+    },
+}
+```
+
+:::warning
+**Use with caution**: Enabling spot position reports may lead to unintended
+behavior if your strategy is not designed to handle spot positions. For example,
+a strategy that expects to close positions may attempt to sell your wallet
+holdings.
+:::
+
 ## Rate limiting
 
 The adapter implements automatic rate limiting to comply with Kraken's API

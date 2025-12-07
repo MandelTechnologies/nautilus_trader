@@ -18,13 +18,12 @@
 use std::str::FromStr;
 
 use anyhow::Context;
-use chrono::DateTime;
 use nautilus_core::{datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos, uuid::UUID4};
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{
-        AggressorSide, BarAggregation, ContingencyType, LiquiditySide, OrderStatus,
-        PositionSideSpecified, TimeInForce, TrailingOffsetType,
+        AggressorSide, BarAggregation, ContingencyType, LiquiditySide, OrderStatus, OrderType,
+        PositionSideSpecified, TimeInForce, TrailingOffsetType, TriggerType,
     },
     identifiers::{AccountId, InstrumentId, Symbol, TradeId, VenueOrderId},
     instruments::{
@@ -40,7 +39,10 @@ use rust_decimal_macros::dec;
 use crate::{
     common::{
         consts::KRAKEN_VENUE,
-        enums::{KrakenFillType, KrakenPositionSide},
+        enums::{
+            KrakenFillType, KrakenInstrumentType, KrakenPositionSide, KrakenSpotTrigger,
+            KrakenTriggerSignal,
+        },
     },
     http::models::{
         AssetPairInfo, FuturesFill, FuturesInstrument, FuturesOpenOrder, FuturesOrderEvent,
@@ -58,16 +60,21 @@ pub fn parse_decimal(value: &str) -> anyhow::Result<Decimal> {
         .map_err(|e| anyhow::anyhow!("Failed to parse decimal '{value}': {e}"))
 }
 
-/// Parse an RFC3339 timestamp string into UnixNanos.
 fn parse_rfc3339_timestamp(value: &str, field: &str) -> anyhow::Result<UnixNanos> {
-    let dt = DateTime::parse_from_rfc3339(value)
-        .with_context(|| format!("Failed to parse {field}='{value}' as RFC3339 timestamp"))?;
+    value
+        .parse::<UnixNanos>()
+        .map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
+}
 
-    let nanos = dt.timestamp_nanos_opt().ok_or_else(|| {
-        anyhow::anyhow!("{field} timestamp overflowed when converting to nanoseconds")
-    })?;
-
-    Ok(UnixNanos::from(nanos as u64))
+/// Normalizes a Kraken currency code by stripping the legacy X/Z prefix.
+///
+/// Kraken uses legacy prefixes for some currencies (e.g., XXBT for Bitcoin, XETH for Ethereum,
+/// ZUSD for USD). This function strips those prefixes for consistent lookups.
+#[inline]
+pub fn normalize_currency_code(code: &str) -> &str {
+    code.strip_prefix("X")
+        .or_else(|| code.strip_prefix("Z"))
+        .unwrap_or(code)
 }
 
 /// Parse an optional decimal string.
@@ -75,6 +82,55 @@ pub fn parse_decimal_opt(value: Option<&str>) -> anyhow::Result<Option<Decimal>>
     match value {
         Some(s) if !s.is_empty() && s != "0" => Ok(Some(parse_decimal(s)?)),
         _ => Ok(None),
+    }
+}
+
+/// Parse Kraken spot trigger to Nautilus TriggerType.
+fn parse_trigger_type(
+    order_type: OrderType,
+    trigger: Option<KrakenSpotTrigger>,
+) -> Option<TriggerType> {
+    let is_conditional = matches!(
+        order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+    );
+
+    if !is_conditional {
+        return None;
+    }
+
+    match trigger {
+        Some(KrakenSpotTrigger::Last) => Some(TriggerType::LastPrice),
+        Some(KrakenSpotTrigger::Index) => Some(TriggerType::IndexPrice),
+        None => Some(TriggerType::Default),
+    }
+}
+
+/// Parse Kraken futures trigger signal to Nautilus TriggerType.
+fn parse_futures_trigger_type(
+    order_type: OrderType,
+    trigger_signal: Option<KrakenTriggerSignal>,
+) -> Option<TriggerType> {
+    let is_conditional = matches!(
+        order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+    );
+
+    if !is_conditional {
+        return None;
+    }
+
+    match trigger_signal {
+        Some(KrakenTriggerSignal::Last) => Some(TriggerType::LastPrice),
+        Some(KrakenTriggerSignal::Mark) => Some(TriggerType::MarkPrice),
+        Some(KrakenTriggerSignal::Index) => Some(TriggerType::IndexPrice),
+        None => Some(TriggerType::Default),
     }
 }
 
@@ -181,7 +237,7 @@ pub fn parse_futures_instrument(
     let base_currency = get_currency(&instrument.base);
     let quote_currency = get_currency(&instrument.quote);
 
-    let is_inverse = instrument.instrument_type.contains("inverse");
+    let is_inverse = instrument.instrument_type == KrakenInstrumentType::FuturesInverse;
     let settlement_currency = if is_inverse {
         base_currency
     } else {
@@ -513,6 +569,8 @@ pub fn parse_order_status_report(
         None
     };
 
+    let trigger_type = parse_trigger_type(order_type, order.trigger);
+
     Ok(OrderStatusReport {
         account_id,
         instrument_id,
@@ -536,24 +594,47 @@ pub fn parse_order_status_report(
         expire_time,
         price,
         trigger_price,
-        trigger_type: None,
+        trigger_type,
         limit_offset: None,
         trailing_offset: None,
         trailing_offset_type: TrailingOffsetType::NoTrailingOffset,
         display_qty: None,
-        avg_px: {
-            let cost = parse_decimal(&order.cost).ok();
-            let vol_exec = parse_decimal(&order.vol_exec).ok();
-            match (cost, vol_exec) {
-                (Some(c), Some(v)) if v > dec!(0) => Some(c / v),
-                _ => None,
-            }
-        },
+        avg_px: compute_avg_px(order),
         post_only: order.oflags.contains("post"),
         reduce_only: false,
         cancel_reason: order.reason.clone(),
         ts_triggered: None,
     })
+}
+
+/// Computes the average price for a Kraken spot order.
+///
+/// Prefers the direct `avg_price` field if available, otherwise calculates from `cost / vol_exec`.
+fn compute_avg_px(order: &SpotOrder) -> Option<Decimal> {
+    if let Some(ref avg) = order.avg_price
+        && let Ok(v) = parse_decimal(avg)
+        && v > dec!(0)
+    {
+        return Some(v);
+    }
+
+    let cost = parse_decimal(&order.cost);
+    let vol_exec = parse_decimal(&order.vol_exec);
+    match (&cost, &vol_exec) {
+        (Ok(c), Ok(v)) if *v > dec!(0) => Some(*c / *v),
+        _ => {
+            if let Ok(v) = &vol_exec
+                && *v > dec!(0)
+            {
+                tracing::warn!(
+                    "Cannot compute avg_px: cost={:?}, vol_exec={:?}",
+                    cost,
+                    vol_exec
+                );
+            }
+            None
+        }
+    }
 }
 
 /// Parses a Kraken spot trade into a Nautilus FillReport.
@@ -655,6 +736,8 @@ pub fn parse_futures_order_status_report(
         .stop_price
         .map(|p| Price::new(p, instrument.price_precision()));
 
+    let trigger_type = parse_futures_trigger_type(order_type, order.trigger_signal);
+
     Ok(OrderStatusReport {
         account_id,
         instrument_id,
@@ -678,7 +761,7 @@ pub fn parse_futures_order_status_report(
         expire_time: None,
         price,
         trigger_price,
-        trigger_type: None,
+        trigger_type,
         limit_offset: None,
         trailing_offset: None,
         trailing_offset_type: TrailingOffsetType::NoTrailingOffset,
@@ -732,6 +815,10 @@ pub fn parse_futures_order_event_status_report(
         .stop_price
         .map(|p| Price::new(p, instrument.price_precision()));
 
+    // FuturesOrderEvent doesn't have trigger_signal, so we pass None
+    // This will default to TriggerType::Default for conditional orders
+    let trigger_type = parse_futures_trigger_type(order_type, None);
+
     Ok(OrderStatusReport {
         account_id,
         instrument_id,
@@ -755,7 +842,7 @@ pub fn parse_futures_order_event_status_report(
         expire_time: None,
         price,
         trigger_price,
-        trigger_type: None,
+        trigger_type,
         limit_offset: None,
         trailing_offset: None,
         trailing_offset_type: TrailingOffsetType::NoTrailingOffset,
@@ -1317,5 +1404,18 @@ mod tests {
         assert!(report.last_qty.as_f64() > 0.0);
         assert!(report.last_px.as_f64() > 0.0);
         assert!(report.commission.as_f64() > 0.0);
+    }
+
+    #[rstest]
+    #[case("XXBT", "XBT")]
+    #[case("XETH", "ETH")]
+    #[case("ZUSD", "USD")]
+    #[case("ZEUR", "EUR")]
+    #[case("BTC", "BTC")]
+    #[case("ETH", "ETH")]
+    #[case("USDT", "USDT")]
+    #[case("SOL", "SOL")]
+    fn test_normalize_currency_code(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(normalize_currency_code(input), expected);
     }
 }

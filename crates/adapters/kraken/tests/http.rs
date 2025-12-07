@@ -1452,16 +1452,15 @@ async fn test_futures_raw_get_order_events() {
     );
 
     let response = result.unwrap();
-    assert_eq!(response.result, KrakenApiResult::Success);
-    assert_eq!(response.elements.len(), 3);
+    assert_eq!(response.order_events.len(), 3);
 
-    let first_event = &response.elements[0];
+    let first_event = &response.order_events[0].order;
     assert_eq!(first_event.order_id, "c8a35168-8d52-4609-944f-3f32bb0d5c77");
     assert_eq!(first_event.symbol, "PI_XBTUSD");
     assert_eq!(first_event.filled, 5000.0);
     assert_eq!(first_event.quantity, 5000.0);
 
-    let third_event = &response.elements[2];
+    let third_event = &response.order_events[2].order;
     assert_eq!(third_event.filled, 0.0);
     assert!(third_event.reduce_only);
 }

@@ -44,10 +44,19 @@ Cargo's build cache is keyed by the exact combination of features, profiles, and
 |-----------------------------|----------------------------------|-----------|-----------------|-------------|----------------|
 | `cargo-test`                | `ffi,python,high-precision,defi` | `nextest` | ✓ (implicit)    | n/a         | Run tests.     |
 | `cargo-clippy` (pre-commit) | `ffi,python,high-precision,defi` | `nextest` | ✓               | n/a         | Lint all code. |
-| `cargo-doc` (pre-commit)    | `ffi,python,high-precision,defi` | `nextest` | n/a             | ✓           | Lint docs.     |
 
-These targets share the same feature set and profile, allowing cargo to reuse compiled artifacts between linting, testing, and doc checking without rebuilds.
+These targets share the same feature set and profile, allowing cargo to reuse compiled artifacts between linting and testing without rebuilds.
 The `nextest` profile is used to align with the workflow of the majority of core maintainers who use cargo-nextest for running tests.
+
+### Documentation builds
+
+Documentation is built separately using `make docs-rust`, which runs:
+
+```bash
+cargo +nightly doc --all-features --no-deps --workspace
+```
+
+This uses the nightly toolchain and `--all-features` rather than the aligned feature set above, so it does not share build artifacts with testing/linting.
 
 ### Separate target (Python extension building)
 
@@ -817,25 +826,51 @@ The definition for what the Rust language designers consider undefined behavior 
 
 To maintain correctness, any use of `unsafe` Rust must follow our policy:
 
-- If a function is `unsafe` to call, there *must* be a `Safety` section in the documentation explaining why the function is `unsafe`.
-and covering the invariants which the function expects the callers to uphold, and how to meet their obligations in that contract.
+- If a function is `unsafe` to call, there *must* be a `Safety` section in the documentation explaining why the function is `unsafe`,
+  covering the invariants which the function expects the callers to uphold, and how to meet their obligations in that contract.
 - Document why each function is `unsafe` in its doc comment's Safety section, and cover all `unsafe` blocks with unit tests.
-- Always include a `SAFETY:` comment explaining why the unsafe operation is valid:
-
-```rust
-// SAFETY: Message bus is not meant to be passed between threads
-#[allow(unsafe_code)]
-
-unsafe impl Send for MessageBus {}
-```
-
+- Always include a `SAFETY:` comment explaining why the unsafe operation is valid.
 - **Crate-level lint** – every crate that exposes FFI symbols enables
   `#![deny(unsafe_op_in_unsafe_fn)]`. Even inside an `unsafe fn`, each pointer dereference or
   other dangerous operation must be wrapped in its own `unsafe { … }` block.
-
 - **CVec contract** – for raw vectors that cross the FFI boundary read the
   [FFI Memory Contract](ffi.md). Foreign code becomes the owner of the allocation and **must**
   call the matching `vec_drop_*` function exactly once.
+
+### Categories of unsafe code
+
+The codebase uses unsafe Rust in these categories:
+
+1. **FFI boundaries** – Raw pointer operations for C interop. See [FFI documentation](ffi.md).
+2. **Interior mutability** – `UnsafeCell` for thread-local registries with controlled access patterns.
+3. **Unsafe Send/Sync** – Types that are not inherently thread-safe but satisfy trait bounds
+   through runtime invariants (e.g., single-threaded access guaranteed by architecture).
+
+### Unsafe Send/Sync requirements
+
+When implementing `Send` or `Sync` unsafely:
+
+1. Document exactly which fields violate the trait requirements.
+2. Explain the runtime mechanism that ensures safety (e.g., single-threaded event loop).
+3. Include a `WARNING` stating that violating the invariant is undefined behavior.
+4. Prefer runtime enforcement (assertions, `Result` returns) over documentation-only guarantees.
+
+```rust
+// SAFETY: Contains Rc<RefCell<...>> which is not thread-safe.
+// Single-threaded access guaranteed by the backtest engine architecture.
+// WARNING: Actually sending across threads is undefined behavior.
+#[allow(unsafe_code)]
+unsafe impl Send for BacktestDataClient {}
+```
+
+### Defense in depth
+
+Where unsafe code relies on invariants, add defense mechanisms:
+
+- **Type verification**: Check types at runtime before casting (e.g., `TypeId` comparison).
+- **Debug assertions**: Catch memory corruption early in debug builds.
+- **RAII guards**: Ensure cleanup on both normal return and panic paths.
+- **Runtime checks**: Fail fast when invariants are violated rather than proceeding unsafely.
 
 ## Tooling configuration
 

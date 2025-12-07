@@ -39,6 +39,7 @@ from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Money
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
@@ -504,6 +505,42 @@ def test_parse_empty_book_snapshot_returns_none():
 
     # Assert
     assert result is None
+
+
+def test_parse_user_trade_to_fill_report_ts_event() -> None:
+    """
+    Test that match_time (in seconds) is correctly converted to ts_event (in
+    nanoseconds).
+
+    Regression test for
+    https://github.com/nautechsystems/nautilus_trader/issues/3273
+
+    """
+    # Arrange
+    data = pkgutil.get_data(
+        "tests.integration_tests.adapters.polymarket.resources.ws_messages",
+        "user_trade2.json",  # trader_side=TAKER
+    )
+    assert data
+
+    decoder = msgspec.json.Decoder(PolymarketUserTrade)
+    msg = decoder.decode(data)
+    instrument = TestInstrumentProvider.binary_option()
+    account_id = AccountId("POLYMARKET-001")
+
+    # Act
+    fill_report = msg.parse_to_fill_report(
+        account_id=account_id,
+        instrument=instrument,
+        client_order_id=None,
+        ts_init=0,
+        filled_user_order_id=msg.taker_order_id,
+    )
+
+    # Assert
+    # match_time "1725958681" is in seconds, should convert to 1725958681000000000 nanoseconds
+    assert msg.match_time == "1725958681"
+    assert fill_report.ts_event == 1725958681000000000  # September 10, 2024
 
 
 def test_parse_empty_book_snapshot_in_backtest_engine():

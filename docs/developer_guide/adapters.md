@@ -347,18 +347,23 @@ The underlying `WebSocketClient` sends a `RECONNECTED` sentinel message when rec
 
 **Communication pattern:**
 
-```
-Client (orchestrator)                Handler (I/O boundary)
-─────────────────────                ──────────────────────
-cmd_tx ──────────────────────────→ cmd_rx
-  ├─ Subscribe { args }                │
-  ├─ PlaceOrder { params }             ├─→ serialize → WebSocket
-  └─ MassCancel { id }                 │
-                                       │
-out_rx ←────────────────────────── out_tx
-         ← NautilusWsMessage           │
-         ← Authenticated               ├─← WebSocket → parse → transform
-         ← OrderAccepted               │
+```mermaid
+flowchart LR
+    subgraph client["Client (orchestrator)"]
+        cmd_tx["cmd_tx<br/>├ Subscribe { args }<br/>├ PlaceOrder { params }<br/>└ MassCancel { id }"]
+        out_rx["out_rx<br/>← NautilusWsMessage<br/>← Authenticated<br/>← OrderAccepted"]
+    end
+
+    subgraph handler["Handler (I/O boundary)"]
+        cmd_rx[cmd_rx]
+        out_tx[out_tx]
+        ws[WebSocket]
+    end
+
+    cmd_tx --> cmd_rx
+    cmd_rx -->|"serialize"| ws
+    ws -->|"parse → transform"| out_tx
+    out_tx --> out_rx
 ```
 
 **Key principles:**

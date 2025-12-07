@@ -45,16 +45,19 @@ token = "ETH"
 if product_type == KrakenProductType.SPOT:
     symbol = f"{token}/USDT"
     order_qty = Decimal("0.001")
-    enable_limit_sells = False  # May not own base token when starting fresh
+    enable_sells = False  # May not own base token when starting fresh
     reduce_only_on_stop = False  # Not supported on spot
+    use_spot_position_reports = True
     environment = KrakenEnvironment.MAINNET
 elif product_type == KrakenProductType.FUTURES:
     # Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
     symbol = f"PI_{token}USD"
     order_qty = Decimal(10)
-    enable_limit_sells = True
+    enable_sells = True
     reduce_only_on_stop = True
-    environment = KrakenEnvironment.TESTNET  # Use demo-futures.kraken.com
+    use_spot_position_reports = False  # Not applicable
+    environment = KrakenEnvironment.MAINNET
+    # environment = KrakenEnvironment.TESTNET  # Use demo-futures.kraken.com
 else:
     raise ValueError(f"Unsupported product type: {product_type}")
 
@@ -66,8 +69,7 @@ config_node = TradingNodeConfig(
     trader_id=TraderId("TESTER-001"),
     logging=LoggingConfig(
         log_level="INFO",
-        log_level_file="DEBUG",
-        log_colors=True,
+        # log_level_file="DEBUG",
         use_pyo3=True,
     ),
     exec_engine=LiveExecEngineConfig(
@@ -102,6 +104,8 @@ config_node = TradingNodeConfig(
             environment=environment,
             product_types=product_types,
             instrument_provider=InstrumentProviderConfig(load_all=True),
+            use_spot_position_reports=use_spot_position_reports,
+            spot_positions_quote_currency="USDT",
         ),
     },
     timeout_connection=30.0,
@@ -124,7 +128,12 @@ strat_config = ExecTesterConfig(
     subscribe_trades=True,
     order_qty=order_qty,
     enable_limit_buys=True,
-    enable_limit_sells=enable_limit_sells,
+    enable_limit_sells=enable_sells,
+    # enable_stop_buys=True,
+    # enable_stop_sells=enable_sells,
+    # tob_offset_ticks=0,
+    # stop_order_type=OrderType.LIMIT_IF_TOUCHED,
+    # stop_trigger_type=TriggerType.LAST_PRICE,
     # open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
     # use_batch_cancel_on_stop=True,

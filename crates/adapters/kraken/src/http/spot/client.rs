@@ -20,7 +20,7 @@ use std::{
     fmt::{Debug, Formatter},
     num::NonZeroU32,
     sync::{
-        Arc, LazyLock,
+        Arc, LazyLock, RwLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -34,11 +34,11 @@ use nautilus_core::{
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
-    enums::{AccountType, CurrencyType, OrderSide, OrderType, TimeInForce},
+    enums::{AccountType, CurrencyType, OrderSide, OrderType, PositionSideSpecified, TimeInForce},
     events::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
-    reports::{FillReport, OrderStatusReport},
+    reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use nautilus_network::{
@@ -58,8 +58,8 @@ use crate::{
         credential::KrakenCredential,
         enums::{KrakenEnvironment, KrakenOrderSide, KrakenOrderType, KrakenProductType},
         parse::{
-            bar_type_to_spot_interval, parse_bar, parse_fill_report, parse_order_status_report,
-            parse_spot_instrument, parse_trade_tick_from_array,
+            bar_type_to_spot_interval, normalize_currency_code, parse_bar, parse_fill_report,
+            parse_order_status_report, parse_spot_instrument, parse_trade_tick_from_array,
         },
         urls::get_kraken_http_base_url,
     },
@@ -777,6 +777,8 @@ pub struct KrakenSpotHttpClient {
     pub(crate) inner: Arc<KrakenSpotRawHttpClient>,
     pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     cache_initialized: Arc<AtomicBool>,
+    use_spot_position_reports: Arc<AtomicBool>,
+    spot_positions_quote_currency: Arc<RwLock<Ustr>>,
 }
 
 impl Clone for KrakenSpotHttpClient {
@@ -785,6 +787,8 @@ impl Clone for KrakenSpotHttpClient {
             inner: self.inner.clone(),
             instruments_cache: self.instruments_cache.clone(),
             cache_initialized: self.cache_initialized.clone(),
+            use_spot_position_reports: self.use_spot_position_reports.clone(),
+            spot_positions_quote_currency: self.spot_positions_quote_currency.clone(),
         }
     }
 }
@@ -836,6 +840,8 @@ impl KrakenSpotHttpClient {
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
+            use_spot_position_reports: Arc::new(AtomicBool::new(false)),
+            spot_positions_quote_currency: Arc::new(RwLock::new(Ustr::from("USDT"))),
         })
     }
 
@@ -866,6 +872,8 @@ impl KrakenSpotHttpClient {
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
+            use_spot_position_reports: Arc::new(AtomicBool::new(false)),
+            spot_positions_quote_currency: Arc::new(RwLock::new(Ustr::from("USDT"))),
         })
     }
 
@@ -950,6 +958,18 @@ impl KrakenSpotHttpClient {
 
     fn generate_ts_init(&self) -> UnixNanos {
         get_atomic_clock_realtime().get_time_ns()
+    }
+
+    /// Sets whether to generate position reports from wallet balances for SPOT instruments.
+    pub fn set_use_spot_position_reports(&self, value: bool) {
+        self.use_spot_position_reports
+            .store(value, Ordering::Relaxed);
+    }
+
+    /// Sets the quote currency filter for spot position reports.
+    pub fn set_spot_positions_quote_currency(&self, currency: &str) {
+        let mut guard = self.spot_positions_quote_currency.write().expect("lock");
+        *guard = Ustr::from(currency);
     }
 
     pub async fn get_websockets_token(&self) -> anyhow::Result<WebSocketToken, KrakenHttpError> {
@@ -1272,6 +1292,7 @@ impl KrakenSpotHttpClient {
         quantity: Quantity,
         time_in_force: TimeInForce,
         price: Option<Price>,
+        trigger_price: Option<Price>,
         reduce_only: bool,
         post_only: bool,
     ) -> anyhow::Result<VenueOrderId> {
@@ -1331,8 +1352,28 @@ impl KrakenSpotHttpClient {
             .volume(quantity.to_string())
             .order_type(kraken_order_type);
 
-        if let Some(price) = price {
-            builder.price(price.to_string());
+        // For stop/conditional orders:
+        // - price = trigger price (when the order activates)
+        // - price2 = limit price (for stop-limit and take-profit-limit)
+        // For regular limit orders:
+        // - price = limit price
+        let is_conditional = matches!(
+            order_type,
+            OrderType::StopMarket
+                | OrderType::StopLimit
+                | OrderType::MarketIfTouched
+                | OrderType::LimitIfTouched
+        );
+
+        if is_conditional {
+            if let Some(trigger) = trigger_price {
+                builder.price(trigger.to_string());
+            }
+            if let Some(limit) = price {
+                builder.price2(limit.to_string());
+            }
+        } else if let Some(limit) = price {
+            builder.price(limit.to_string());
         }
 
         if !oflags.is_empty() {
@@ -1463,6 +1504,141 @@ impl KrakenSpotHttpClient {
             ts_init,
             None,
         ))
+    }
+
+    /// Request position status reports for SPOT instruments.
+    ///
+    /// Returns wallet balances as position reports if `use_spot_position_reports` is enabled.
+    /// Otherwise returns an empty vector (spot traditionally has no "positions").
+    pub async fn request_position_status_reports(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        if self.use_spot_position_reports.load(Ordering::Relaxed) {
+            self.generate_spot_position_reports_from_wallet(account_id, instrument_id)
+                .await
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Generate SPOT position reports from wallet balances.
+    ///
+    /// Kraken spot balances are simple totals (no borrowing concept).
+    /// Positive balances are reported as LONG positions.
+    /// Zero balances are reported as FLAT.
+    async fn generate_spot_position_reports_from_wallet(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        let balances_raw = self.inner.get_balance().await?;
+        let ts_init = self.generate_ts_init();
+        let mut wallet_by_coin: HashMap<Ustr, f64> = HashMap::new();
+
+        for (currency_code, amount_str) in balances_raw.iter() {
+            let balance = match amount_str.parse::<f64>() {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+
+            if balance == 0.0 {
+                continue;
+            }
+
+            wallet_by_coin.insert(Ustr::from(normalize_currency_code(currency_code)), balance);
+        }
+
+        let mut reports = Vec::new();
+
+        if let Some(instrument_id) = instrument_id {
+            if let Some(instrument) = self.get_cached_instrument(&instrument_id.symbol.inner()) {
+                let base_currency = match instrument.base_currency() {
+                    Some(currency) => currency,
+                    None => return Ok(reports),
+                };
+
+                let coin = Ustr::from(normalize_currency_code(base_currency.code.as_str()));
+                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(0.0);
+
+                let side = if wallet_balance > 0.0 {
+                    PositionSideSpecified::Long
+                } else {
+                    PositionSideSpecified::Flat
+                };
+
+                let abs_balance = wallet_balance.abs();
+                let quantity = Quantity::new(abs_balance, instrument.size_precision());
+
+                let report = PositionStatusReport::new(
+                    account_id,
+                    instrument_id,
+                    side,
+                    quantity,
+                    ts_init,
+                    ts_init,
+                    None,
+                    None,
+                    None,
+                );
+
+                reports.push(report);
+            }
+        } else {
+            let quote_filter = *self.spot_positions_quote_currency.read().expect("lock");
+
+            for entry in self.instruments_cache.iter() {
+                let instrument = entry.value();
+
+                let quote_currency = match instrument.quote_currency() {
+                    currency if currency.code == quote_filter => currency,
+                    _ => continue,
+                };
+
+                let base_currency = match instrument.base_currency() {
+                    Some(currency) => currency,
+                    None => continue,
+                };
+
+                let coin = Ustr::from(normalize_currency_code(base_currency.code.as_str()));
+                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(0.0);
+
+                if wallet_balance == 0.0 {
+                    continue;
+                }
+
+                let side = PositionSideSpecified::Long;
+                let quantity = Quantity::new(wallet_balance, instrument.size_precision());
+
+                if quantity.is_zero() {
+                    continue;
+                }
+
+                tracing::debug!(
+                    "Spot position: {} {} (quote: {})",
+                    quantity,
+                    base_currency.code,
+                    quote_currency.code
+                );
+
+                let report = PositionStatusReport::new(
+                    account_id,
+                    instrument.id(),
+                    side,
+                    quantity,
+                    ts_init,
+                    ts_init,
+                    None,
+                    None,
+                    None,
+                );
+
+                reports.push(report);
+            }
+        }
+
+        Ok(reports)
     }
 }
 

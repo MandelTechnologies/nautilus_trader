@@ -349,7 +349,7 @@ class TestEventStubs:
             order_side=order_side,
             order_type=order.order_type,
             last_qty=last_qty,
-            last_px=last_px or order.price,
+            last_px=last_px or (order.price if order.has_price else None),
             currency=instrument.quote_currency,
             commission=commission,
             liquidity_side=liquidity_side,

@@ -64,7 +64,7 @@ pub const DYDX_WS_URL: &str = "wss://indexer.dydx.trade/v4/ws";
 /// for DEX environments where individual nodes can fail or become unavailable.
 ///
 /// Endpoints sourced from:
-/// - https://docs.dydx.xyz/interaction/endpoints#node
+/// - <https://docs.dydx.xyz/interaction/endpoints#node>
 ///
 /// # Notes
 ///
@@ -96,7 +96,7 @@ pub const DYDX_TESTNET_WS_URL: &str = "wss://indexer.v4testnet.dydx.exchange/v4/
 /// to nodes in order, falling back to the next if connection fails.
 ///
 /// Endpoints sourced from:
-/// - https://docs.dydx.xyz/interaction/endpoints#node
+/// - <https://docs.dydx.xyz/interaction/endpoints#node>
 ///
 /// # Notes
 ///

@@ -334,7 +334,7 @@ where
     }
 
     fn handle(&self, _message: &dyn Any) {
-        let throttler = get_actor_unchecked::<Throttler<T, F>>(&self.actor_id);
+        let mut throttler = get_actor_unchecked::<Throttler<T, F>>(&self.actor_id);
         while let Some(msg) = throttler.buffer.pop_back() {
             throttler.send_msg(msg);
 
@@ -369,7 +369,7 @@ where
     F: Fn(T) + 'static,
 {
     TimeEventCallback::from(move |_event: TimeEvent| {
-        let throttler = get_actor_unchecked::<Throttler<T, F>>(&actor_id);
+        let mut throttler = get_actor_unchecked::<Throttler<T, F>>(&actor_id);
         throttler.is_limiting = false;
     })
 }
@@ -801,16 +801,12 @@ mod tests {
     }
 
     #[rstest]
-    #[allow(unsafe_code)]
     fn prop_test() {
-        let test_throttler = test_throttler_buffered();
-
-        proptest!(move |(inputs in throttler_test_strategy())| {
-            test_throttler_with_inputs(inputs, test_throttler.clone());
-            // Reset throttler state between runs
-            let throttler = unsafe { &mut *test_throttler.throttler.get() };
-            throttler.reset();
-            throttler.clock.borrow_mut().reset();
+        // Create a fresh throttler for each iteration to ensure clean state,
+        // even when tests panic (which would skip the reset code)
+        proptest!(|(inputs in throttler_test_strategy())| {
+            let test_throttler = test_throttler_buffered();
+            test_throttler_with_inputs(inputs, test_throttler);
         });
     }
 

@@ -21,6 +21,7 @@ use nautilus_blockchain::{
     exchanges::{find_dex_type_case_insensitive, get_supported_dexes_for_chain},
     rpc::providers::check_infura_rpc_provider,
 };
+use nautilus_core::string::mask_api_key;
 use nautilus_infrastructure::sql::pg::get_postgres_connect_options;
 use nautilus_model::defi::chain::Chain;
 
@@ -59,12 +60,26 @@ pub async fn run_sync_dex(
         .or_else(|| std::env::var("RPC_HTTP_URL").ok())
         .unwrap_or_else(|| {
             panic!(
-                "No RPC URL provided for {}. Set --rpc-url, INFURA_API_KEY, or RPC_HTTP_URL",
-                chain.name
+                "No RPC URL provided for {name}. Set --rpc-url, INFURA_API_KEY, or RPC_HTTP_URL",
+                name = chain.name
             )
         });
 
-    log::info!("Using RPC HTTP URL: '{rpc_http_url}'");
+    // Mask potential API key in URL for logging (key is typically the last path segment)
+    let masked_url = if let Some(idx) = rpc_http_url.rfind('/') {
+        let (base, key) = rpc_http_url.split_at(idx + 1);
+        if key.is_empty() {
+            rpc_http_url.clone()
+        } else {
+            let masked_key = mask_api_key(key);
+            format!("{base}{masked_key}")
+        }
+    } else {
+        // URL without path separator - mask entirely as it may contain credentials
+        mask_api_key(&rpc_http_url)
+    };
+
+    log::info!("Using RPC HTTP URL: '{masked_url}'");
 
     let config = BlockchainDataClientConfig::new(
         Arc::new(chain.to_owned()),

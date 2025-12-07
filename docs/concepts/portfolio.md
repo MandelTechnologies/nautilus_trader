@@ -68,15 +68,13 @@ See the `PortfolioAnalyzer` [API Reference](../api_reference/analysis.md#class-p
 
 :::tip
 Ensure your statistic is robust to degenerate inputs such as ``None``, empty series, or insufficient data.
-
-The expectation is that you would then return ``None``, NaN or a reasonable default.
+Return ``None`` for unknown/incalculable values, or a reasonable default like ``0.0`` when semantically appropriate (e.g., win rate with no trades).
 :::
 
 ## Backtest analysis
 
 Following a backtest run, a performance analysis will be carried out by passing realized PnLs, returns, positions and orders data to each registered
-statistic in turn, calculating their values (with a default configuration). Any output is then displayed in the tear sheet
-under the `Portfolio Performance` heading, grouped as.
+statistic in turn. Any output is then displayed in the tear sheet under the `Portfolio Performance` heading, grouped as:
 
 - Realized PnL statistics (per currency)
 - Returns statistics (for the entire portfolio)

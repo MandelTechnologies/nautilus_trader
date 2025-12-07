@@ -272,7 +272,7 @@ impl KrakenSpotHttpClient {
     }
 
     #[pyo3(name = "submit_order")]
-    #[pyo3(signature = (account_id, instrument_id, client_order_id, order_side, order_type, quantity, time_in_force, price=None, reduce_only=false, post_only=false))]
+    #[pyo3(signature = (account_id, instrument_id, client_order_id, order_side, order_type, quantity, time_in_force, price=None, trigger_price=None, reduce_only=false, post_only=false))]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_order<'py>(
         &self,
@@ -285,6 +285,7 @@ impl KrakenSpotHttpClient {
         quantity: Quantity,
         time_in_force: TimeInForce,
         price: Option<Price>,
+        trigger_price: Option<Price>,
         reduce_only: bool,
         post_only: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -301,6 +302,7 @@ impl KrakenSpotHttpClient {
                     quantity,
                     time_in_force,
                     price,
+                    trigger_price,
                     reduce_only,
                     post_only,
                 )
@@ -363,6 +365,43 @@ impl KrakenSpotHttpClient {
                 .map_err(to_pyruntime_err)?;
 
             Python::attach(|py| account_state.into_pyobject(py).map(|o| o.unbind()))
+        })
+    }
+
+    #[pyo3(name = "set_use_spot_position_reports")]
+    fn py_set_use_spot_position_reports(&self, value: bool) {
+        self.set_use_spot_position_reports(value);
+    }
+
+    #[pyo3(name = "set_spot_positions_quote_currency")]
+    fn py_set_spot_positions_quote_currency(&self, currency: &str) {
+        self.set_spot_positions_quote_currency(currency);
+    }
+
+    #[pyo3(name = "request_position_status_reports")]
+    #[pyo3(signature = (account_id, instrument_id=None))]
+    fn py_request_position_status_reports<'py>(
+        &self,
+        py: Python<'py>,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let reports = client
+                .request_position_status_reports(account_id, instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+
+            Python::attach(|py| {
+                let py_reports: PyResult<Vec<_>> = reports
+                    .into_iter()
+                    .map(|report| report.into_py_any(py))
+                    .collect();
+                let pylist = PyList::new(py, py_reports?).unwrap().into_any().unbind();
+                Ok(pylist)
+            })
         })
     }
 }

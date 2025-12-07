@@ -44,6 +44,7 @@ use super::messages::{
     FuturesWsMessage, KrakenFuturesBookDelta, KrakenFuturesBookSnapshot, KrakenFuturesTickerData,
     KrakenFuturesTradeData, KrakenFuturesTradeSnapshot,
 };
+use crate::common::enums::KrakenOrderSide;
 
 /// Commands sent from the outer client to the inner message handler.
 #[derive(Debug)]
@@ -360,10 +361,9 @@ impl FuturesFeedHandler {
 
         let ts_event = UnixNanos::from((trade.time as u64) * 1_000_000);
 
-        let aggressor_side = match trade.side.as_str() {
-            "buy" => AggressorSide::Buyer,
-            "sell" => AggressorSide::Seller,
-            _ => AggressorSide::NoAggressor,
+        let aggressor_side = match trade.side {
+            KrakenOrderSide::Buy => AggressorSide::Buyer,
+            KrakenOrderSide::Sell => AggressorSide::Seller,
         };
 
         let trade_id = trade.uid.unwrap_or_else(|| trade.seq.to_string());
@@ -416,10 +416,9 @@ impl FuturesFeedHandler {
         for trade in snapshot.trades {
             let ts_event = UnixNanos::from((trade.time as u64) * 1_000_000);
 
-            let aggressor_side = match trade.side.as_str() {
-                "buy" => AggressorSide::Buyer,
-                "sell" => AggressorSide::Seller,
-                _ => AggressorSide::NoAggressor,
+            let aggressor_side = match trade.side {
+                KrakenOrderSide::Buy => AggressorSide::Buyer,
+                KrakenOrderSide::Sell => AggressorSide::Seller,
             };
 
             let trade_id = trade.uid.unwrap_or_else(|| trade.seq.to_string());
@@ -592,11 +591,7 @@ impl FuturesFeedHandler {
         let price_precision = instrument.price_precision();
         let size_precision = instrument.size_precision();
 
-        let side = match delta.side.as_str() {
-            "buy" => OrderSide::Buy,
-            "sell" => OrderSide::Sell,
-            _ => return,
-        };
+        let side: OrderSide = delta.side.into();
 
         // Emit quote update if subscribed (QuoteCache handles partial updates)
         // Note: This assumes the delta represents top-of-book, which is an approximation.

@@ -16,12 +16,12 @@
 //! WebSocket message parsers for converting Kraken streaming data to Nautilus domain models.
 
 use anyhow::Context;
-use chrono::DateTime;
 use nautilus_core::{UUID4, nanos::UnixNanos};
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, QuoteTick, TradeTick},
     enums::{
         AggressorSide, BookAction, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce,
+        TriggerType,
     },
     identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
     instruments::{Instrument, any::InstrumentAny},
@@ -227,13 +227,9 @@ fn parse_book_level(
 }
 
 fn parse_rfc3339_timestamp(value: &str, field: &str) -> anyhow::Result<UnixNanos> {
-    let dt = DateTime::parse_from_rfc3339(value)
-        .with_context(|| format!("Failed to parse {field}='{value}' as RFC3339 timestamp"))?;
-
-    Ok(UnixNanos::from(
-        dt.timestamp_nanos_opt()
-            .with_context(|| format!("Timestamp out of range for {field}"))? as u64,
-    ))
+    value
+        .parse::<UnixNanos>()
+        .map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
 }
 
 /// Parses Kraken execution type and order status to Nautilus order status.
@@ -256,6 +252,7 @@ fn parse_order_status(
         Some(KrakenWsOrderStatus::Filled) => OrderStatus::Filled,
         Some(KrakenWsOrderStatus::Canceled) => OrderStatus::Canceled,
         Some(KrakenWsOrderStatus::Expired) => OrderStatus::Expired,
+        Some(KrakenWsOrderStatus::Triggered) => OrderStatus::Triggered,
         None => OrderStatus::Accepted,
     }
 }
@@ -395,14 +392,15 @@ pub fn parse_ws_order_status_report(
         report = report.with_price(price);
     }
 
-    // avg_px fallback: avg_price -> cum_cost / cum_qty
-    let avg_px =
-        exec.avg_price
-            .filter(|&p| p > 0.0)
-            .or_else(|| match (exec.cum_cost, exec.cum_qty) {
-                (Some(cost), Some(qty)) if qty > 0.0 => Some(cost / qty),
-                _ => None,
-            });
+    // avg_px fallback: avg_price -> cum_cost / cum_qty -> last_price (for single trades/snapshots)
+    let avg_px = exec
+        .avg_price
+        .filter(|&p| p > 0.0)
+        .or_else(|| match (exec.cum_cost, exec.cum_qty) {
+            (Some(cost), Some(qty)) if qty > 0.0 => Some(cost / qty),
+            _ => None,
+        })
+        .or_else(|| exec.last_price.filter(|&p| p > 0.0));
 
     if let Some(avg_price) = avg_px {
         report = report.with_avg_px(avg_price)?;
@@ -420,6 +418,18 @@ pub fn parse_ws_order_status_report(
         && !reason.is_empty()
     {
         report = report.with_cancel_reason(reason.clone());
+    }
+
+    // Set trigger type for conditional orders (WebSocket doesn't provide trigger field)
+    let is_conditional = matches!(
+        order_type,
+        OrderType::StopMarket
+            | OrderType::StopLimit
+            | OrderType::MarketIfTouched
+            | OrderType::LimitIfTouched
+    );
+    if is_conditional {
+        report = report.with_trigger_type(TriggerType::Default);
     }
 
     Ok(report)

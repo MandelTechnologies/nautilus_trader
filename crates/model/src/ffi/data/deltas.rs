@@ -86,10 +86,25 @@ pub extern "C" fn orderbook_deltas_ts_init(deltas: &OrderBookDeltas_API) -> Unix
     deltas.ts_init
 }
 
+/// Drops a `CVec` of `OrderBookDelta` values.
+///
+/// # Panics
+///
+/// Panics if `CVec` invariants are violated (corrupted metadata).
 #[allow(clippy::drop_non_drop)]
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_deltas_vec_drop(v: CVec) {
     let CVec { ptr, len, cap } = v;
+
+    assert!(
+        len <= cap,
+        "orderbook_deltas_vec_drop: len ({len}) > cap ({cap})"
+    );
+    assert!(
+        len == 0 || !ptr.is_null(),
+        "orderbook_deltas_vec_drop: null ptr with non-zero len ({len})"
+    );
+
     let deltas: Vec<OrderBookDelta> =
         unsafe { Vec::from_raw_parts(ptr.cast::<OrderBookDelta>(), len, cap) };
     drop(deltas); // Memory freed here

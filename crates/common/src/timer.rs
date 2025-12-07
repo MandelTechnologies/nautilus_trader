@@ -156,6 +156,15 @@ impl Debug for TimeEventCallback {
 }
 
 impl TimeEventCallback {
+    /// Returns `true` if this is a Rust callback.
+    ///
+    /// Rust callbacks use `Rc` internally and are NOT thread-safe.
+    /// They must only be used with `TestClock`, never with `LiveClock`.
+    #[must_use]
+    pub const fn is_rust(&self) -> bool {
+        matches!(self, Self::Rust(_))
+    }
+
     /// Invokes the callback for the given `TimeEvent`.
     ///
     /// # Panics
@@ -196,13 +205,15 @@ impl From<Py<PyAny>> for TimeEventCallback {
     }
 }
 
-// TimeEventCallback supports both single-threaded and async use cases:
-// - Python variant uses Py<PyAny> for cross-thread compatibility with Python's GIL.
-// - Rust variant uses Rc<dyn Fn(TimeEvent)> for efficient single-threaded callbacks.
+// SAFETY: TimeEventCallback implements Send + Sync with the following invariants:
+// - Python variant: Uses Py<PyAny> which is inherently Send + Sync (GIL acquired when needed)
+// - Rust variant: Uses Rc<dyn Fn> which is NOT Send/Sync. This is only safe because:
+//   * Rust callbacks are ONLY used with TestClock (single-threaded backtesting)
+//   * LiveClock/LiveTimer MUST NOT use Rust callbacks - they will panic at runtime
+//   * Python callbacks are used for all live/async timer contexts
 //
-// SAFETY: The async timer tasks only use Python callbacks, and Rust callbacks are never
-// sent across thread boundaries in practice. This unsafe implementation allows the enum
-// to be moved into async tasks while maintaining the efficient Rc for single-threaded use.
+// WARNING: Using TimeEventCallback::Rust with LiveClock is undefined behavior.
+// The runtime check in LiveTimer enforces this invariant.
 #[allow(unsafe_code)]
 unsafe impl Send for TimeEventCallback {}
 #[allow(unsafe_code)]

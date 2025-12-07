@@ -34,3 +34,6 @@ datas = "datas" # Intentional plural variable naming for vectors
 
 # NumPy/scientific computing functions
 arange = "arange" # NumPy array range function (not a typo of "arrange")
+
+# Rust crate names
+flate = "flate" # Part of flate2 crate name (deflate compression)

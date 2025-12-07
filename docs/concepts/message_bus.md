@@ -414,40 +414,16 @@ The message bus within a `TradingNode` (node) is referred to as the "internal me
 A producer node is one which publishes messages onto an external stream (see [external publishing](#external-publishing)).
 The consumer node listens to external streams to receive and publish deserialized message payloads on its internal message bus.
 
-```
-                  ┌───────────────────────────┐
-                  │                           │
-                  │                           │
-                  │                           │
-                  │      Producer Node        │
-                  │                           │
-                  │                           │
-                  │                           │
-                  │                           │
-                  │                           │
-                  │                           │
-                  └─────────────┬─────────────┘
-                                │
-                                │
-┌───────────────────────────────▼──────────────────────────────┐
-│                                                              │
-│                            Stream                            │
-│                                                              │
-└─────────────┬────────────────────────────────────┬───────────┘
-              │                                    │
-              │                                    │
-┌─────────────▼───────────┐          ┌─────────────▼───────────┐
-│                         │          │                         │
-│                         │          │                         │
-│     Consumer Node 1     │          │     Consumer Node 2     │
-│                         │          │                         │
-│                         │          │                         │
-│                         │          │                         │
-│                         │          │                         │
-│                         │          │                         │
-│                         │          │                         │
-│                         │          │                         │
-└─────────────────────────┘          └─────────────────────────┘
+```mermaid
+flowchart TB
+    producer[Producer Node]
+    stream[Stream]
+    consumer1[Consumer Node 1]
+    consumer2[Consumer Node 2]
+
+    producer --> stream
+    stream --> consumer1
+    stream --> consumer2
 ```
 
 :::tip

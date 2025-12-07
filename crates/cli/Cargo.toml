@@ -29,6 +29,7 @@ defi = [
 ]
 
 [dependencies]
+nautilus-core = { workspace = true }
 nautilus-infrastructure = { workspace = true, features = ["postgres"] }
 nautilus-model = { workspace = true }
 nautilus-blockchain = { workspace = true, features = [

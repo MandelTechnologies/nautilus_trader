@@ -31,6 +31,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Bybit HTTP request_tickers support (#3241), thanks @TaiShanQ
 - Added Polymarket Gamma API support for instrument loading (#3141), thanks @DeirhX
 - Added OKX historical trades requests
+- Added Tardis `book_snapshot_output` config option for tardis machine replays (default `deltas` to retain current behavior)
 - Added `allow_overfills` config option to `ExecEngineConfig` (default `False`) to handle order fills exceeding order quantity with warning instead of raising
 - Added `overfill_qty` field to orders for tracking fill quantities exceeding original order quantity
 - Introduced `PositionAdjusted` events for tracking quantity/PnL changes outside normal order fills (base currency commissions, funding payments, manual adjustments)
@@ -54,7 +55,12 @@ This release adds support for Python 3.14 with the following limitations:
   ```
 
 ### Security
-TBD
+- Added `osv-scanner` for Python dependency vulnerability scanning in pre-commit
+- Added `cargo-vet` for Rust supply chain security auditing
+- Hardened unsafe code with runtime checks and `#![deny(unsafe_op_in_unsafe_fn)]` lint
+- Hardened CI workflows by pinning Docker images to SHA digests
+- Improved actor/component registry safety with `ActorRef` guards and runtime borrow tracking
+- Fixed code scanning security alerts
 
 ### Fixes
 - Fixed cache dropped same-timestamp market data on insert
@@ -80,6 +86,7 @@ TBD
 - Fixed Betfair duplicate fills on startup/reconnect
 - Fixed Binance instrument info dict JSON serialization (#3128), thanks for reporting @woung717
 - Fixed Binance ADL orders with TRADE execution type
+- Fixed Bybit historical bars requests partial (unclosed) bar filtering
 - Fixed `BybitHttpClient` type stub pyi signatures (#3238), thanks @sunlei
 - Fixed Databento MBO data decoding when `PRICE_UNDEF` appears with non-zero precision
 - Fixed Databento Arrow serialization for `PRICE_UNDEF` (#3183), thanks for reporting @marloncalvo
@@ -98,6 +105,7 @@ TBD
 - Fixed Polymarket maker fills parsing for cross-asset matching and multiple concurrent fills (#3172), thanks @petioptrv
 - Fixed Polymarket account balance update timing issue (#3161), thanks for reporting @santivazq
 - Fixed Polymarket handling of overfilled FOK orders using `allow_overfills` execution engine config option (#3221), thanks for reporting @Javdu10
+- Fixed Polymarket `match_time` timestamp parsing (#3273), thanks for reporting @santivazq
 
 ### Internal Improvements
 - Added BitMEX submit broadcaster
@@ -114,6 +122,7 @@ TBD
 - Added dYdX v4 gRPC order execution (#3222), thanks @nicolad
 - Added dYdX v4 order execution via gRPC with Python bindings (#3245), thanks @nicolad
 - Added dYdX v4 conditional orders (#3259), thanks @nicolad
+- Added dYdX v4 Python adapter layer (#3275), thanks @nicolad
 - Added Kraken Futures demo support (#3262), thanks @nicolad
 - Added check for empty data in _handle_table_nautilus (#3248), thanks @faysou
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
@@ -128,6 +137,7 @@ TBD
 - Refactored execution engine reconciliation (#3185), thanks @faysou
 - Refactored Polymarket instrument provider to use async HttpClient
 - Refactored Interactive Brokers `HistoricInteractiveBrokersClient` (#3261), thanks @faysou
+- Refactored IB Historical client (#3276), thanks @faysou
 - Improved trade execution matching with transient bid/ask override for `trade_execution=True` mode, ensuring limit orders fill correctly when trades occur at the limit price
 - Improved `None` handling in equality and comparison methods
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
@@ -142,6 +152,7 @@ TBD
 - Improved dYdX v4 gRPC execution with edge cases and batch cancel (#3239), thanks @nicolad
 - Improved dYdX v4 data/exec testers and fix GTT (#3254), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
+- Improved Tardis adapter robustness and error handling
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
 - Standardized dYdX client integration tests (#3193), thanks @nicolad
 - Standardized dYdX per adapter guide conventions (#3267), thanks @nicolad
@@ -181,7 +192,13 @@ TBD
 
 ### Documentation Updates
 - Added Polymarket historical data loading docs
+- Added visualization docs for `bars_with_fills` tearsheet feature
+- Added order state flow diagram with lifecycle documentation
+- Improved concept docs with Mermaid diagrams replacing ASCII diagrams
+- Improved execution concept guide with overfills explanation
+- Improved backtesting concept guide to clarify bar execution behavior
 - Improved documentation for uv-installed Python environments, thanks to @faysou for investigating and reporting
+- Documented fee rate sign convention in instruments concept guide
 
 ### Deprecations
 None

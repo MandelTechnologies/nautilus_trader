@@ -475,17 +475,16 @@ of the Nautilus core, currently in development.
 
 The following diagram illustrates how raw data is transformed into Nautilus data structures:
 
-```
-  ┌──────────┐    ┌──────────────────────┐                  ┌──────────────────────┐
-  │          │    │                      │                  │                      │
-  │          │    │                      │                  │                      │
-  │ Raw data │    │                      │  `pd.DataFrame`  │                      │
-  │ (CSV)    ├───►│      DataLoader      ├─────────────────►│     DataWrangler     ├───► Nautilus `list[Data]`
-  │          │    │                      │                  │                      │
-  │          │    │                      │                  │                      │
-  │          │    │                      │                  │                      │
-  └──────────┘    └──────────────────────┘                  └──────────────────────┘
+```mermaid
+flowchart LR
+    raw["Raw data (CSV)"]
+    loader[DataLoader]
+    wrangler[DataWrangler]
+    output["Nautilus list[Data]"]
 
+    raw --> loader
+    loader -->|"pd.DataFrame"| wrangler
+    wrangler --> output
 ```
 
 Concretely, this would involve:

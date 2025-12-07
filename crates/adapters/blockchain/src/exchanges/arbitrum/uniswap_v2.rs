@@ -23,7 +23,7 @@ use nautilus_model::defi::{
 use crate::exchanges::{extended::DexExtended, parsing::uniswap_v2};
 
 /// Uniswap V2 DEX on Arbitrum.
-/// Factory: https://arbiscan.io/address/0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9
+/// Factory: <https://arbiscan.io/address/0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9>
 pub static UNISWAP_V2: LazyLock<DexExtended> = LazyLock::new(|| {
     let dex = Dex::new(
         chains::ARBITRUM.clone(),

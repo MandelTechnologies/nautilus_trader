@@ -21,6 +21,8 @@ use nautilus_model::data::{
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
+use crate::common::enums::KrakenOrderSide;
+
 /// Output message types from the Futures WebSocket handler.
 #[derive(Clone, Debug)]
 pub enum FuturesWsMessage {
@@ -162,7 +164,7 @@ pub struct KrakenFuturesTradeData {
     pub product_id: Ustr,
     #[serde(default)]
     pub uid: Option<String>,
-    pub side: Ustr,
+    pub side: KrakenOrderSide,
     #[serde(rename = "type", default)]
     pub trade_type: Option<String>,
     pub seq: i64,
@@ -197,7 +199,7 @@ pub struct KrakenFuturesBookSnapshot {
 pub struct KrakenFuturesBookDelta {
     pub feed: KrakenFuturesFeed,
     pub product_id: Ustr,
-    pub side: Ustr,
+    pub side: KrakenOrderSide,
     pub seq: i64,
     pub price: f64,
     pub qty: f64,

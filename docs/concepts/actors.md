@@ -79,7 +79,7 @@ Here's how different data operations map to their handlers:
 | `subscribe_instruments()`       | Real‑time        | `on_instrument()`        | Live instrument definition updates (for venue). |
 | `subscribe_order_book_deltas()` | Real‑time        | `on_order_book_deltas()` | Live order book deltas. |
 | `subscribe_order_book_depth()`  | Real‑time        | `on_order_book_depth()`  | Live order book depth snapshots. |
-| `subscribe_order_book_at_interval()` | Real‑time   | `on_order_book()`        | Order book snapshots at intervals. |
+| `subscribe_order_book_at_interval()` | Real‑time   | `on_order_book()`        | Live order book snapshots at intervals. |
 | `subscribe_quote_ticks()`       | Real‑time        | `on_quote_tick()`        | Live quote updates. |
 | `subscribe_trade_ticks()`       | Real‑time        | `on_trade_tick()`        | Live trade updates. |
 | `subscribe_mark_prices()`       | Real‑time        | `on_mark_price()`        | Live mark price updates. |
@@ -90,10 +90,10 @@ Here's how different data operations map to their handlers:
 | `subscribe_instrument_close()`  | Real‑time        | `on_instrument_close()`  | Live instrument close updates. |
 | `subscribe_order_fills()`       | Real‑time        | `on_order_filled()`      | Live order fill events for an instrument. |
 | `request_data()`                | Historical       | `on_historical_data()`   | Historical data processing. |
-| `request_order_book_snapshot()` | Historical       | `on_historical_data()`   | Order book snapshot request. |
+| `request_order_book_snapshot()` | Historical       | `on_historical_data()`   | Historical order book snapshot. |
 | `request_order_book_depth()`    | Historical       | `on_historical_data()`   | Historical order book depth. |
-| `request_instrument()`          | Historical       | `on_instrument()`        | Instrument definition updates. |
-| `request_instruments()`         | Historical       | `on_instrument()`        | Instrument definition updates. |
+| `request_instrument()`          | Historical       | `on_instrument()`        | Instrument definition. |
+| `request_instruments()`         | Historical       | `on_instrument()`        | Instrument definitions. |
 | `request_quote_ticks()`         | Historical       | `on_historical_data()`   | Historical quotes processing. |
 | `request_trade_ticks()`         | Historical       | `on_historical_data()`   | Historical trades processing. |
 | `request_bars()`                | Historical       | `on_historical_data()`   | Historical bars processing. |
@@ -126,11 +126,11 @@ class MyActor(Actor):
         self.request_bars(
             bar_type=self.bar_type,
             # Many optional parameters
-            start=None,                # datetime, optional
-            end=None,                  # datetime, optional
-            callback=None,             # called with the request ID when completed
-            update_catalog_mode=None,  # UpdateCatalogMode | None, default None
-            params=None,               # dict[str, Any], optional
+            start=None,                # pd.Timestamp | None
+            end=None,                  # pd.Timestamp | None
+            callback=None,             # Callable[[UUID4], None] | None
+            update_catalog_mode=None,  # UpdateCatalogMode | None
+            params=None,               # dict[str, Any] | None
         )
 
         # Subscribe to real-time data - will be processed by on_bar() handler

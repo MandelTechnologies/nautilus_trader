@@ -134,6 +134,15 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
         The timeout in seconds for HTTP requests.
     ws_heartbeat_secs : PositiveInt, default 30
         The WebSocket heartbeat interval in seconds.
+    use_spot_position_reports : bool, default False
+        If True, wallet balances for SPOT instruments will be reported as positions:
+        - Positive balances are reported as LONG positions.
+        - Zero balances (after rounding to instrument precision) are reported as FLAT.
+        WARNING: This may lead to unintended liquidation of wallet assets if strategies
+        are not designed to handle spot positions appropriately.
+    spot_positions_quote_currency : str, default "USDT"
+        The quote currency to use when generating spot position reports.
+        Only instruments with this quote currency will have positions reported.
 
     """
 
@@ -152,3 +161,5 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
     retry_delay_max_ms: PositiveInt | None = None
     http_timeout_secs: PositiveInt | None = None
     ws_heartbeat_secs: PositiveInt = 30
+    use_spot_position_reports: bool = False
+    spot_positions_quote_currency: str = "USDT"
