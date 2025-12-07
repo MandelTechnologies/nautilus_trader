@@ -22,7 +22,7 @@ jobs:
 
       - name: Set image name (lowercase)
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/trading-engine" >> "$GITHUB_OUTPUT"
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/trading-node" >> "$GITHUB_OUTPUT"
 
       - name: Free disk space
         # https://github.com/jlumbroso/free-disk-space
