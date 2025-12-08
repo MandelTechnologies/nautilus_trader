@@ -380,7 +380,7 @@ impl BybitKlineInterval {
 
     /// Returns the fixed duration of this interval in milliseconds.
     ///
-    /// Note: For monthly bars, use [`bar_end_time_ms`] instead as months have
+    /// Note: For monthly bars, use [`Self::bar_end_time_ms`] instead as months have
     /// variable lengths (28-31 days).
     #[must_use]
     pub const fn duration_ms(&self) -> i64 {

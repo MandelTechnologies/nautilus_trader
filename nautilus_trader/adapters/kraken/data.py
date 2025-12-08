@@ -265,17 +265,6 @@ class KrakenDataClient(LiveMarketDataClient):
         )
         self._ws_client_async_futures.clear()
 
-    def _determine_ws_url(self, config: KrakenDataClientConfig) -> str:
-        if config.base_url_ws:
-            return config.base_url_ws
-
-        # Derive WebSocket URL from environment and product type
-        environment = config.environment or KrakenEnvironment.MAINNET
-        product_types = config.product_types or (KrakenProductType.SPOT,)
-        primary_product_type = product_types[0]
-
-        return nautilus_pyo3.get_kraken_ws_public_url(primary_product_type, environment)
-
     def _cache_instruments(self) -> None:
         # Ensures instrument definitions are available for correct
         # price and size precisions when parsing responses

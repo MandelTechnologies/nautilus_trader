@@ -37,7 +37,7 @@ def get_cached_kraken_spot_http_client(
     api_key: str | None = None,
     api_secret: str | None = None,
     base_url: str | None = None,
-    testnet: bool = False,
+    demo: bool = False,
     timeout_secs: int | None = None,
     max_retries: int | None = None,
     retry_delay_ms: int | None = None,
@@ -48,8 +48,9 @@ def get_cached_kraken_spot_http_client(
     Cache and return a Kraken Spot HTTP client.
 
     If ``api_key`` and ``api_secret`` are ``None``, then they will be sourced from the
-    environment variables ``KRAKEN_API_KEY`` and ``KRAKEN_API_SECRET`` (or
-    ``KRAKEN_TESTNET_API_KEY`` and ``KRAKEN_TESTNET_API_SECRET`` if testnet is True).
+    environment variables ``KRAKEN_SPOT_API_KEY`` and ``KRAKEN_SPOT_API_SECRET``.
+
+    Note: Kraken Spot does not have a testnet/demo environment.
 
     If a cached client with matching parameters already exists, the cached client will be returned.
 
@@ -61,8 +62,8 @@ def get_cached_kraken_spot_http_client(
         The Kraken API secret for the client.
     base_url : str, optional
         The base URL for the Kraken Spot API.
-    testnet : bool, default False
-        If True, use testnet environment variables for credentials.
+    demo : bool, default False
+        Unused for Spot (Kraken Spot has no demo environment).
     timeout_secs : int, optional
         The timeout in seconds for HTTP requests.
     max_retries : int, optional
@@ -83,7 +84,7 @@ def get_cached_kraken_spot_http_client(
         api_key=api_key,
         api_secret=api_secret,
         base_url=base_url,
-        testnet=testnet,
+        demo=demo,
         timeout_secs=timeout_secs,
         max_retries=max_retries,
         retry_delay_ms=retry_delay_ms,
@@ -97,7 +98,7 @@ def get_cached_kraken_futures_http_client(
     api_key: str | None = None,
     api_secret: str | None = None,
     base_url: str | None = None,
-    testnet: bool = False,
+    demo: bool = False,
     timeout_secs: int | None = None,
     max_retries: int | None = None,
     retry_delay_ms: int | None = None,
@@ -109,8 +110,8 @@ def get_cached_kraken_futures_http_client(
 
     If ``api_key`` and ``api_secret`` are ``None``, then they will be sourced from the
     environment variables ``KRAKEN_FUTURES_API_KEY`` and ``KRAKEN_FUTURES_API_SECRET``
-    (or ``KRAKEN_FUTURES_TESTNET_API_KEY`` and ``KRAKEN_FUTURES_TESTNET_API_SECRET``
-    if testnet is True).
+    (or ``KRAKEN_FUTURES_DEMO_API_KEY`` and ``KRAKEN_FUTURES_DEMO_API_SECRET``
+    for the demo environment).
 
     If a cached client with matching parameters already exists, the cached client will be returned.
 
@@ -122,8 +123,8 @@ def get_cached_kraken_futures_http_client(
         The Kraken API secret for the client.
     base_url : str, optional
         The base URL for the Kraken Futures API.
-    testnet : bool, default False
-        If True, use testnet environment variables for credentials.
+    demo : bool, default False
+        If True, use demo environment variables for credentials.
     timeout_secs : int, optional
         The timeout in seconds for HTTP requests.
     max_retries : int, optional
@@ -144,7 +145,7 @@ def get_cached_kraken_futures_http_client(
         api_key=api_key,
         api_secret=api_secret,
         base_url=base_url,
-        testnet=testnet,
+        demo=demo,
         timeout_secs=timeout_secs,
         max_retries=max_retries,
         retry_delay_ms=retry_delay_ms,
@@ -228,7 +229,7 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
         """
         environment = config.environment or KrakenEnvironment.MAINNET
         product_types = list(config.product_types or (KrakenProductType.SPOT,))
-        is_testnet = environment == KrakenEnvironment.TESTNET
+        is_demo = environment == KrakenEnvironment.DEMO
 
         # Get cached HTTP clients for each requested product type
         http_client_spot: nautilus_pyo3.KrakenSpotHttpClient | None = None
@@ -239,7 +240,7 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_spot,
-                testnet=is_testnet,
+                demo=is_demo,
                 timeout_secs=config.http_timeout_secs,
                 max_retries=config.max_retries,
                 retry_delay_ms=config.retry_delay_initial_ms,
@@ -252,7 +253,7 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_futures,
-                testnet=is_testnet,
+                demo=is_demo,
                 timeout_secs=config.http_timeout_secs,
                 max_retries=config.max_retries,
                 retry_delay_ms=config.retry_delay_initial_ms,
@@ -319,7 +320,7 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
         """
         environment = config.environment or KrakenEnvironment.MAINNET
         product_types = list(config.product_types or (KrakenProductType.SPOT,))
-        is_testnet = environment == KrakenEnvironment.TESTNET
+        is_demo = environment == KrakenEnvironment.DEMO
 
         # Get cached HTTP clients for each requested product type
         http_client_spot: nautilus_pyo3.KrakenSpotHttpClient | None = None
@@ -330,7 +331,7 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_spot,
-                testnet=is_testnet,
+                demo=is_demo,
                 timeout_secs=config.http_timeout_secs,
                 max_retries=config.max_retries,
                 retry_delay_ms=config.retry_delay_initial_ms,
@@ -343,7 +344,7 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
                 api_key=config.api_key,
                 api_secret=config.api_secret,
                 base_url=config.base_url_http_futures,
-                testnet=is_testnet,
+                demo=is_demo,
                 timeout_secs=config.http_timeout_secs,
                 max_retries=config.max_retries,
                 retry_delay_ms=config.retry_delay_initial_ms,

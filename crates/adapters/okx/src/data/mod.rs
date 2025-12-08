@@ -223,9 +223,14 @@ impl OKXDataClient {
             }
             NautilusWsMessage::AccountUpdate(_)
             | NautilusWsMessage::PositionUpdate(_)
+            | NautilusWsMessage::OrderAccepted(_)
+            | NautilusWsMessage::OrderCanceled(_)
+            | NautilusWsMessage::OrderExpired(_)
             | NautilusWsMessage::OrderRejected(_)
             | NautilusWsMessage::OrderCancelRejected(_)
             | NautilusWsMessage::OrderModifyRejected(_)
+            | NautilusWsMessage::OrderTriggered(_)
+            | NautilusWsMessage::OrderUpdated(_)
             | NautilusWsMessage::ExecutionReports(_) => {
                 tracing::debug!("Ignoring trading message on data client");
             }

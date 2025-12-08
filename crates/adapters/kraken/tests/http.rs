@@ -17,11 +17,13 @@
 
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use axum::{
@@ -31,6 +33,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
+use nautilus_common::testing::wait_until_async;
 use nautilus_kraken::{
     common::enums::{
         KrakenApiResult, KrakenEnvironment, KrakenOrderSide, KrakenOrderStatus, KrakenOrderType,
@@ -46,6 +49,7 @@ use nautilus_model::{
     instruments::{CryptoPerpetual, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
+use nautilus_network::http::HttpClient;
 use rstest::rstest;
 use serde_json::Value;
 
@@ -54,6 +58,22 @@ struct TestServerState {
     request_count: Arc<AtomicUsize>,
     last_trades_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
     last_ohlc_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+}
+
+/// Wait for the test server to be ready by polling a health endpoint.
+async fn wait_for_server(addr: SocketAddr, path: &str) {
+    let health_url = format!("http://{addr}{path}");
+    let http_client =
+        HttpClient::new(HashMap::new(), Vec::new(), Vec::new(), None, None, None).unwrap();
+    wait_until_async(
+        || {
+            let url = health_url.clone();
+            let client = http_client.clone();
+            async move { client.get(url, None, None, Some(1), None).await.is_ok() }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 #[allow(dead_code)]
@@ -466,7 +486,7 @@ async fn test_spot_raw_get_server_time() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -500,7 +520,7 @@ async fn test_spot_raw_get_system_status() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -533,7 +553,7 @@ async fn test_spot_raw_get_asset_pairs() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -571,7 +591,7 @@ async fn test_spot_domain_request_instruments() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -604,7 +624,7 @@ async fn test_spot_raw_get_ticker() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -637,7 +657,7 @@ async fn test_spot_raw_get_book_depth() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -670,7 +690,7 @@ async fn test_spot_raw_get_trades() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -703,7 +723,7 @@ async fn test_spot_raw_get_ohlc() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -736,7 +756,7 @@ async fn test_spot_raw_get_trades_with_since() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -775,7 +795,7 @@ async fn test_spot_raw_get_ohlc_with_interval() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -813,7 +833,7 @@ async fn test_spot_raw_get_websockets_token_requires_credentials() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     // Client without credentials
     let client = KrakenSpotRawHttpClient::new(
@@ -848,7 +868,7 @@ async fn test_spot_raw_get_websockets_token_with_credentials() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     // Client with credentials (API secret must be base64-encoded)
     let client = KrakenSpotRawHttpClient::with_credentials(
@@ -885,7 +905,7 @@ async fn test_spot_domain_request_trades() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -925,7 +945,7 @@ async fn test_spot_domain_request_bars() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -965,7 +985,7 @@ async fn test_spot_raw_multiple_requests_increment_count() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1005,7 +1025,7 @@ async fn test_futures_raw_get_instruments() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1045,7 +1065,7 @@ async fn test_futures_raw_get_tickers() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1086,7 +1106,7 @@ async fn test_futures_raw_get_ohlc_trade() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1130,7 +1150,7 @@ async fn test_futures_raw_get_ohlc_mark() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1171,7 +1191,7 @@ async fn test_futures_raw_get_ohlc_spot() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1212,7 +1232,7 @@ async fn test_futures_raw_get_public_executions() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::new(
         KrakenEnvironment::Mainnet,
@@ -1261,7 +1281,7 @@ async fn test_spot_raw_get_open_orders() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1303,7 +1323,7 @@ async fn test_spot_raw_get_closed_orders() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1346,7 +1366,7 @@ async fn test_spot_raw_get_trades_history() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1387,7 +1407,7 @@ async fn test_futures_raw_get_open_orders() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1430,7 +1450,7 @@ async fn test_futures_raw_get_order_events() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1478,7 +1498,7 @@ async fn test_futures_raw_get_fills() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1519,7 +1539,7 @@ async fn test_futures_raw_get_open_positions() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1566,7 +1586,7 @@ async fn test_spot_raw_add_order() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1611,7 +1631,7 @@ async fn test_spot_raw_cancel_order() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenSpotRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1655,7 +1675,7 @@ async fn test_futures_raw_send_order() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::with_credentials(
         "test".to_string(),
@@ -1698,7 +1718,7 @@ async fn test_futures_raw_cancel_order() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/0/public/Time").await;
 
     let client = KrakenFuturesRawHttpClient::with_credentials(
         "test".to_string(),

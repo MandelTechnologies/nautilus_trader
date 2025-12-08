@@ -1,20 +1,52 @@
 # Adapters
 
-The NautilusTrader design integrates data providers and/or trading venues
-through adapter implementations. These can be found in the top-level `adapters` subpackage.
+Adapters integrate data providers and trading venues into NautilusTrader.
+They can be found in the top-level `adapters` subpackage.
 
-An integration adapter is *typically* comprised of the following main components:
+An adapter typically comprises these components:
 
-- `HttpClient`
-- `WebSocketClient`
-- `InstrumentProvider`
-- `DataClient`
-- `ExecutionClient`
+```mermaid
+flowchart LR
+    subgraph Venue ["Trading Venue"]
+        API[REST API]
+        WS[WebSocket]
+    end
+
+    subgraph Adapter ["Adapter"]
+        HTTP[HttpClient]
+        WSC[WebSocketClient]
+        IP[InstrumentProvider]
+        DC[DataClient]
+        EC[ExecutionClient]
+    end
+
+    subgraph Core ["Nautilus Core"]
+        DE[DataEngine]
+        EE[ExecutionEngine]
+    end
+
+    API <--> HTTP
+    WS <--> WSC
+    HTTP --> IP
+    HTTP --> DC
+    HTTP --> EC
+    WSC --> DC
+    WSC --> EC
+    DC <--> DE
+    EC <--> EE
+```
+
+| Component            | Purpose                                                    |
+|----------------------|------------------------------------------------------------|
+| `HttpClient`         | REST API communication.                                    |
+| `WebSocketClient`    | Real-time streaming connection.                            |
+| `InstrumentProvider` | Loads and parses instrument definitions from the venue.    |
+| `DataClient`         | Handles market data subscriptions and requests.            |
+| `ExecutionClient`    | Handles order submission, modification, and cancellation.  |
 
 ## Instrument providers
 
-Instrument providers do as their name suggests - instantiating Nautilus
-`Instrument` objects by parsing the raw API responses from a venue.
+Instrument providers parse venue API responses into Nautilus `Instrument` objects.
 
 The use cases for the instruments available from an `InstrumentProvider` are either:
 
@@ -132,4 +164,24 @@ def on_bar(self, bar: Bar) -> None:
 :::tip
 See the [Actors](actors.md) documentation for a complete reference of available
 request and subscription methods with their corresponding callbacks.
+:::
+
+## Execution clients
+
+Execution clients handle order management for a venue. They translate Nautilus order commands
+into venue-specific API calls and process execution reports back into Nautilus events.
+
+Key responsibilities:
+
+- Submit, modify, and cancel orders.
+- Process fills and execution reports.
+- Reconcile order state with the venue.
+- Handle account and position updates.
+
+Order flow is managed through the `ExecutionEngine`, which routes commands to the appropriate
+execution client based on the order's venue. See the [Execution](execution.md) guide for details
+on order management from a strategy perspective.
+
+:::tip
+For implementing a custom adapter, see the [Adapter Developer Guide](../developer_guide/adapters.md).
 :::

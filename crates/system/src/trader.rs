@@ -30,10 +30,18 @@ use nautilus_common::{
         stop_component,
     },
     enums::{ComponentState, ComponentTrigger, Environment},
+    msgbus,
+    msgbus::{
+        handler::{ShareableMessageHandler, TypedMessageHandler},
+        switchboard::{get_event_orders_topic, get_event_positions_topic},
+    },
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{UUID4, UnixNanos};
-use nautilus_model::identifiers::{ActorId, ComponentId, ExecAlgorithmId, StrategyId, TraderId};
+use nautilus_model::{
+    events::{OrderEventAny, PositionEvent},
+    identifiers::{ActorId, ComponentId, ExecAlgorithmId, StrategyId, TraderId},
+};
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_trading::strategy::Strategy;
 
@@ -366,6 +374,31 @@ impl Trader {
 
         // Register in both component and actor registries
         register_component_actor(strategy);
+
+        let order_topic = get_event_orders_topic(strategy_id);
+        let order_actor_id = actor_id;
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
+            move |event: &OrderEventAny| {
+                if let Some(mut strategy) = try_get_actor_unchecked::<T>(&order_actor_id) {
+                    strategy.handle_order_event(event.clone());
+                } else {
+                    log::error!("Strategy {order_actor_id} not found for order event handling");
+                }
+            },
+        )));
+        msgbus::subscribe_topic(order_topic, handler, None);
+
+        let position_topic = get_event_positions_topic(strategy_id);
+        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
+            move |event: &PositionEvent| {
+                if let Some(mut strategy) = try_get_actor_unchecked::<T>(&actor_id) {
+                    strategy.handle_position_event(event.clone());
+                } else {
+                    log::error!("Strategy {actor_id} not found for position event handling");
+                }
+            },
+        )));
+        msgbus::subscribe_topic(position_topic, handler, None);
 
         self.strategy_ids.push(strategy_id);
         log::info!(

@@ -42,11 +42,10 @@ use nautilus_model::{
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use nautilus_network::{
-    http::HttpClient,
+    http::{HttpClient, Method, USER_AGENT},
     ratelimiter::quota::Quota,
     retry::{RetryConfig, RetryManager},
 };
-use reqwest::{Method, header::USER_AGENT};
 use serde::de::DeserializeOwned;
 use tokio_util::sync::CancellationToken;
 use ustr::Ustr;
@@ -691,6 +690,7 @@ impl KrakenSpotRawHttpClient {
 
         let param_string = serde_urlencoded::to_string(params)
             .map_err(|e| KrakenHttpError::ParseError(format!("Failed to encode params: {e}")))?;
+
         let body = Some(param_string.into_bytes());
 
         let response: KrakenResponse<SpotCancelOrderResponse> = self
@@ -879,8 +879,9 @@ impl KrakenSpotHttpClient {
 
     /// Creates a new [`KrakenSpotHttpClient`] loading credentials from environment variables.
     ///
-    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET` (mainnet)
-    /// or `KRAKEN_SPOT_TESTNET_API_KEY` and `KRAKEN_SPOT_TESTNET_API_SECRET` (testnet).
+    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET`.
+    ///
+    /// Note: Kraken Spot does not have a testnet/demo environment.
     ///
     /// Falls back to unauthenticated client if credentials are not set.
     #[allow(clippy::too_many_arguments)]
@@ -893,9 +894,7 @@ impl KrakenSpotHttpClient {
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
     ) -> anyhow::Result<Self> {
-        let testnet = environment == KrakenEnvironment::Testnet;
-
-        if let Some(credential) = KrakenCredential::from_env_spot(testnet) {
+        if let Some(credential) = KrakenCredential::from_env_spot() {
             let (api_key, api_secret) = credential.into_parts();
             Self::with_credentials(
                 api_key,
@@ -1401,56 +1400,41 @@ impl KrakenSpotHttpClient {
     /// Returns an error if:
     /// - Credentials are missing.
     /// - Neither client_order_id nor venue_order_id is provided.
-    /// - The order is not found.
     /// - The request fails.
+    /// - The order cancellation is rejected.
     pub async fn cancel_order(
         &self,
-        account_id: AccountId,
+        _account_id: AccountId,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
-    ) -> anyhow::Result<OrderStatusReport> {
-        let instrument = self
+    ) -> anyhow::Result<()> {
+        let _ = self
             .get_cached_instrument(&instrument_id.symbol.inner())
             .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
 
-        let txid = venue_order_id.map(|id| id.to_string());
-        let cl_ord_id = client_order_id.map(|id| id.to_string());
+        let txid = venue_order_id.as_ref().map(|id| id.to_string());
+        let cl_ord_id = client_order_id.as_ref().map(|id| id.to_string());
 
         if txid.is_none() && cl_ord_id.is_none() {
             anyhow::bail!("Either client_order_id or venue_order_id must be provided");
         }
 
+        // Prefer txid (venue identifier) since Kraken always knows it.
+        // cl_ord_id may not be known to Kraken for reconciled orders.
         let mut builder = KrakenSpotCancelOrderParamsBuilder::default();
         if let Some(ref id) = txid {
             builder.txid(id.clone());
-        }
-        if let Some(id) = cl_ord_id {
-            builder.cl_ord_id(id);
+        } else if let Some(ref id) = cl_ord_id {
+            builder.cl_ord_id(id.clone());
         }
         let params = builder
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build cancel params: {e}"))?;
 
-        let _response = self.inner.cancel_order(&params).await?;
+        self.inner.cancel_order(&params).await?;
 
-        // Query the order to get final status
-        let order_id = txid.ok_or_else(|| {
-            anyhow::anyhow!("venue_order_id required to query order status after cancellation")
-        })?;
-
-        // Check closed orders for the canceled order
-        let closed_orders = self
-            .inner
-            .get_closed_orders(Some(true), None, None, None, None, None)
-            .await?;
-
-        let order = closed_orders
-            .get(&order_id)
-            .ok_or_else(|| anyhow::anyhow!("Order not found after cancellation: {order_id}"))?;
-
-        let ts_init = self.generate_ts_init();
-        parse_order_status_report(&order_id, order, &instrument, account_id, ts_init)
+        Ok(())
     }
 
     /// Request account state (balances) from Kraken.

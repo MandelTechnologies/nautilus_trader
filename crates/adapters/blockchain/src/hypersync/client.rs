@@ -27,7 +27,7 @@ use nautilus_model::{
     defi::{Block, DexType, SharedChain},
     identifiers::InstrumentId,
 };
-use reqwest::Url;
+use nautilus_network::http::Url;
 
 use crate::{
     exchanges::get_dex_extended, hypersync::transform::transform_hypersync_block,

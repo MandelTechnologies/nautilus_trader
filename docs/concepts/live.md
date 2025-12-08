@@ -381,6 +381,16 @@ Execution reconciliation is the process of aligning the external state of realit
 (both closed and open) with the system's internal state built from events.
 This process is primarily applicable to live trading, which is why only the `LiveExecutionEngine` has reconciliation capability.
 
+:::note Terminology
+An **in-flight order** is one awaiting venue acknowledgement:
+
+- `SUBMITTED` - initial submission, awaiting accept/reject.
+- `PENDING_UPDATE` - modification requested, awaiting confirmation.
+- `PENDING_CANCEL` - cancellation requested, awaiting confirmation.
+
+These orders are monitored by the continuous reconciliation loop to detect stale or lost messages.
+:::
+
 There are two main scenarios for reconciliation:
 
 - **Previous cached execution state**: Where cached execution state exists, information from reports is used to generate missing events to align the state.
@@ -431,6 +441,20 @@ methods to produce an execution mass status:
 - `generate_order_status_reports`
 - `generate_fill_reports`
 - `generate_position_status_reports`
+
+```mermaid
+flowchart TD
+    Start[Startup Reconciliation] --> Fetch[Fetch venue reports<br/>orders, fills, positions]
+    Fetch --> Dup{Duplicate<br/>order IDs?}
+    Dup -->|Yes| Fail[Reconciliation fails]
+    Dup -->|No| Orders[Order Reconciliation<br/>align order states, generate missing events]
+    Orders --> Fills[Fill Reconciliation<br/>verify fills, generate missing OrderFilled events]
+    Fills --> Pos[Position Reconciliation<br/>compare net positions per instrument]
+    Pos --> Match{Positions<br/>match venue?}
+    Match -->|Yes| Done[Reconciliation complete<br/>system ready for trading]
+    Match -->|No| Gen[Generate missing orders<br/>strategy: EXTERNAL, tag: RECONCILIATION]
+    Gen --> Done
+```
 
 The system state is then reconciled with the reports, which represent external "reality":
 

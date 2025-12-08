@@ -45,14 +45,17 @@ use futures_util::StreamExt;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{BarType, Data, OrderBookDeltas_API},
-    identifiers::{AccountId, InstrumentId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
 };
 use pyo3::{IntoPyObjectExt, prelude::*};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    common::enums::KrakenEnvironment,
+    common::{
+        enums::{KrakenEnvironment, KrakenProductType},
+        urls::get_kraken_ws_private_url,
+    },
     config::KrakenDataClientConfig,
     websocket::spot_v2::{client::KrakenSpotWebSocketClient, messages::NautilusWsMessage},
 };
@@ -60,38 +63,37 @@ use crate::{
 #[pymethods]
 impl KrakenSpotWebSocketClient {
     #[new]
-    #[pyo3(signature = (environment=None, base_url=None, heartbeat_secs=None, api_key=None, api_secret=None))]
+    #[pyo3(signature = (environment=None, private=false, base_url=None, heartbeat_secs=None, api_key=None, api_secret=None))]
     fn py_new(
         environment: Option<KrakenEnvironment>,
+        private: bool,
         base_url: Option<String>,
         heartbeat_secs: Option<u64>,
         api_key: Option<String>,
         api_secret: Option<String>,
     ) -> PyResult<Self> {
         let env = environment.unwrap_or(KrakenEnvironment::Mainnet);
-        let testnet = env == KrakenEnvironment::Testnet;
 
-        // Match HTTP client pattern exactly: if both credentials provided use them,
-        // otherwise load from environment
         let (resolved_api_key, resolved_api_secret) =
-            if let (Some(k), Some(s)) = (api_key, api_secret) {
-                (Some(k), Some(s))
-            } else if let Some(cred) =
-                crate::common::credential::KrakenCredential::from_env_spot(testnet)
-            {
-                let (k, s) = cred.into_parts();
-                tracing::debug!(
-                    "Loaded WebSocket credentials from environment (key={}...)",
-                    &k[..8.min(k.len())]
-                );
-                (Some(k), Some(s))
-            } else {
-                (None, None)
-            };
+            crate::common::credential::KrakenCredential::resolve_spot(api_key, api_secret)
+                .map(|c| c.into_parts())
+                .map(|(k, s)| (Some(k), Some(s)))
+                .unwrap_or((None, None));
+
+        let (ws_public_url, ws_private_url) = if private {
+            // Use provided URL or default to the private endpoint
+            let private_url = base_url.unwrap_or_else(|| {
+                get_kraken_ws_private_url(KrakenProductType::Spot, env).to_string()
+            });
+            (None, Some(private_url))
+        } else {
+            (base_url, None)
+        };
 
         let config = KrakenDataClientConfig {
             environment: env,
-            ws_public_url: base_url,
+            ws_public_url,
+            ws_private_url,
             heartbeat_interval_secs: heartbeat_secs,
             api_key: resolved_api_key,
             api_secret: resolved_api_secret,
@@ -142,8 +144,16 @@ impl KrakenSpotWebSocketClient {
     }
 
     #[pyo3(name = "cache_client_order")]
-    fn py_cache_client_order(&self, client_order_id: String, instrument_id: InstrumentId) {
-        self.cache_client_order(client_order_id, instrument_id);
+    fn py_cache_client_order(
+        &self,
+        client_order_id: ClientOrderId,
+        _venue_order_id: Option<VenueOrderId>,
+        instrument_id: InstrumentId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+    ) {
+        // Note: venue_order_id not used for spot yet, but kept for API consistency
+        self.cache_client_order(client_order_id, instrument_id, trader_id, strategy_id);
     }
 
     #[pyo3(name = "cancel_all_requests")]
@@ -196,11 +206,49 @@ impl KrakenSpotWebSocketClient {
                                 call_python(py, &callback, py_obj);
                             });
                         }
+                        NautilusWsMessage::OrderAccepted(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderAccepted to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::OrderCanceled(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderCanceled to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::OrderExpired(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderExpired to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
+                        NautilusWsMessage::OrderUpdated(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderUpdated to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
                         NautilusWsMessage::OrderStatusReport(report) => {
                             Python::attach(|py| match (*report).into_py_any(py) {
-                                Ok(py_obj) => {
-                                    call_python(py, &callback, py_obj);
-                                }
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
                                 Err(e) => {
                                     tracing::error!(
                                         "Failed to convert OrderStatusReport to Python: {e}"
@@ -210,13 +258,14 @@ impl KrakenSpotWebSocketClient {
                         }
                         NautilusWsMessage::FillReport(report) => {
                             Python::attach(|py| match (*report).into_py_any(py) {
-                                Ok(py_obj) => {
-                                    call_python(py, &callback, py_obj);
-                                }
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
                                 Err(e) => {
                                     tracing::error!("Failed to convert FillReport to Python: {e}");
                                 }
                             });
+                        }
+                        NautilusWsMessage::Reconnected => {
+                            tracing::info!("WebSocket reconnected");
                         }
                     }
                 }

@@ -152,6 +152,120 @@ impl DataTesterConfig {
             stats_interval_secs: 5,
         }
     }
+
+    #[must_use]
+    pub fn with_log_data(mut self, log_data: bool) -> Self {
+        self.log_data = log_data;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_book_deltas(mut self, subscribe: bool) -> Self {
+        self.subscribe_book_deltas = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_book_depth(mut self, subscribe: bool) -> Self {
+        self.subscribe_book_depth = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_book_at_interval(mut self, subscribe: bool) -> Self {
+        self.subscribe_book_at_interval = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_mark_prices(mut self, subscribe: bool) -> Self {
+        self.subscribe_mark_prices = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_index_prices(mut self, subscribe: bool) -> Self {
+        self.subscribe_index_prices = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_funding_rates(mut self, subscribe: bool) -> Self {
+        self.subscribe_funding_rates = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_bars(mut self, subscribe: bool) -> Self {
+        self.subscribe_bars = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_bar_types(mut self, bar_types: Vec<BarType>) -> Self {
+        self.bar_types = Some(bar_types);
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_instrument(mut self, subscribe: bool) -> Self {
+        self.subscribe_instrument = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_instrument_status(mut self, subscribe: bool) -> Self {
+        self.subscribe_instrument_status = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_instrument_close(mut self, subscribe: bool) -> Self {
+        self.subscribe_instrument_close = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_book_type(mut self, book_type: BookType) -> Self {
+        self.book_type = book_type;
+        self
+    }
+
+    #[must_use]
+    pub fn with_book_depth(mut self, depth: Option<NonZeroUsize>) -> Self {
+        self.book_depth = depth;
+        self
+    }
+
+    #[must_use]
+    pub fn with_book_interval_ms(mut self, interval_ms: NonZeroUsize) -> Self {
+        self.book_interval_ms = interval_ms;
+        self
+    }
+
+    #[must_use]
+    pub fn with_manage_book(mut self, manage: bool) -> Self {
+        self.manage_book = manage;
+        self
+    }
+
+    #[must_use]
+    pub fn with_request_instruments(mut self, request: bool) -> Self {
+        self.request_instruments = request;
+        self
+    }
+
+    #[must_use]
+    pub fn with_can_unsubscribe(mut self, can_unsubscribe: bool) -> Self {
+        self.can_unsubscribe = can_unsubscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_stats_interval_secs(mut self, interval_secs: u64) -> Self {
+        self.stats_interval_secs = interval_secs;
+        self
+    }
 }
 
 impl Default for DataTesterConfig {

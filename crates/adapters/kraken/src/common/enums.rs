@@ -49,7 +49,7 @@ use strum::{AsRefStr, Display, EnumString, FromRepr};
 pub enum KrakenEnvironment {
     #[default]
     Mainnet,
-    Testnet,
+    Demo,
 }
 
 #[derive(

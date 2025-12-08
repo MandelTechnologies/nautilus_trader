@@ -3,20 +3,21 @@
 The `Instrument` base class represents the core specification for any tradable asset/contract. There are
 currently a number of subclasses representing a range of *asset classes* and *instrument classes* which are supported by the platform:
 
-- `Equity` (listed shares or ETFs traded on cash markets)
-- `FuturesContract` (deliverable futures contract with defined underlying, expiry, and multiplier)
-- `FuturesSpread` (exchange-defined multi-leg futures strategy—e.g., calendar or inter-commodity—quoted as one instrument)
-- `OptionContract` (exchange-traded option—put or call—on an underlying with strike and expiry)
-- `OptionSpread` (exchange-defined multi-leg options strategy—e.g., vertical, calendar, straddle—quoted as one instrument)
-- `BinaryOption` (fixed-payout option that settles to 0 or 1 based on a binary outcome)
-- `Cfd` (over-the-counter Contract for Difference that tracks an underlying and is cash-settled)
-- `Commodity` (spot commodity instrument—e.g., gold or oil—traded in cash markets)
-- `CurrencyPair` (spot FX or crypto pair in BASE/QUOTE format traded in cash markets)
-- `CryptoOption` (option on a crypto underlying with crypto quote/settlement; supports inverse or quanto styles)
-- `CryptoPerpetual` (perpetual futures contract—aka perpetual swap—on crypto with no expiry; can be inverse or quanto-settled)
-- `CryptoFuture` (dated, deliverable crypto futures contract with fixed expiry, underlying crypto, and settlement currency)
-- `IndexInstrument` (spot index calculated from constituents; used as a reference price and not directly tradable)
-- `BettingInstrument` (a sports/gaming market selection—e.g., team or runner—tradable on betting venues)
+- `Equity`: Listed shares or ETFs traded on cash markets.
+- `CurrencyPair`: Spot FX or crypto pair in BASE/QUOTE format traded in cash markets.
+- `Commodity`: Spot commodity instrument (e.g., gold or oil) traded in cash markets.
+- `IndexInstrument`: Spot index calculated from constituents; used as a reference price and not directly tradable.
+- `FuturesContract`: Deliverable futures contract with defined underlying, expiry, and multiplier.
+- `FuturesSpread`: Exchange-defined multi-leg futures strategy (e.g., calendar or inter-commodity) quoted as one instrument.
+- `CryptoFuture`: Dated, deliverable crypto futures contract with fixed expiry, underlying crypto, and settlement currency.
+- `CryptoPerpetual`: Perpetual futures contract (perpetual swap) on crypto with no expiry; can be inverse or quanto-settled.
+- `OptionContract`: Exchange-traded option (put or call) on an underlying with strike and expiry.
+- `OptionSpread`: Exchange-defined multi-leg options strategy (e.g., vertical, calendar, straddle) quoted as one instrument.
+- `CryptoOption`: Option on a crypto underlying with crypto quote/settlement; supports inverse or quanto styles.
+- `BinaryOption`: Fixed-payout option that settles to 0 or 1 based on a binary outcome.
+- `Cfd`: Over-the-counter Contract for Difference that tracks an underlying and is cash-settled.
+- `BettingInstrument`: Sports/gaming market selection (e.g., team or runner) tradable on betting venues.
+- `SyntheticInstrument`: Synthetic instrument with prices derived from component instruments using a formula.
 
 ## Symbology
 

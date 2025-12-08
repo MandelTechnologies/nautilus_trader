@@ -18,7 +18,10 @@
 use derive_builder::Builder;
 use nautilus_model::{
     data::{Data, FundingRateUpdate, OrderBookDeltas},
-    events::{AccountState, OrderCancelRejected, OrderModifyRejected, OrderRejected},
+    events::{
+        AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderExpired,
+        OrderModifyRejected, OrderRejected, OrderTriggered, OrderUpdated,
+    },
     instruments::InstrumentAny,
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
 };
@@ -49,9 +52,14 @@ pub enum NautilusWsMessage {
     Instrument(Box<InstrumentAny>),
     AccountUpdate(AccountState),
     PositionUpdate(PositionStatusReport),
+    OrderAccepted(OrderAccepted),
+    OrderCanceled(OrderCanceled),
+    OrderExpired(OrderExpired),
     OrderRejected(OrderRejected),
     OrderCancelRejected(OrderCancelRejected),
     OrderModifyRejected(OrderModifyRejected),
+    OrderTriggered(OrderTriggered),
+    OrderUpdated(OrderUpdated),
     ExecutionReports(Vec<ExecutionReport>),
     Error(OKXWebSocketError),
     Raw(serde_json::Value), // Unhandled channels

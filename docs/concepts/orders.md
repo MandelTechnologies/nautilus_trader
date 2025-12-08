@@ -14,7 +14,7 @@ All order types are derived from two fundamentals: *Market* and *Limit* orders. 
 *Market* orders consume liquidity by executing immediately at the best available price, whereas *Limit*
 orders provide liquidity by resting in the order book at a specified price until matched.
 
-The order types available for the platform are (using the enum values):
+The order types available for the platform are (using the `OrderType` enum values):
 
 - `MARKET`
 - `LIMIT`
@@ -116,6 +116,25 @@ flowchart TB
     PartiallyFilled --> Canceled
     Accepted --> Expired
 ```
+
+### Order status definitions
+
+| Status             | Description                                                                               |
+|--------------------|-------------------------------------------------------------------------------------------|
+| `INITIALIZED`      | Order is instantiated within the Nautilus system.                                         |
+| `DENIED`           | Order was denied by Nautilus for being invalid, unprocessable, or exceeding a risk limit. |
+| `EMULATED`         | Order is being emulated by the `OrderEmulator` component.                                 |
+| `RELEASED`         | Order was released from the `OrderEmulator` component.                                    |
+| `SUBMITTED`        | Order was submitted to the venue (awaiting acknowledgement).                              |
+| `ACCEPTED`         | Order was acknowledged by the venue as received and valid (may now be working).           |
+| `REJECTED`         | Order was rejected by the trading venue.                                                  |
+| `CANCELED`         | Order was canceled (terminal).                                                            |
+| `EXPIRED`          | Order reached its GTD expiration (terminal).                                              |
+| `TRIGGERED`        | Order's STOP price was triggered on the venue.                                            |
+| `PENDING_UPDATE`   | Order is pending a modification request on the venue.                                     |
+| `PENDING_CANCEL`   | Order is pending a cancellation request on the venue.                                     |
+| `PARTIALLY_FILLED` | Order has been partially filled on the venue.                                             |
+| `FILLED`           | Order has been completely filled (terminal).                                              |
 
 ## Execution instructions
 

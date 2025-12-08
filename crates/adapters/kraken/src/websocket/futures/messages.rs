@@ -15,27 +15,38 @@
 
 //! Data models for Kraken Futures WebSocket v1 API messages.
 
-use nautilus_model::data::{
-    IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick,
+use nautilus_model::{
+    data::{IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick},
+    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderUpdated},
+    reports::{FillReport, OrderStatusReport},
 };
 use serde::{Deserialize, Serialize};
+use strum::{AsRefStr, EnumString};
 use ustr::Ustr;
 
 use crate::common::enums::KrakenOrderSide;
 
 /// Output message types from the Futures WebSocket handler.
 #[derive(Clone, Debug)]
-pub enum FuturesWsMessage {
-    MarkPrice(MarkPriceUpdate),
-    IndexPrice(IndexPriceUpdate),
+pub enum KrakenFuturesWsMessage {
+    BookDeltas(OrderBookDeltas),
     Quote(QuoteTick),
     Trade(TradeTick),
-    BookDeltas(OrderBookDeltas),
+    MarkPrice(MarkPriceUpdate),
+    IndexPrice(IndexPriceUpdate),
+    OrderAccepted(OrderAccepted),
+    OrderCanceled(OrderCanceled),
+    OrderExpired(OrderExpired),
+    OrderUpdated(OrderUpdated),
+    OrderStatusReport(Box<OrderStatusReport>),
+    FillReport(Box<FillReport>),
+    Reconnected,
 }
 
 /// Kraken Futures WebSocket feed types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, EnumString, AsRefStr)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum KrakenFuturesFeed {
     Ticker,
     Trade,
@@ -43,6 +54,10 @@ pub enum KrakenFuturesFeed {
     Book,
     BookSnapshot,
     Heartbeat,
+    OpenOrders,
+    OpenOrdersSnapshot,
+    Fills,
+    FillsSnapshot,
 }
 
 /// Kraken Futures WebSocket event types.
@@ -56,6 +71,7 @@ pub enum KrakenFuturesEvent {
     Info,
     Error,
     Alert,
+    Challenge,
 }
 
 /// Subscribe/unsubscribe request for Kraken Futures WebSocket.
@@ -77,7 +93,7 @@ pub struct KrakenFuturesSubscriptionResponse {
 /// Error response from Kraken Futures WebSocket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KrakenFuturesErrorResponse {
-    pub event: String,
+    pub event: KrakenFuturesEvent,
     #[serde(default)]
     pub message: Option<String>,
 }
@@ -85,7 +101,7 @@ pub struct KrakenFuturesErrorResponse {
 /// Info message from Kraken Futures WebSocket (sent on connection).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KrakenFuturesInfoMessage {
-    pub event: String,
+    pub event: KrakenFuturesEvent,
     pub version: i32,
 }
 
@@ -213,6 +229,126 @@ pub struct KrakenFuturesBookLevel {
     pub qty: f64,
 }
 
+/// Challenge request for WebSocket authentication.
+#[derive(Debug, Clone, Serialize)]
+pub struct KrakenFuturesChallengeRequest {
+    pub event: KrakenFuturesEvent,
+    pub api_key: String,
+}
+
+/// Challenge response from WebSocket.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesChallengeResponse {
+    pub event: KrakenFuturesEvent,
+    pub message: String,
+}
+
+/// Authenticated subscription request for private feeds.
+#[derive(Debug, Clone, Serialize)]
+pub struct KrakenFuturesPrivateSubscribeRequest {
+    pub event: KrakenFuturesEvent,
+    pub feed: KrakenFuturesFeed,
+    pub api_key: String,
+    pub original_challenge: String,
+    pub signed_challenge: String,
+}
+
+/// Open order from Kraken Futures WebSocket.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesOpenOrder {
+    pub instrument: Ustr,
+    pub time: i64,
+    pub last_update_time: i64,
+    pub qty: f64,
+    pub filled: f64,
+    pub limit_price: f64,
+    #[serde(default)]
+    pub stop_price: Option<f64>,
+    #[serde(rename = "type")]
+    pub order_type: String,
+    pub order_id: String,
+    #[serde(default)]
+    pub cli_ord_id: Option<String>,
+    /// 0 = buy, 1 = sell
+    pub direction: i32,
+    #[serde(default)]
+    pub reduce_only: bool,
+    #[serde(default, rename = "triggerSignal")]
+    pub trigger_signal: Option<String>,
+}
+
+/// Open orders snapshot from Kraken Futures WebSocket.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesOpenOrdersSnapshot {
+    pub feed: KrakenFuturesFeed,
+    #[serde(default)]
+    pub account: Option<String>,
+    pub orders: Vec<KrakenFuturesOpenOrder>,
+}
+
+/// Open orders delta/update from Kraken Futures WebSocket.
+/// Used when full order details are provided (new orders, updates).
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesOpenOrdersDelta {
+    pub feed: KrakenFuturesFeed,
+    pub order: KrakenFuturesOpenOrder,
+    pub is_cancel: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Open orders cancel notification from Kraken Futures WebSocket.
+/// Used when an order is canceled - contains only order identifiers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesOpenOrdersCancel {
+    pub feed: KrakenFuturesFeed,
+    pub order_id: String,
+    pub cli_ord_id: Option<String>,
+    pub is_cancel: bool,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Fill from Kraken Futures WebSocket.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesFill {
+    #[serde(alias = "product_id")]
+    pub instrument: Option<Ustr>,
+    pub time: i64,
+    pub price: f64,
+    pub qty: f64,
+    pub order_id: String,
+    #[serde(default)]
+    pub cli_ord_id: Option<String>,
+    pub fill_id: String,
+    pub fill_type: String,
+    /// true = buy, false = sell
+    pub buy: bool,
+    #[serde(default)]
+    pub fee_paid: Option<f64>,
+    #[serde(default)]
+    pub fee_currency: Option<String>,
+}
+
+/// Fills snapshot from Kraken Futures WebSocket.
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesFillsSnapshot {
+    pub feed: KrakenFuturesFeed,
+    #[serde(default)]
+    pub account: Option<String>,
+    pub fills: Vec<KrakenFuturesFill>,
+}
+
+/// Fills delta/update from Kraken Futures WebSocket.
+/// Note: Kraken sends fills updates in array format (same as snapshot).
+#[derive(Debug, Clone, Deserialize)]
+pub struct KrakenFuturesFillsDelta {
+    pub feed: KrakenFuturesFeed,
+    #[serde(default)]
+    pub username: Option<String>,
+    pub fills: Vec<KrakenFuturesFill>,
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////
@@ -264,5 +400,122 @@ mod tests {
         assert!(json.contains("\"event\":\"subscribe\""));
         assert!(json.contains("\"feed\":\"ticker\""));
         assert!(json.contains("PI_XBTUSD"));
+    }
+
+    #[rstest]
+    fn test_deserialize_ticker_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_ticker.json");
+        let ticker: KrakenFuturesTickerData = serde_json::from_str(json).unwrap();
+
+        assert_eq!(ticker.feed, KrakenFuturesFeed::Ticker);
+        assert_eq!(ticker.product_id, Ustr::from("PI_XBTUSD"));
+        assert_eq!(ticker.bid, Some(21978.5));
+        assert_eq!(ticker.ask, Some(21987.0));
+        assert_eq!(ticker.bid_size, Some(2536.0));
+        assert_eq!(ticker.ask_size, Some(13948.0));
+        assert_eq!(ticker.index, Some(21984.54));
+        assert_eq!(ticker.mark_price, Some(21979.68641534714));
+        assert!(ticker.funding_rate.is_some());
+    }
+
+    #[rstest]
+    fn test_deserialize_trade_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_trade.json");
+        let trade: KrakenFuturesTradeData = serde_json::from_str(json).unwrap();
+
+        assert_eq!(trade.feed, KrakenFuturesFeed::Trade);
+        assert_eq!(trade.product_id, Ustr::from("PI_XBTUSD"));
+        assert_eq!(trade.side, KrakenOrderSide::Sell);
+        assert_eq!(trade.qty, 15000.0);
+        assert_eq!(trade.price, 34969.5);
+        assert_eq!(trade.seq, 653355);
+    }
+
+    #[rstest]
+    fn test_deserialize_trade_snapshot_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_trade_snapshot.json");
+        let snapshot: KrakenFuturesTradeSnapshot = serde_json::from_str(json).unwrap();
+
+        assert_eq!(snapshot.feed, KrakenFuturesFeed::TradeSnapshot);
+        assert_eq!(snapshot.product_id, Ustr::from("PI_XBTUSD"));
+        assert_eq!(snapshot.trades.len(), 2);
+        assert_eq!(snapshot.trades[0].price, 34893.0);
+        assert_eq!(snapshot.trades[1].price, 34891.0);
+    }
+
+    #[rstest]
+    fn test_deserialize_book_snapshot_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_book_snapshot.json");
+        let snapshot: KrakenFuturesBookSnapshot = serde_json::from_str(json).unwrap();
+
+        assert_eq!(snapshot.feed, KrakenFuturesFeed::BookSnapshot);
+        assert_eq!(snapshot.product_id, Ustr::from("PI_XBTUSD"));
+        assert_eq!(snapshot.bids.len(), 2);
+        assert_eq!(snapshot.asks.len(), 2);
+        assert_eq!(snapshot.bids[0].price, 34892.5);
+        assert_eq!(snapshot.asks[0].price, 34911.5);
+    }
+
+    #[rstest]
+    fn test_deserialize_book_delta_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_book_delta.json");
+        let delta: KrakenFuturesBookDelta = serde_json::from_str(json).unwrap();
+
+        assert_eq!(delta.feed, KrakenFuturesFeed::Book);
+        assert_eq!(delta.product_id, Ustr::from("PI_XBTUSD"));
+        assert_eq!(delta.side, KrakenOrderSide::Sell);
+        assert_eq!(delta.price, 34981.0);
+        assert_eq!(delta.qty, 0.0); // Delete action
+    }
+
+    #[rstest]
+    fn test_deserialize_open_orders_snapshot_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_open_orders_snapshot.json");
+        let snapshot: KrakenFuturesOpenOrdersSnapshot = serde_json::from_str(json).unwrap();
+
+        assert_eq!(snapshot.feed, KrakenFuturesFeed::OpenOrdersSnapshot);
+        assert_eq!(snapshot.orders.len(), 1);
+        assert_eq!(snapshot.orders[0].instrument, Ustr::from("PI_XBTUSD"));
+        assert_eq!(snapshot.orders[0].qty, 1000.0);
+        assert_eq!(snapshot.orders[0].order_type, "stop");
+    }
+
+    #[rstest]
+    fn test_deserialize_open_orders_delta_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_open_orders_delta.json");
+        let delta: KrakenFuturesOpenOrdersDelta = serde_json::from_str(json).unwrap();
+
+        assert_eq!(delta.feed, KrakenFuturesFeed::OpenOrders);
+        assert!(!delta.is_cancel);
+        assert_eq!(delta.order.instrument, Ustr::from("PI_XBTUSD"));
+        assert_eq!(delta.order.qty, 304.0);
+        assert_eq!(delta.order.limit_price, 10640.0);
+    }
+
+    #[rstest]
+    fn test_deserialize_open_orders_cancel_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_open_orders_cancel.json");
+        let cancel: KrakenFuturesOpenOrdersCancel = serde_json::from_str(json).unwrap();
+
+        assert_eq!(cancel.feed, KrakenFuturesFeed::OpenOrders);
+        assert!(cancel.is_cancel);
+        assert_eq!(cancel.order_id, "660c6b23-8007-48c1-a7c9-4893f4572e8c");
+        assert_eq!(cancel.reason, Some("cancelled_by_user".to_string()));
+        assert!(cancel.cli_ord_id.is_none()); // Not in docs example
+    }
+
+    #[rstest]
+    fn test_deserialize_fills_snapshot_from_fixture() {
+        let json = include_str!("../../../test_data/ws_futures_fills_snapshot.json");
+        let snapshot: KrakenFuturesFillsSnapshot = serde_json::from_str(json).unwrap();
+
+        assert_eq!(snapshot.feed, KrakenFuturesFeed::FillsSnapshot);
+        assert_eq!(snapshot.fills.len(), 2);
+        assert_eq!(
+            snapshot.fills[0].instrument,
+            Some(Ustr::from("FI_XBTUSD_200925"))
+        );
+        assert!(snapshot.fills[0].buy);
+        assert_eq!(snapshot.fills[0].fill_type, "maker");
     }
 }

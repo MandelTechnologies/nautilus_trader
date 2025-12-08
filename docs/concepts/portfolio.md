@@ -1,9 +1,5 @@
 # Portfolio
 
-:::info
-We are currently working on this concept guide.
-:::
-
 The Portfolio serves as the central hub for managing and tracking all positions across active strategies for the trading node or backtest.
 It consolidates position data from multiple instruments, providing a unified view of your holdings, risk exposure, and overall performance.
 Explore this section to understand how NautilusTrader aggregates and updates portfolio state to support effective trading and risk management.

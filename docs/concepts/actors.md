@@ -1,20 +1,15 @@
 # Actors
 
-:::info
-We are currently working on this concept guide.
-:::
-
-The `Actor` serves as the foundational component for interacting with the trading system.
-It provides core functionality for receiving market data, handling events, and managing state within
-the trading environment. The `Strategy` class inherits from Actor and extends its capabilities with
-order management methods.
+An `Actor` receives data, handles events, and manages state. The `Strategy` class extends Actor
+with order management capabilities.
 
 **Key capabilities**:
 
-- Event subscription and handling.
-- Market data reception.
-- State management.
-- System interaction primitives.
+- Data subscription and requests (market data, custom data).
+- Event handling and publishing.
+- Timers and alerts.
+- Cache and portfolio access.
+- Logging.
 
 ## Basic example
 
@@ -47,6 +42,78 @@ class MyActor(Actor):
     def on_bar(self, bar: Bar) -> None:
         self.count_of_processed_bars += 1
 ```
+
+## Lifecycle
+
+Actors follow a defined state machine through their lifecycle:
+
+```mermaid
+stateDiagram-v2
+    [*] --> PRE_INITIALIZED
+    PRE_INITIALIZED --> READY : register()
+    READY --> STARTING : start()
+    STARTING --> RUNNING : on_start()
+    RUNNING --> STOPPING : stop()
+    STOPPING --> STOPPED : on_stop()
+    STOPPED --> RUNNING : resume()
+    RUNNING --> DEGRADING : degrade()
+    DEGRADING --> DEGRADED : on_degrade()
+    DEGRADED --> RUNNING : resume()
+    RUNNING --> FAULTING : fault()
+    FAULTING --> FAULTED : on_fault()
+    RUNNING --> DISPOSED : dispose()
+```
+
+Override these methods to hook into lifecycle events:
+
+| Method          | When called                                                         |
+|-----------------|---------------------------------------------------------------------|
+| `on_start()`    | Actor is starting (subscribe to data here).                         |
+| `on_stop()`     | Actor is stopping (cancel timers, cleanup resources).               |
+| `on_resume()`   | Actor is resuming from a stopped state.                             |
+| `on_reset()`    | Reset indicators and internal state (called between backtest runs). |
+| `on_degrade()`  | Actor is entering a degraded state (partial functionality).         |
+| `on_fault()`    | Actor has encountered a critical fault.                             |
+| `on_dispose()`  | Actor is being disposed (final cleanup).                            |
+
+## Timers and alerts
+
+Actors have access to a clock for scheduling:
+
+```python
+def on_start(self) -> None:
+    # Set a recurring timer (fires every 5 seconds)
+    self.clock.set_timer("my_timer", timedelta(seconds=5))
+
+    # Set a one-time alert
+    self.clock.set_alert("my_alert", self.clock.utc_now() + timedelta(minutes=1))
+
+def on_stop(self) -> None:
+    # Cancel timers to prevent resource leaks across stop/resume cycles
+    self.clock.cancel_timer("my_timer")
+
+def on_timer(self, event: TimeEvent) -> None:
+    if event.name == "my_timer":
+        self.log.info("Timer fired!")
+
+def on_alert(self, event: TimeEvent) -> None:
+    if event.name == "my_alert":
+        self.log.info("Alert triggered!")
+```
+
+## System access
+
+Actors have access to core system components:
+
+| Property          | Description                                              |
+|-------------------|----------------------------------------------------------|
+| `self.cache`      | Read-only access to instruments, orders, positions, etc. |
+| `self.portfolio`  | Portfolio state and calculations.                        |
+| `self.clock`      | Current time and timer/alert scheduling.                 |
+| `self.log`        | Structured logging.                                      |
+| `self.msgbus`     | Publish/subscribe to custom messages.                    |
+
+For custom messaging between components, see the [Message Bus](message_bus.md) guide.
 
 ## Data handling and callbacks
 

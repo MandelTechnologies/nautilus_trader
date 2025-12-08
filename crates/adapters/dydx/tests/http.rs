@@ -15,7 +15,7 @@
 
 //! Integration tests for dYdX HTTP client using a mock Axum server.
 
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     Router,
@@ -24,11 +24,13 @@ use axum::{
     response::{IntoResponse, Json},
     routing::get,
 };
+use nautilus_common::testing::wait_until_async;
 use nautilus_dydx::{
     common::enums::DydxCandleResolution,
     http::client::{DydxHttpClient, DydxRawHttpClient},
 };
 use nautilus_model::instruments::Instrument;
+use nautilus_network::http::HttpClient;
 use rstest::rstest;
 use serde_json::{Value, json};
 use ustr::Ustr;
@@ -36,6 +38,22 @@ use ustr::Ustr;
 #[derive(Clone, Default)]
 struct TestServerState {
     request_count: Arc<tokio::sync::Mutex<usize>>,
+}
+
+/// Wait for the test server to be ready by polling a health endpoint.
+async fn wait_for_server(addr: SocketAddr, path: &str) {
+    let health_url = format!("http://{addr}{path}");
+    let http_client =
+        HttpClient::new(HashMap::new(), Vec::new(), Vec::new(), None, None, None).unwrap();
+    wait_until_async(
+        || {
+            let url = health_url.clone();
+            let client = http_client.clone();
+            async move { client.get(url, None, None, Some(1), None).await.is_ok() }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 fn load_test_instruments() -> Value {
@@ -230,7 +248,7 @@ async fn start_test_server()
         axum::serve(listener, router).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
     Ok((addr, state))
 }
 
@@ -452,7 +470,7 @@ async fn test_server_error_500() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -474,7 +492,7 @@ async fn test_malformed_json_response() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -503,7 +521,7 @@ async fn test_empty_instruments_response() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -582,7 +600,7 @@ async fn test_server_error_503() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -611,7 +629,7 @@ async fn test_invalid_json_structure() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -649,7 +667,7 @@ async fn test_get_subaccount() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -693,7 +711,7 @@ async fn test_get_fills() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -748,7 +766,7 @@ async fn test_get_orders() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -799,7 +817,7 @@ async fn test_get_transfers() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -829,7 +847,7 @@ async fn test_get_time() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -859,7 +877,7 @@ async fn test_get_height() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -893,7 +911,7 @@ async fn test_server_error_400() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -918,7 +936,7 @@ async fn test_server_error_404() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -947,7 +965,7 @@ async fn test_fills_with_market_filter() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -979,7 +997,7 @@ async fn test_orders_with_limit() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1020,7 +1038,7 @@ async fn test_http_401_unauthorized() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1054,7 +1072,7 @@ async fn test_http_403_forbidden() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1088,7 +1106,7 @@ async fn test_http_502_bad_gateway() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1110,7 +1128,7 @@ async fn test_empty_response_body() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1135,7 +1153,7 @@ async fn test_partial_json_response() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1160,7 +1178,7 @@ async fn test_instruments_pagination_empty_markets() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1182,7 +1200,7 @@ async fn test_fills_empty_list() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1204,7 +1222,7 @@ async fn test_orders_empty_list() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1229,7 +1247,7 @@ async fn test_transfers_empty_list() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1263,7 +1281,7 @@ async fn test_invalid_address_format() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1300,7 +1318,7 @@ async fn test_connection_pool_reuse() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1371,7 +1389,7 @@ async fn test_concurrent_requests() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -1430,7 +1448,7 @@ async fn test_request_timeout_short() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(1), None, false, None).unwrap();
@@ -1490,7 +1508,7 @@ async fn test_large_instruments_response() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(30), None, false, None).unwrap();
@@ -1531,7 +1549,7 @@ async fn test_retry_exhaustion() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client = DydxRawHttpClient::new(Some(base_url), Some(5), None, false, None).unwrap();
@@ -1581,7 +1599,7 @@ async fn test_mixed_success_and_error_responses() {
     tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v4/perpetualMarkets").await;
 
     let base_url = format!("http://{addr}");
     let client =

@@ -23,6 +23,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use axum::{
@@ -33,8 +34,10 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{Duration as ChronoDuration, Utc};
+use nautilus_common::testing::wait_until_async;
 use nautilus_core::UnixNanos;
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_network::http::HttpClient;
 use nautilus_okx::{
     common::{
         enums::{OKXInstrumentType, OKXOrderStatus, OKXPositionMode},
@@ -62,6 +65,22 @@ struct TestServerState {
     last_pending_orders_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
     last_order_history_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
     last_order_detail_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+}
+
+/// Wait for the test server to be ready by polling a health endpoint.
+async fn wait_for_server(addr: SocketAddr, path: &str) {
+    let health_url = format!("http://{addr}{path}");
+    let http_client =
+        HttpClient::new(HashMap::new(), Vec::new(), Vec::new(), None, None, None).unwrap();
+    wait_until_async(
+        || {
+            let url = health_url.clone();
+            let client = http_client.clone();
+            async move { client.get(url, None, None, Some(1), None).await.is_ok() }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 fn manifest_path() -> PathBuf {
@@ -401,7 +420,7 @@ async fn start_test_server(state: Arc<TestServerState>) -> SocketAddr {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
     addr
 }
 
@@ -766,7 +785,7 @@ async fn test_request_trades_latest_mode() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -868,7 +887,7 @@ async fn test_request_trades_chronological_order() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -1006,7 +1025,7 @@ async fn test_request_trades_range_mode_pagination() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -1162,7 +1181,7 @@ async fn test_request_bars_range_mode_pagination() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -1317,7 +1336,7 @@ async fn test_request_trades_overlapping_pages_chronological_order() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -1425,7 +1444,7 @@ async fn test_request_trades_default_limit_with_end_only() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -1565,7 +1584,7 @@ async fn test_request_trades_historical_with_filtered_pages() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -2080,7 +2099,7 @@ async fn test_http_okx_error_response() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -2123,7 +2142,7 @@ async fn test_http_malformed_json_response() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -2169,7 +2188,7 @@ async fn test_http_500_internal_server_error() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -2213,7 +2232,7 @@ async fn test_http_503_service_unavailable() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -2263,7 +2282,7 @@ async fn test_http_invalid_response_structure() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =
@@ -2311,7 +2330,7 @@ async fn test_http_rate_limit_error_different_code() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client = OKXRawHttpClient::with_credentials(
@@ -2366,7 +2385,7 @@ async fn test_http_empty_response_data() {
             .unwrap();
     });
 
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    wait_for_server(addr, "/api/v5/public/instruments").await;
 
     let base_url = format!("http://{addr}");
     let client =

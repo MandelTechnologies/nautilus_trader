@@ -264,20 +264,37 @@ a complete representation of every price level or order in the market, reflectin
 This ensures the highest level of execution granularity and realism. However, if granular order book data is either not
 available or necessary, then the platform has the capability of processing market data in the following descending order of detail:
 
+```mermaid
+flowchart LR
+    L3["L3 Order Book<br/>(market-by-order)"]
+    L2["L2 Order Book<br/>(market-by-price)"]
+    L1["L1 Quotes<br/>(top of book)"]
+    T["Trades"]
+    B["Bars"]
+
+    L3 --> L2 --> L1 --> T --> B
+
+    style L3 fill:#2d5a3d,color:#fff
+    style L2 fill:#3d6a4d,color:#fff
+    style L1 fill:#4d7a5d,color:#fff
+    style T fill:#5d8a6d,color:#fff
+    style B fill:#6d9a7d,color:#fff
+```
+
 1. **Order Book Data/Deltas (L3 market-by-order)**:
-   - Providing comprehensive market depth and detailed order flow, with visibility of all individual orders.
+   - Comprehensive market depth with visibility of all individual orders.
 
 2. **Order Book Data/Deltas (L2 market-by-price)**:
-   - Providing market depth visibility across all price levels.
+   - Market depth visibility across all price levels.
 
 3. **Quote Ticks (L1 market-by-price)**:
-   - Representing the "top of the book" by capturing only the best bid and ask prices and sizes.
+   - Top of book only - best bid and ask prices and sizes.
 
 4. **Trade Ticks**:
-   - Reflecting actual executed trades, offering a precise view of transaction activity.
+   - Actual executed trades.
 
 5. **Bars**:
-   - Aggregating trading activity - typically over fixed time intervals, such as 1-minute, 1-hour, or 1-day.
+   - Aggregated trading activity over fixed time intervals (e.g., 1-minute, 1-hour, 1-day).
 
 ### Choosing data: cost vs. accuracy
 

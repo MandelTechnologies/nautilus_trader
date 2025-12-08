@@ -413,7 +413,7 @@ version = "57.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.async-compression]]
-version = "0.4.34"
+version = "0.4.35"
 criteria = "safe-to-deploy"
 
 [[exemptions.async-stream]]
@@ -465,7 +465,7 @@ version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.base64ct]]
-version = "1.8.0"
+version = "1.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.bech32]]
@@ -657,7 +657,7 @@ version = "0.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.compression-codecs]]
-version = "0.4.33"
+version = "0.4.34"
 criteria = "safe-to-deploy"
 
 [[exemptions.compression-core]]
@@ -729,11 +729,11 @@ version = "1.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.criterion]]
-version = "0.8.0"
+version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.criterion-plot]]
-version = "0.8.0"
+version = "0.8.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-deque]]
@@ -1108,10 +1108,6 @@ criteria = "safe-to-deploy"
 version = "25.9.23"
 criteria = "safe-to-deploy"
 
-[[exemptions.flate2]]
-version = "1.1.7"
-criteria = "safe-to-deploy"
-
 [[exemptions.flex-error]]
 version = "0.4.4"
 criteria = "safe-to-deploy"
@@ -1418,6 +1414,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.libsqlite3-sys]]
 version = "0.30.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.libz-rs-sys]]
+version = "0.5.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.linux-raw-sys]]
@@ -1806,18 +1806,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.planus]]
 version = "0.3.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.plotters]]
-version = "0.3.7"
-criteria = "safe-to-deploy"
-
-[[exemptions.plotters-backend]]
-version = "0.3.7"
-criteria = "safe-to-deploy"
-
-[[exemptions.plotters-svg]]
-version = "0.3.7"
 criteria = "safe-to-deploy"
 
 [[exemptions.polars-arrow]]

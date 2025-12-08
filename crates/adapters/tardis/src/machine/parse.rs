@@ -325,7 +325,16 @@ pub fn parse_book_msg_as_deltas(
     );
     let ts_init = UnixNanos::from(init_nanos as u64);
 
-    let mut deltas: Vec<OrderBookDelta> = Vec::with_capacity(bids.len() + asks.len());
+    let capacity = if is_snapshot {
+        bids.len() + asks.len() + 1
+    } else {
+        bids.len() + asks.len()
+    };
+    let mut deltas: Vec<OrderBookDelta> = Vec::with_capacity(capacity);
+
+    if is_snapshot {
+        deltas.push(OrderBookDelta::clear(instrument_id, 0, ts_event, ts_init));
+    }
 
     for level in bids {
         match parse_book_level(
@@ -627,10 +636,12 @@ mod tests {
         let deltas =
             parse_book_snapshot_msg_as_deltas(msg, price_precision, size_precision, instrument_id)
                 .unwrap();
-        let delta_0 = deltas.deltas[0];
-        let delta_2 = deltas.deltas[2];
 
-        assert_eq!(deltas.deltas.len(), 4);
+        let clear_delta = deltas.deltas[0];
+        let bid_delta = deltas.deltas[1];
+        let ask_delta = deltas.deltas[3];
+
+        assert_eq!(deltas.deltas.len(), 5);
         assert_eq!(deltas.instrument_id, instrument_id);
         assert_eq!(
             deltas.flags,
@@ -639,26 +650,38 @@ mod tests {
         assert_eq!(deltas.sequence, 0);
         assert_eq!(deltas.ts_event, UnixNanos::from(1572010786950000000));
         assert_eq!(deltas.ts_init, UnixNanos::from(1572010786961000000));
-        assert_eq!(delta_0.instrument_id, instrument_id);
-        assert_eq!(delta_0.action, BookAction::Add);
-        assert_eq!(delta_0.order.side, OrderSide::Buy);
-        assert_eq!(delta_0.order.price, Price::from("7633.5"));
-        assert_eq!(delta_0.order.size, Quantity::from(1906067));
-        assert_eq!(delta_0.order.order_id, 0);
-        assert_eq!(delta_0.flags, RecordFlag::F_SNAPSHOT.value());
-        assert_eq!(delta_0.sequence, 0);
-        assert_eq!(delta_0.ts_event, UnixNanos::from(1572010786950000000));
-        assert_eq!(delta_0.ts_init, UnixNanos::from(1572010786961000000));
-        assert_eq!(delta_2.instrument_id, instrument_id);
-        assert_eq!(delta_2.action, BookAction::Add);
-        assert_eq!(delta_2.order.side, OrderSide::Sell);
-        assert_eq!(delta_2.order.price, Price::from("7634.0"));
-        assert_eq!(delta_2.order.size, Quantity::from(1467849));
-        assert_eq!(delta_2.order.order_id, 0);
-        assert_eq!(delta_2.flags, RecordFlag::F_SNAPSHOT.value());
-        assert_eq!(delta_2.sequence, 0);
-        assert_eq!(delta_2.ts_event, UnixNanos::from(1572010786950000000));
-        assert_eq!(delta_2.ts_init, UnixNanos::from(1572010786961000000));
+
+        // CLEAR delta
+        assert_eq!(clear_delta.instrument_id, instrument_id);
+        assert_eq!(clear_delta.action, BookAction::Clear);
+        assert_eq!(clear_delta.flags, RecordFlag::F_SNAPSHOT.value());
+        assert_eq!(clear_delta.sequence, 0);
+        assert_eq!(clear_delta.ts_event, UnixNanos::from(1572010786950000000));
+        assert_eq!(clear_delta.ts_init, UnixNanos::from(1572010786961000000));
+
+        // First bid delta
+        assert_eq!(bid_delta.instrument_id, instrument_id);
+        assert_eq!(bid_delta.action, BookAction::Add);
+        assert_eq!(bid_delta.order.side, OrderSide::Buy);
+        assert_eq!(bid_delta.order.price, Price::from("7633.5"));
+        assert_eq!(bid_delta.order.size, Quantity::from(1906067));
+        assert_eq!(bid_delta.order.order_id, 0);
+        assert_eq!(bid_delta.flags, RecordFlag::F_SNAPSHOT.value());
+        assert_eq!(bid_delta.sequence, 0);
+        assert_eq!(bid_delta.ts_event, UnixNanos::from(1572010786950000000));
+        assert_eq!(bid_delta.ts_init, UnixNanos::from(1572010786961000000));
+
+        // First ask delta
+        assert_eq!(ask_delta.instrument_id, instrument_id);
+        assert_eq!(ask_delta.action, BookAction::Add);
+        assert_eq!(ask_delta.order.side, OrderSide::Sell);
+        assert_eq!(ask_delta.order.price, Price::from("7634.0"));
+        assert_eq!(ask_delta.order.size, Quantity::from(1467849));
+        assert_eq!(ask_delta.order.order_id, 0);
+        assert_eq!(ask_delta.flags, RecordFlag::F_SNAPSHOT.value());
+        assert_eq!(ask_delta.sequence, 0);
+        assert_eq!(ask_delta.ts_event, UnixNanos::from(1572010786950000000));
+        assert_eq!(ask_delta.ts_init, UnixNanos::from(1572010786961000000));
     }
 
     #[rstest]

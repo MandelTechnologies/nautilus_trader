@@ -1262,16 +1262,17 @@ cdef class ExecutionEngine(Component):
             )
 
     cdef bint _is_leg_fill(self, OrderFilled fill):
-        """
-        Check if an OrderFilled event is a leg fill from a spread order.
-        """
         cdef str client_order_id_str = fill.client_order_id.value
         cdef str venue_order_id_str = fill.venue_order_id.value if fill.venue_order_id else ""
 
-        return (
-            "-LEG-" in client_order_id_str or
-            "-LEG-" in venue_order_id_str
-        ) and not fill.instrument_id.is_spread()
+        if not ("-LEG-" in client_order_id_str or "-LEG-" in venue_order_id_str):
+            return False
+
+        cdef Instrument instrument = self._cache.load_instrument(fill.instrument_id)
+        if instrument is None:
+            return False
+
+        return not instrument.is_spread()
 
     cpdef void _handle_leg_fill_without_order(self, OrderFilled fill):
         """
@@ -1523,7 +1524,7 @@ cdef class ExecutionEngine(Component):
             ClientOrderId client_order_id
             Order contingent_order
 
-        if not fill.instrument_id.is_spread():
+        if not instrument.is_spread():
             self._handle_position_update(instrument, fill, oms_type)
             position = self._cache.position(fill.position_id)
 
@@ -1531,7 +1532,7 @@ cdef class ExecutionEngine(Component):
         # For spread instruments, contingent orders work without position linkage
         if order.contingency_type == ContingencyType.OTO:
             # For non-spread instruments, link to position if available
-            if not fill.instrument_id.is_spread() and position is not None and position.is_open_c():
+            if not instrument.is_spread() and position is not None and position.is_open_c():
                 for client_order_id in order.linked_order_ids or []:
                     contingent_order = self._cache.order(client_order_id)
                     if contingent_order is not None and contingent_order.position_id is None:
