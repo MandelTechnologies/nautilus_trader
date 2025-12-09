@@ -1719,14 +1719,14 @@ impl DydxDataClient {
     }
 
     fn handle_ws_message(
-        message: crate::websocket::messages::NautilusWsMessage,
+        message: crate::websocket::enums::NautilusWsMessage,
         ctx: &WsMessageContext,
     ) {
         match message {
-            crate::websocket::messages::NautilusWsMessage::Data(payloads) => {
+            crate::websocket::enums::NautilusWsMessage::Data(payloads) => {
                 Self::handle_data_message(payloads, ctx.data_sender, ctx.incomplete_bars);
             }
-            crate::websocket::messages::NautilusWsMessage::Deltas(deltas) => {
+            crate::websocket::enums::NautilusWsMessage::Deltas(deltas) => {
                 Self::handle_deltas_message(
                     *deltas,
                     ctx.data_sender,
@@ -1735,13 +1735,13 @@ impl DydxDataClient {
                     ctx.instruments,
                 );
             }
-            crate::websocket::messages::NautilusWsMessage::OraclePrices(oracle_prices) => {
+            crate::websocket::enums::NautilusWsMessage::OraclePrices(oracle_prices) => {
                 Self::handle_oracle_prices(oracle_prices, ctx.instruments, ctx.data_sender);
             }
-            crate::websocket::messages::NautilusWsMessage::Error(err) => {
+            crate::websocket::enums::NautilusWsMessage::Error(err) => {
                 tracing::error!("dYdX WS error: {err}");
             }
-            crate::websocket::messages::NautilusWsMessage::Reconnected => {
+            crate::websocket::enums::NautilusWsMessage::Reconnected => {
                 tracing::info!("dYdX WS reconnected - re-subscribing to active subscriptions");
 
                 // Re-subscribe to all active subscriptions after WebSocket reconnection
@@ -1835,12 +1835,12 @@ impl DydxDataClient {
                     tracing::warn!("WebSocket client not available for re-subscription");
                 }
             }
-            crate::websocket::messages::NautilusWsMessage::Order(_)
-            | crate::websocket::messages::NautilusWsMessage::Fill(_)
-            | crate::websocket::messages::NautilusWsMessage::Position(_)
-            | crate::websocket::messages::NautilusWsMessage::AccountState(_)
-            | crate::websocket::messages::NautilusWsMessage::SubaccountSubscribed(_)
-            | crate::websocket::messages::NautilusWsMessage::SubaccountsChannelData(_) => {
+            crate::websocket::enums::NautilusWsMessage::Order(_)
+            | crate::websocket::enums::NautilusWsMessage::Fill(_)
+            | crate::websocket::enums::NautilusWsMessage::Position(_)
+            | crate::websocket::enums::NautilusWsMessage::AccountState(_)
+            | crate::websocket::enums::NautilusWsMessage::SubaccountSubscribed(_)
+            | crate::websocket::enums::NautilusWsMessage::SubaccountsChannelData(_) => {
                 tracing::debug!(
                     "Ignoring execution/subaccount message on dYdX data client (handled by execution adapter)"
                 );
@@ -2172,7 +2172,7 @@ impl DydxDataClient {
     fn handle_oracle_prices(
         oracle_prices: std::collections::HashMap<
             String,
-            crate::websocket::types::DydxOraclePriceMarket,
+            crate::websocket::messages::DydxOraclePriceMarket,
         >,
         instruments: &Arc<DashMap<Ustr, InstrumentAny>>,
         data_sender: &tokio::sync::mpsc::UnboundedSender<DataEvent>,
@@ -2532,7 +2532,7 @@ mod tests {
         );
         let deltas = OrderBookDeltas::new(instrument_id, vec![bid_delta, ask_delta]);
 
-        let message = crate::websocket::messages::NautilusWsMessage::Deltas(Box::new(deltas));
+        let message = crate::websocket::enums::NautilusWsMessage::Deltas(Box::new(deltas));
 
         let incomplete_bars = Arc::new(DashMap::new());
         let ctx = WsMessageContext {
@@ -2601,7 +2601,7 @@ mod tests {
         );
 
         DydxDataClient::handle_ws_message(
-            crate::websocket::messages::NautilusWsMessage::Error(err),
+            crate::websocket::enums::NautilusWsMessage::Error(err),
             &ctx,
         );
     }

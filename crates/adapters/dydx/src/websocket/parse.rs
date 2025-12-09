@@ -39,7 +39,7 @@ use crate::{
         models::{Fill, Order, PerpetualPosition},
         parse::{parse_fill_report, parse_order_status_report, parse_position_status_report},
     },
-    schemas::ws::{
+    websocket::messages::{
         DydxPerpetualPosition, DydxWsFillSubaccountMessageContents,
         DydxWsOrderSubaccountMessageContents,
     },
@@ -625,7 +625,7 @@ mod tests {
     fn test_convert_ws_fill_to_http() {
         use crate::{
             common::enums::{DydxFillType, DydxLiquidity, DydxTickerType},
-            schemas::ws::DydxWsFillSubaccountMessageContents,
+            websocket::messages::DydxWsFillSubaccountMessageContents,
         };
 
         let ws_fill = DydxWsFillSubaccountMessageContents {
@@ -664,7 +664,7 @@ mod tests {
     fn test_parse_ws_fill_report_success() {
         use crate::{
             common::enums::{DydxFillType, DydxLiquidity, DydxTickerType},
-            schemas::ws::DydxWsFillSubaccountMessageContents,
+            websocket::messages::DydxWsFillSubaccountMessageContents,
         };
 
         let instrument = create_test_instrument();
@@ -709,7 +709,7 @@ mod tests {
     fn test_parse_ws_fill_report_missing_instrument() {
         use crate::{
             common::enums::{DydxFillType, DydxLiquidity, DydxTickerType},
-            schemas::ws::DydxWsFillSubaccountMessageContents,
+            websocket::messages::DydxWsFillSubaccountMessageContents,
         };
 
         let instruments = DashMap::new(); // Empty - no instruments cached
@@ -750,7 +750,9 @@ mod tests {
     fn test_convert_ws_position_to_http() {
         use nautilus_model::enums::PositionSide;
 
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
+        use crate::{
+            common::enums::DydxPositionStatus, websocket::messages::DydxPerpetualPosition,
+        };
 
         let ws_position = DydxPerpetualPosition {
             market: "BTC-USD".into(),
@@ -797,7 +799,9 @@ mod tests {
     fn test_parse_ws_position_report_success() {
         use nautilus_model::enums::PositionSide;
 
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
+        use crate::{
+            common::enums::DydxPositionStatus, websocket::messages::DydxPerpetualPosition,
+        };
 
         let instrument = create_test_instrument();
         let instrument_id = instrument.id();
@@ -840,7 +844,9 @@ mod tests {
     fn test_parse_ws_position_report_short() {
         use nautilus_model::enums::PositionSide;
 
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
+        use crate::{
+            common::enums::DydxPositionStatus, websocket::messages::DydxPerpetualPosition,
+        };
 
         let instrument = create_test_instrument();
         let instrument_id = instrument.id();
@@ -881,7 +887,9 @@ mod tests {
     fn test_parse_ws_position_report_missing_instrument() {
         use nautilus_model::enums::PositionSide;
 
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
+        use crate::{
+            common::enums::DydxPositionStatus, websocket::messages::DydxPerpetualPosition,
+        };
 
         let instruments = DashMap::new(); // Empty - no instruments cached
 
@@ -1144,7 +1152,9 @@ mod tests {
     fn test_parse_ws_position_closed() {
         use nautilus_model::enums::PositionSide;
 
-        use crate::{common::enums::DydxPositionStatus, schemas::ws::DydxPerpetualPosition};
+        use crate::{
+            common::enums::DydxPositionStatus, websocket::messages::DydxPerpetualPosition,
+        };
 
         let instrument = create_test_instrument();
         let instrument_id = instrument.id();
@@ -1185,7 +1195,7 @@ mod tests {
     fn test_parse_ws_fill_with_maker_rebate() {
         use crate::{
             common::enums::{DydxFillType, DydxLiquidity, DydxTickerType},
-            schemas::ws::DydxWsFillSubaccountMessageContents,
+            websocket::messages::DydxWsFillSubaccountMessageContents,
         };
 
         let instrument = create_test_instrument();
@@ -1227,7 +1237,7 @@ mod tests {
     fn test_parse_ws_fill_taker_with_fee() {
         use crate::{
             common::enums::{DydxFillType, DydxLiquidity, DydxTickerType},
-            schemas::ws::DydxWsFillSubaccountMessageContents,
+            websocket::messages::DydxWsFillSubaccountMessageContents,
         };
 
         let instrument = create_test_instrument();

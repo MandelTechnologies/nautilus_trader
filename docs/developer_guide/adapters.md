@@ -12,7 +12,7 @@ NautilusTrader adapters follow a layered architecture pattern with:
 - **Rust core** for networking clients and performance-critical operations.
 - **Python layer** for integrating Rust clients into the platform's data and execution engines.
 
-Good references for consistent patterns are currently:
+Good references for standardized patterns are currently:
 
 - OKX
 - BitMEX
@@ -864,6 +864,9 @@ Use the following conventions when mirroring upstream schemas in Rust.
 Adapters should ship two layers of coverage: the Rust crate that talks to the venue and the Python glue that exposes it to the wider platform.
 Keep the suites deterministic and colocated with the production code they protect.
 
+**Key principle:** The `tests/` directory is reserved for integration tests that require external infrastructure (mock Axum servers, simulated network conditions).
+Unit tests for parsing, serialization, and business logic belong in `#[cfg(test)]` blocks within source modules.
+
 ### Rust testing
 
 #### Layout
@@ -906,13 +909,37 @@ crates/adapters/your_adapter/
 
 #### Unit tests
 
-- Focus on pure logic: parsers, signing helpers, canonicalisers, and any business rules that do not require a live transport.
-- Avoid duplicating coverage that the integration tests already provide.
+Unit tests belong in `#[cfg(test)]` blocks within source modules, not in the `tests/` directory.
+
+**What to test (in source modules):**
+
+- Deserialization of venue JSON payloads into Rust structs.
+- Parsing functions that convert venue types to Nautilus domain models.
+- Request signing and authentication helpers.
+- Enum conversions and mapping logic.
+- Price, quantity, and precision calculations.
+
+**What NOT to test:**
+
+- Standard library behavior (Vec operations, HashMap lookups, string parsing).
+- Third-party crate functionality (chrono date arithmetic, serde attributes).
+- Test helper code itself (fixture loaders, mock builders).
+
+Tests should exercise production code paths. If a test only verifies that `Vec::extend()` works or that chrono can parse a date string, it provides no value.
 
 #### Integration tests
 
-Exercise the public API against Axum mock servers. At a minimum, mirror the BitMEX test surface (see
-`crates/adapters/bitmex/tests/`) so every adapter proves the same behaviours.
+Integration tests belong in the `tests/` directory and exercise the public API against mock infrastructure.
+
+**What to test (in tests/ directory):**
+
+- HTTP client requests against mock Axum servers.
+- WebSocket connection lifecycle, authentication, and message routing.
+- Data client subscription workflows and historical data requests.
+- Execution client order submission, modification, and cancellation flows.
+- Error handling and retry behavior with simulated failures.
+
+At a minimum, review existing adapter test suites for reference patterns and ensure every adapter proves the same core behaviours.
 
 ##### HTTP client integration coverage
 
@@ -940,10 +967,12 @@ Exercise the public API against Axum mock servers. At a minimum, mirror the BitM
 - **Quota tagging** – (optional but recommended) validate that order/cancel/amend operations are tagged with the
   appropriate quota label so rate limiting can be enforced independently of subscription traffic.
 
-- Prefer event-driven assertions with shared state (for example, collect `subscription_events`, track
-  pending/confirmed topics, wait for `connection_count` transitions) instead of arbitrary `sleep` calls.
-- Use adapter-specific helpers to gate on explicit signals such as "auth confirmed" or "reconnection finished"
-  so suites remain deterministic under load.
+**CI robustness:**
+
+- Never use bare `tokio::time::sleep()` with arbitrary durations—tests become flaky under CI load and slower than necessary.
+- Use the `wait_until_async` test helper to poll for conditions with timeout. This makes tests both faster (returns immediately when condition is met) and more robust (explicit timeout instead of hoping a sleep duration is long enough).
+- Prefer event-driven assertions with shared state (for example, collect `subscription_events`, track pending/confirmed topics, wait for `connection_count` transitions).
+- Use adapter-specific helpers to gate on explicit signals such as "auth confirmed" or "reconnection finished" so suites remain deterministic under load.
 
 ### Python testing
 
@@ -973,6 +1002,13 @@ tests/integration_tests/adapters/your_adapter/
 - Exercise the adapter's Python surface (instrument providers, data/execution clients, factories) inside `tests/integration_tests/adapters/<adapter>/`.
 - Mock the PyO3 boundary (`nautilus_pyo3` shims, stubbed Rust clients) so tests stay fast while verifying that configuration, factory wiring, and error handling match the exported Rust API.
 - Mirror the Rust integration coverage: when the Rust suite adds a new behaviour (e.g., reconnection replay, error propagation), assert the Python layer performs the same sequence (connect/disconnect, submit/amend/cancel translations, venue ID hand-off, failure handling). BitMEX's Python tests provide the target level of detail.
+
+---
+
+## Documentation
+
+All adapter documentation—module-level docs, doc comments, and inline comments—should follow the [Documentation Style Guide](docs.md).
+Consistent documentation helps maintainers and users understand adapter behavior without reading implementation details.
 
 ---
 

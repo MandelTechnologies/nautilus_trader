@@ -39,7 +39,7 @@ use nautilus_dydx::{
     common::consts::{DYDX_TESTNET_HTTP_URL, DYDX_TESTNET_WS_URL},
     grpc::wallet::Wallet,
     http::client::DydxHttpClient,
-    websocket::{client::DydxWebSocketClient, messages::NautilusWsMessage},
+    websocket::{NautilusWsMessage, client::DydxWebSocketClient},
 };
 use tracing::level_filters::LevelFilter;
 

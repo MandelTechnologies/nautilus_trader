@@ -13,6 +13,11 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Order submission utilities for dYdX v4.
+//!
+//! This module provides functions for building and submitting orders to the dYdX protocol,
+//! including conditional orders (stop-loss, take-profit) and market/limit orders.
+
 use chrono::{DateTime, Duration, Utc};
 use nautilus_model::{
     enums::{OrderSide, TimeInForce},
@@ -40,13 +45,13 @@ const GTC_CONDITIONAL_ORDER_EXPIRATION_DAYS: i64 = 90;
 /// Conditional order types supported by dYdX.
 #[derive(Debug, Clone, Copy)]
 pub enum ConditionalOrderType {
-    /// Stop market: triggers at trigger_price, executes as market order
+    /// Triggers at trigger price, executes as market order.
     StopMarket,
-    /// Stop limit: triggers at trigger_price, places limit order at limit_price
+    /// Triggers at trigger price, places limit order at limit price.
     StopLimit,
-    /// Take profit market: triggers at trigger_price, executes as market order
+    /// Triggers at trigger price for profit taking, executes as market order.
     TakeProfitMarket,
-    /// Take profit limit: triggers at trigger_price, places limit order at limit_price
+    /// Triggers at trigger price for profit taking, places limit order at limit price.
     TakeProfitLimit,
 }
 

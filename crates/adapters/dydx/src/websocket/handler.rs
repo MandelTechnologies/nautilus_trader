@@ -54,23 +54,16 @@ use ustr::Ustr;
 use super::{
     DydxWsError, DydxWsResult,
     client::DYDX_RATE_LIMIT_KEY_SUBSCRIPTION,
-    enums::DydxWsChannel,
+    enums::{DydxWsChannel, DydxWsMessage, NautilusWsMessage},
     error::DydxWebSocketError,
     messages::{
-        DydxWsChannelBatchDataMsg, DydxWsChannelDataMsg, DydxWsConnectedMsg, DydxWsGenericMsg,
-        DydxWsMessage, DydxWsSubscriptionMsg, NautilusWsMessage,
-    },
-    types::{
         DydxCandle, DydxMarketsContents, DydxOrderbookContents, DydxOrderbookSnapshotContents,
-        DydxTradeContents,
+        DydxTradeContents, DydxWsChannelBatchDataMsg, DydxWsChannelDataMsg, DydxWsConnectedMsg,
+        DydxWsGenericMsg, DydxWsSubaccountsChannelContents, DydxWsSubaccountsChannelData,
+        DydxWsSubaccountsSubscribed, DydxWsSubscriptionMsg,
     },
 };
-use crate::{
-    common::parse::parse_instrument_id,
-    schemas::ws::{
-        DydxWsSubaccountsChannelContents, DydxWsSubaccountsChannelData, DydxWsSubaccountsSubscribed,
-    },
-};
+use crate::common::parse::parse_instrument_id;
 
 /// Commands sent to the feed handler.
 #[derive(Debug, Clone)]

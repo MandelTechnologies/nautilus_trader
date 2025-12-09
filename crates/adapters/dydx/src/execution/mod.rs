@@ -81,7 +81,7 @@ use crate::{
     execution::submitter::OrderSubmitter,
     grpc::{DydxGrpcClient, Wallet, types::ChainId},
     http::client::DydxHttpClient,
-    websocket::{client::DydxWebSocketClient, messages::NautilusWsMessage},
+    websocket::{client::DydxWebSocketClient, enums::NautilusWsMessage},
 };
 
 pub mod submitter;

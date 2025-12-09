@@ -66,7 +66,6 @@ pub mod execution;
 pub mod grpc;
 pub mod http;
 pub mod proto;
-pub mod schemas;
 pub mod types;
 pub mod websocket;
 
