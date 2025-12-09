@@ -32,10 +32,6 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: Set up QEMU
-        # https://github.com/docker/setup-qemu-action
-        uses: docker/setup-qemu-action@5a36b1e475568746cbcd44d051ceb180cee1f7cb # v3.6.0
-
       - name: Set up Docker Buildx
         # https://github.com/docker/setup-buildx-action
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
@@ -55,7 +51,7 @@ jobs:
           context: .
           file: .docker/nautilus_trader.dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
             ${{ steps.image.outputs.name }}:latest
