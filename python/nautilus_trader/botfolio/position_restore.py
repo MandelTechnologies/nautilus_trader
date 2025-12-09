@@ -388,4 +388,3 @@ def restore_positions_for_strategy(
 
     strategy.log.info(f"Position restore: Restored {restored_count} position(s)")
     return restored_count
-

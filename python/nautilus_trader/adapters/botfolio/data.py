@@ -355,4 +355,3 @@ class BotfolioDataClient(LiveMarketDataClient):
             await self._pubsub.unsubscribe(channel)
             self._subscribed_bar_symbols.discard(symbol)
             self._bar_types.pop(symbol, None)
-

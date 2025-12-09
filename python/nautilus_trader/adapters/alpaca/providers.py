@@ -245,4 +245,3 @@ class AlpacaInstrumentProvider(InstrumentProvider):
             ts_init=self._clock.timestamp_ns(),
             info=data,  # Store raw data for reference
         )
-

@@ -162,4 +162,3 @@ class BotfolioFillModel:
         """
         result = self.simulate_fill(order_side, quantity, market_price)
         return result.fill_price
-

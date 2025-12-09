@@ -230,4 +230,3 @@ class AlpacaTradingWebSocketClient:
         else:
             if self._logger:
                 self._logger.debug(f"Alpaca trading WS unknown message: {data}")
-

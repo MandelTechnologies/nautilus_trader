@@ -549,4 +549,3 @@ class AlpacaDataClient(LiveMarketDataClient):
             return dt_to_unix_nanos(dt)
         except Exception:
             return self._clock.timestamp_ns()
-

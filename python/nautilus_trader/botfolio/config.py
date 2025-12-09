@@ -58,4 +58,3 @@ def get_config() -> BotfolioConfig:
         alpaca_access_token=os.environ.get("APCA_API_ACCESS_TOKEN"),
         alpaca_base_url=os.environ.get("APCA_API_BASE_URL"),
     )
-

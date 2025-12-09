@@ -667,4 +667,3 @@ class AlpacaExecutionClient(LiveExecutionClient):
             "pending_replace": OrderStatus.PENDING_UPDATE,
         }
         return mapping.get(status.lower(), OrderStatus.ACCEPTED)
-

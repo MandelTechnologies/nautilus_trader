@@ -327,4 +327,3 @@ class AlpacaDataWebSocketClient:
 
         await self._ws.send_json({"action": "unsubscribe", "bars": to_unsub})
         self._subscribed_bars.difference_update(to_unsub)
-

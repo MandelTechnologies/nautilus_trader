@@ -84,4 +84,3 @@ __all__ = [
     "AlpacaOrderType",
     "AlpacaTimeInForce",
 ]
-

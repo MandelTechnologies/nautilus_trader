@@ -200,4 +200,3 @@ class BotfolioInstrumentProvider(InstrumentProvider):
             ts_init=self._clock.timestamp_ns(),
             info={},
         )
-

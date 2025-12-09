@@ -142,4 +142,3 @@ def get_auth_headers(
         "Provide api_key/api_secret or access_token, "
         "or set APCA_API_KEY_ID/APCA_API_SECRET_KEY or APCA_API_ACCESS_TOKEN env vars.",
     )
-

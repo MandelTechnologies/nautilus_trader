@@ -445,4 +445,3 @@ class BotfolioExecutionClient(LiveExecutionClient):
         """
         # For paper trading, positions are tracked in the cache
         return []
-

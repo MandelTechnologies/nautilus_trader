@@ -127,4 +127,3 @@ def get_data_ws_url(feed: str) -> str:
     if feed == "crypto":
         return ALPACA_CRYPTO_DATA_WS_URL
     return f"{ALPACA_DATA_WS_URL}/{feed}"
-

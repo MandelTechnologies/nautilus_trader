@@ -240,4 +240,3 @@ class AlpacaLiveExecClientFactory(LiveExecClientFactory):
             config=config,
             name=name,
         )
-

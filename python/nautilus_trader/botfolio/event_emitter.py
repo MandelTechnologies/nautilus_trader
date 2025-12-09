@@ -253,4 +253,3 @@ class EventEmitter(Actor):
                 "ts_event": event.ts_event,
             },
         )
-

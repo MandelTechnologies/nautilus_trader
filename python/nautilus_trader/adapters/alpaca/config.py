@@ -103,4 +103,3 @@ class AlpacaExecClientConfig(LiveExecClientConfig, frozen=True):
     paper: bool = True
     max_retries: PositiveInt | None = 3
     retry_delay_secs: float = 1.0
-

@@ -1,6 +1,9 @@
 """
 Lightweight Alpaca adapter scaffold for Bot-folio Nautilus workers.
-This is a placeholder for live execution; methods must be implemented before production use.
+
+This is a placeholder for live execution; methods must be implemented before production
+use.
+
 """
 
 from __future__ import annotations
@@ -68,5 +71,3 @@ class AlpacaBotfolioAdapter:
 
     async def poll_health(self) -> dict:
         raise NotImplementedError("poll_health() not implemented")
-
-

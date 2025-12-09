@@ -61,4 +61,3 @@ class BotfolioExecClientConfig(LiveExecClientConfig, frozen=True):
     base_latency_ms: PositiveInt = DEFAULT_BASE_LATENCY_MS
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
     partial_fill_prob: float = 0.0
-
