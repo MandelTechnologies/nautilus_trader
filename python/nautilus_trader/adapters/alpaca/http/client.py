@@ -213,28 +213,21 @@ class AlpacaHttpClient:
             "time_in_force": time_in_force,
         }
 
-        if qty:
-            body["qty"] = qty
-        if notional:
-            body["notional"] = notional
-        if limit_price:
-            body["limit_price"] = limit_price
-        if stop_price:
-            body["stop_price"] = stop_price
-        if client_order_id:
-            body["client_order_id"] = client_order_id
-        if extended_hours:
-            body["extended_hours"] = extended_hours
-        if order_class:
-            body["order_class"] = order_class
-        if take_profit:
-            body["take_profit"] = take_profit
-        if stop_loss:
-            body["stop_loss"] = stop_loss
-        if trail_price:
-            body["trail_price"] = trail_price
-        if trail_percent:
-            body["trail_percent"] = trail_percent
+        # Add optional parameters if provided
+        optional_params = {
+            "qty": qty,
+            "notional": notional,
+            "limit_price": limit_price,
+            "stop_price": stop_price,
+            "client_order_id": client_order_id,
+            "extended_hours": extended_hours if extended_hours else None,
+            "order_class": order_class,
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
+            "trail_price": trail_price,
+            "trail_percent": trail_percent,
+        }
+        body.update({k: v for k, v in optional_params.items() if v is not None})
 
         return await self._request("POST", f"{self._trading_base_url}/v2/orders", json=body)
 
@@ -449,45 +442,3 @@ class AlpacaHttpClient:
                 f"{self._data_base_url}/v2/stocks/{symbol}/trades/latest",
                 params={"feed": feed},
             )
-
-    async def get_latest_bar(
-        self,
-        symbol: str,
-        timeframe: str = "1Min",
-        feed: str = "iex",
-    ) -> dict[str, Any]:
-        """
-        Get the latest bar for a symbol at a specific timeframe.
-        
-        Parameters
-        ----------
-        symbol : str
-            The symbol (e.g., "AAPL" or "BTC/USD").
-        timeframe : str, default "1Min"
-            The bar timeframe: "1Min", "5Min", "15Min", "1Hour", "1Day", "1Week", "1Month".
-        feed : str, default "iex"
-            The data feed for stocks ("iex" or "sip"). Ignored for crypto.
-        
-        Returns
-        -------
-        dict
-            The latest bar data from Alpaca.
-        
-        Note: Bars are created shortly after the period ends, so the "latest"
-        bar is the most recently completed bar at the specified timeframe.
-        """
-        is_crypto = self._is_crypto_symbol(symbol)
-        
-        if is_crypto:
-            return await self._request(
-                "GET",
-                f"{self._data_base_url}/v1beta3/crypto/us/latest/bars",
-                params={"symbols": symbol, "timeframe": timeframe},
-            )
-        else:
-            return await self._request(
-                "GET",
-                f"{self._data_base_url}/v2/stocks/{symbol}/bars/latest",
-                params={"feed": feed, "timeframe": timeframe},
-            )
-

@@ -76,8 +76,8 @@ class EventEmitter(Actor):
         if self._redis:
             try:
                 self._redis.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log.debug(f"Error closing Redis connection: {e}")
             self._redis = None
         self._log.info("EventEmitter stopped")
 

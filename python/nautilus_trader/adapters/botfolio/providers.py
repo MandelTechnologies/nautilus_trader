@@ -112,7 +112,7 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         if "/" in symbol_str:
             # Currency pair (e.g., BTC/USD, EUR/USD)
             return self._create_currency_pair(instrument_id, symbol_str)
-        elif symbol_str.endswith("-USD") or symbol_str.endswith("-USDT"):
+        elif symbol_str.endswith(("-USD", "-USDT")):
             # Crypto (e.g., BTC-USD, ETH-USDT)
             return self._create_currency_pair(instrument_id, symbol_str)
         else:

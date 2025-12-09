@@ -444,28 +444,36 @@ class AlpacaDataClient(LiveMarketDataClient):
         This is called when subscribing to bars to provide immediate price data
         to strategies, rather than making them wait for the current bar to close.
         
-        The "latest" bar from Alpaca is the most recently completed bar at the
-        specified timeframe (e.g., minute, hour, day).
+        Uses the historical bars endpoint with limit=1 to get the most recent
+        completed bar at the correct timeframe.
         """
         try:
             feed = "crypto" if self._is_crypto_symbol(symbol) else self._config.data_feed
             timeframe = self._map_bar_type_to_timeframe(bar_type)
-            response = await self._http_client.get_latest_bar(symbol, timeframe=timeframe, feed=feed)
+            
+            # Use get_bars with limit=1 to get the most recent bar at the correct timeframe
+            response = await self._http_client.get_bars(
+                symbol=symbol,
+                timeframe=timeframe,
+                limit=1,
+                feed=feed,
+            )
             
             # Parse response - format differs between crypto and stocks
+            bars_data = response.get("bars", {})
             if self._is_crypto_symbol(symbol):
-                # Crypto: {"bars": {"BTC/USD": {...}}}
-                bars_data = response.get("bars", {})
-                bar_data = bars_data.get(symbol)
+                # Crypto: {"bars": {"BTC/USD": [...]}}
+                symbol_bars = bars_data.get(symbol, [])
             else:
-                # Stocks: {"bar": {...}}
-                bar_data = response.get("bar")
+                # Stocks: {"bars": [...]}
+                symbol_bars = bars_data if isinstance(bars_data, list) else []
             
-            if bar_data:
+            if symbol_bars:
+                bar_data = symbol_bars[-1]  # Get the most recent bar
                 bar = self._parse_bar(bar_data, bar_type)
                 self._handle_data(bar)
                 self._log.info(
-                    f"Quick-start: Emitted latest bar for {symbol} "
+                    f"Quick-start: Emitted latest {timeframe} bar for {symbol} "
                     f"(close={bar.close}, ts={bar_data.get('t', 'unknown')})",
                     LogColor.GREEN,
                 )

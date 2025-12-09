@@ -192,6 +192,89 @@ def restore_positions_from_env(
     return restored_count
 
 
+def _get_position_strategy_id(strategy: Strategy) -> StrategyId:
+    """Get the strategy ID to use for position isolation."""
+    bot_id = os.environ.get("BOTFOLIO_BOT_ID", "")
+    if not bot_id:
+        strategy.log.warning("Position restore: BOTFOLIO_BOT_ID not set, using strategy.id")
+        return strategy.id
+    return StrategyId(bot_id)
+
+
+def _get_account_for_restore(
+    strategy: Strategy,
+    instrument_ids: list[InstrumentId] | None,
+) -> Any | None:
+    """Get account from portfolio for position restore."""
+    account = strategy.portfolio.account(strategy.portfolio.default_venue())
+    if account is None:
+        for iid in instrument_ids or []:
+            account = strategy.portfolio.account(iid.venue)
+            if account:
+                break
+    return account
+
+
+def _restore_single_position(
+    strategy: Strategy,
+    pos_data: dict[str, Any],
+    venue: str,
+    position_strategy_id: StrategyId,
+    account: Any,
+) -> bool:
+    """Restore a single position. Returns True if restored successfully."""
+    symbol = pos_data.get("symbol")
+    quantity = Decimal(str(pos_data.get("quantity", 0)))
+    avg_price = Decimal(str(pos_data.get("averagePrice", 0)))
+
+    if abs(quantity) < Decimal("0.00000001"):
+        return False  # Skip zero positions
+
+    instrument_id = InstrumentId.from_str(f"{symbol}.{venue}")
+    cache = strategy.cache
+
+    # Check if position already exists
+    if cache.positions_open(instrument_id=instrument_id):
+        strategy.log.info(f"Position restore: Position already exists for {instrument_id}, skipping")
+        return False
+
+    instrument = cache.instrument(instrument_id)
+    if instrument is None:
+        strategy.log.warning(f"Position restore: Instrument {instrument_id} not in cache, skipping")
+        return False
+
+    # Create synthetic fill to establish position
+    order_side = OrderSide.BUY if quantity > 0 else OrderSide.SELL
+    fill = OrderFilled(
+        trader_id=strategy.trader_id,
+        strategy_id=position_strategy_id,
+        instrument_id=instrument_id,
+        client_order_id=ClientOrderId(f"RESTORE-{symbol}-{UUID4().value[:8]}"),
+        venue_order_id=VenueOrderId(f"RESTORE-{UUID4().value[:8]}"),
+        account_id=account.id,
+        trade_id=TradeId(f"RESTORE-{UUID4().value[:8]}"),
+        order_side=order_side,
+        order_type=None,
+        last_qty=Quantity(abs(quantity), instrument.size_precision),
+        last_px=Price(avg_price, instrument.price_precision),
+        currency=Currency.from_str("USD"),
+        liquidity_side=None,
+        event_id=UUID4(),
+        ts_event=0,
+        ts_init=0,
+        reconciliation=True,
+    )
+
+    position = Position(instrument=instrument, fill=fill)
+    cache.add_position(position, OmsType.NETTING)
+
+    strategy.log.info(
+        f"Position restore: Restored {symbol} qty={quantity} avg_px={avg_price} "
+        f"(strategy_id={position_strategy_id})",
+    )
+    return True
+
+
 def restore_positions_for_strategy(
     strategy: Strategy,
     venue: str = "ALPACA",
@@ -246,6 +329,7 @@ def restore_positions_for_strategy(
 
             # ... rest of strategy logic
     ```
+
     """
     positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
 
@@ -259,111 +343,29 @@ def restore_positions_for_strategy(
         strategy.log.info("Position restore: No positions to restore")
         return 0
 
-    # Use bot_id for position isolation (stable across strategy class name changes)
-    bot_id = os.environ.get("BOTFOLIO_BOT_ID", "")
-    if not bot_id:
-        strategy.log.warning("Position restore: BOTFOLIO_BOT_ID not set, using strategy.id")
-        position_strategy_id = strategy.id
-    else:
-        position_strategy_id = StrategyId(bot_id)
-
+    position_strategy_id = _get_position_strategy_id(strategy)
     strategy.log.info(f"Position restore: Using strategy_id={position_strategy_id}")
+
+    account = _get_account_for_restore(strategy, instrument_ids)
+    if account is None:
+        strategy.log.warning("Position restore: No account found, cannot restore positions")
+        return 0
 
     # Build set of instrument symbols to filter by (if specified)
     filter_symbols: set[str] | None = None
     if instrument_ids:
         filter_symbols = {str(iid).split(".")[0] for iid in instrument_ids}
 
-    # Get account_id from portfolio
-    account = strategy.portfolio.account(strategy.portfolio.default_venue())
-    if account is None:
-        # Try to get from any venue in instrument_ids
-        for iid in instrument_ids or []:
-            account = strategy.portfolio.account(iid.venue)
-            if account:
-                break
-
-    if account is None:
-        strategy.log.warning("Position restore: No account found, cannot restore positions")
-        return 0
-
     restored_count = 0
-    cache = strategy.cache
-
     for pos_data in positions_data:
+        symbol = pos_data.get("symbol")
+        if filter_symbols and symbol not in filter_symbols:
+            continue
         try:
-            symbol = pos_data.get("symbol")
-
-            # Filter by instrument if specified
-            if filter_symbols and symbol not in filter_symbols:
-                continue
-
-            quantity = Decimal(str(pos_data.get("quantity", 0)))
-            avg_price = Decimal(str(pos_data.get("averagePrice", 0)))
-
-            if abs(quantity) < Decimal("0.00000001"):
-                continue  # Skip zero positions
-
-            instrument_id = InstrumentId.from_str(f"{symbol}.{venue}")
-
-            # Check if position already exists for this instrument (any strategy_id)
-            # We check without strategy_id filter since the strategy's actual ID
-            # differs from our bot_id-based position_strategy_id
-            existing_positions = cache.positions_open(instrument_id=instrument_id)
-            if existing_positions:
-                strategy.log.info(
-                    f"Position restore: Position already exists for {instrument_id}, skipping"
-                )
-                continue
-
-            # Get the instrument from cache to determine precision
-            instrument = cache.instrument(instrument_id)
-            if instrument is None:
-                strategy.log.warning(
-                    f"Position restore: Instrument {instrument_id} not in cache, skipping"
-                )
-                continue
-
-            # Determine order side from quantity sign
-            order_side = OrderSide.BUY if quantity > 0 else OrderSide.SELL
-            abs_quantity = abs(quantity)
-
-            # Create a synthetic fill event to establish the position
-            # Use bot_id-based strategy_id for consistent position isolation
-            fill = OrderFilled(
-                trader_id=strategy.trader_id,
-                strategy_id=position_strategy_id,
-                instrument_id=instrument_id,
-                client_order_id=ClientOrderId(f"RESTORE-{symbol}-{UUID4().value[:8]}"),
-                venue_order_id=VenueOrderId(f"RESTORE-{UUID4().value[:8]}"),
-                account_id=account.id,
-                trade_id=TradeId(f"RESTORE-{UUID4().value[:8]}"),
-                order_side=order_side,
-                order_type=None,
-                last_qty=Quantity(abs_quantity, instrument.size_precision),
-                last_px=Price(avg_price, instrument.price_precision),
-                currency=Currency.from_str("USD"),
-                liquidity_side=None,
-                event_id=UUID4(),
-                ts_event=0,
-                ts_init=0,
-                reconciliation=True,
-            )
-
-            # Create position from the fill
-            position = Position(instrument=instrument, fill=fill)
-
-            # Add to cache with NETTING OMS type
-            cache.add_position(position, OmsType.NETTING)
-
-            strategy.log.info(
-                f"Position restore: Restored {symbol} qty={quantity} avg_px={avg_price} (strategy_id={position_strategy_id})"
-            )
-            restored_count += 1
-
+            if _restore_single_position(strategy, pos_data, venue, position_strategy_id, account):
+                restored_count += 1
         except Exception as e:
             strategy.log.error(f"Position restore: Failed for {pos_data}: {e}")
-            continue
 
     strategy.log.info(f"Position restore: Restored {restored_count} position(s)")
     return restored_count

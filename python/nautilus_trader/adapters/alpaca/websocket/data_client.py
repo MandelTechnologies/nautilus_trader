@@ -161,24 +161,9 @@ class AlpacaDataWebSocketClient:
         while self._running and self._ws:
             try:
                 msg = await self._ws.receive()
-
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    data = json.loads(msg.data)
-                    await self._handle_messages(data)
-                elif msg.type == aiohttp.WSMsgType.BINARY:
-                    data = json.loads(msg.data.decode("utf-8"))
-                    await self._handle_messages(data)
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    if self._logger:
-                        self._logger.warning("Alpaca data WebSocket closed")
+                should_break = await self._process_ws_message(msg)
+                if should_break:
                     break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    if self._logger:
-                        self._logger.error(f"Alpaca data WebSocket error: {msg.data}")
-                    if self._on_error:
-                        self._on_error(str(msg.data))
-                    break
-
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -186,6 +171,24 @@ class AlpacaDataWebSocketClient:
                     self._logger.error(f"Alpaca data WS listen error: {e}")
                 if self._on_error:
                     self._on_error(str(e))
+
+    async def _process_ws_message(self, msg: aiohttp.WSMessage) -> bool:
+        """Process a WebSocket message. Returns True if loop should break."""
+        if msg.type == aiohttp.WSMsgType.TEXT:
+            await self._handle_messages(json.loads(msg.data))
+        elif msg.type == aiohttp.WSMsgType.BINARY:
+            await self._handle_messages(json.loads(msg.data.decode("utf-8")))
+        elif msg.type == aiohttp.WSMsgType.CLOSED:
+            if self._logger:
+                self._logger.warning("Alpaca data WebSocket closed")
+            return True
+        elif msg.type == aiohttp.WSMsgType.ERROR:
+            if self._logger:
+                self._logger.error(f"Alpaca data WebSocket error: {msg.data}")
+            if self._on_error:
+                self._on_error(str(msg.data))
+            return True
+        return False
 
     async def _handle_messages(self, data: list[dict[str, Any]] | dict[str, Any]) -> None:
         """Handle incoming WebSocket messages."""

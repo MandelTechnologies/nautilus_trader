@@ -87,8 +87,8 @@ class BotfolioFillModel:
             The simulated fill result with price, quantity, and latency.
 
         """
-        # Calculate latency
-        latency_ms = self.base_latency_ms + random.randint(0, self.latency_jitter_ms)
+        # Calculate latency (S311: using random for simulation, not cryptography)
+        latency_ms = self.base_latency_ms + random.randint(0, self.latency_jitter_ms)  # noqa: S311
 
         # Calculate notional value
         qty_decimal = Decimal(str(quantity))
@@ -112,11 +112,11 @@ class BotfolioFillModel:
         fill_price_decimal = fill_price_decimal.quantize(Decimal("0.01"))
         fill_price = Price.from_str(str(fill_price_decimal))
 
-        # Determine if partial fill
-        is_partial = random.random() < self.partial_fill_prob
+        # Determine if partial fill (S311: using random for simulation, not cryptography)
+        is_partial = random.random() < self.partial_fill_prob  # noqa: S311
         if is_partial:
             # Fill between min_partial_fill_pct and 100%
-            fill_pct = random.uniform(self.min_partial_fill_pct, 1.0)
+            fill_pct = random.uniform(self.min_partial_fill_pct, 1.0)  # noqa: S311
             fill_qty_decimal = qty_decimal * Decimal(str(fill_pct))
             # Round to reasonable precision
             fill_qty_decimal = fill_qty_decimal.quantize(Decimal("0.00000001"))

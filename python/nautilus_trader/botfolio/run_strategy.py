@@ -190,8 +190,8 @@ def main():
         else:
             log("Warning: No config found, running without credentials")
 
-        # 5. Write strategy to disk
-        script_path = "/tmp/strategy.py"
+        # 5. Write strategy to disk (S108: /tmp is intentional for container ephemeral storage)
+        script_path = "/tmp/strategy.py"  # noqa: S108
         with open(script_path, "w") as f:
             f.write(strategy_code)
 
@@ -200,10 +200,11 @@ def main():
         sys.stdout.flush()
 
         # 6. Execute strategy using exec() so we can catch errors
+        # S102: exec is intentional - this is a strategy runner that loads user code
         try:
             with open(script_path) as f:
                 code = f.read()
-            exec(compile(code, script_path, 'exec'), {'__name__': '__main__', '__file__': script_path})
+            exec(compile(code, script_path, "exec"), {"__name__": "__main__", "__file__": script_path})  # noqa: S102
         except Exception as e:
             log(f"FATAL: Strategy execution failed: {type(e).__name__}: {e}")
             traceback.print_exc()
