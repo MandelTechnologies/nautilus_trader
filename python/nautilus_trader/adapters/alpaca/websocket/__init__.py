@@ -8,4 +8,3 @@ from nautilus_trader.adapters.alpaca.websocket.trading_client import AlpacaTradi
 
 
 __all__ = ["AlpacaDataWebSocketClient", "AlpacaTradingWebSocketClient"]
-
