@@ -12,10 +12,6 @@ from typing import Any
 
 from nautilus_trader.adapters.alpaca.config import AlpacaExecClientConfig
 from nautilus_trader.adapters.alpaca.constants import ALPACA_VENUE
-from nautilus_trader.adapters.alpaca.constants import AlpacaOrderSide
-from nautilus_trader.adapters.alpaca.constants import AlpacaOrderStatus
-from nautilus_trader.adapters.alpaca.constants import AlpacaOrderType
-from nautilus_trader.adapters.alpaca.constants import AlpacaTimeInForce
 from nautilus_trader.adapters.alpaca.http.client import AlpacaHttpClient
 from nautilus_trader.adapters.alpaca.providers import AlpacaInstrumentProvider
 from nautilus_trader.adapters.alpaca.websocket.trading_client import AlpacaTradingWebSocketClient
@@ -47,7 +43,6 @@ from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TradeId
@@ -57,7 +52,6 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
-from nautilus_trader.model.orders import Order
 
 
 class AlpacaExecutionClient(LiveExecutionClient):
@@ -82,7 +76,6 @@ class AlpacaExecutionClient(LiveExecutionClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
-
     """
 
     def __init__(
@@ -182,14 +175,14 @@ class AlpacaExecutionClient(LiveExecutionClient):
             cash = Decimal(virtual_cash_str)
             self._log.info(
                 f"Position isolation: using bot virtual cash={cash} USD "
-                f"(ignoring Alpaca account balance)"
+                f"(ignoring Alpaca account balance)",
             )
         elif initial_capital_str:
             # Fallback to initial capital if virtual cash not set
             cash = Decimal(initial_capital_str)
             self._log.info(
                 f"Position isolation: using bot initial capital={cash} USD "
-                f"(ignoring Alpaca account balance)"
+                f"(ignoring Alpaca account balance)",
             )
         else:
             # No isolation configured - use Alpaca balance (legacy behavior)
@@ -198,7 +191,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
             cash = Decimal(str(account_info.get("cash", "0")))
             self._log.warning(
                 f"Position isolation NOT configured - using Alpaca account cash={cash} USD. "
-                f"Set BOTFOLIO_VIRTUAL_CASH for proper bot isolation."
+                f"Set BOTFOLIO_VIRTUAL_CASH for proper bot isolation.",
             )
 
         # Create account balance for USD
@@ -208,7 +201,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
                 total=Money(cash, usd),
                 locked=Money(0, usd),
                 free=Money(cash, usd),
-            )
+            ),
         ]
 
         self.generate_account_state(
@@ -322,7 +315,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
             else:
                 # Try by client order ID
                 order = await self._http_client.get_order_by_client_id(
-                    command.client_order_id.value
+                    command.client_order_id.value,
                 )
                 await self._http_client.cancel_order(order["id"])
 
@@ -417,7 +410,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
         see or interact with each other's positions.
         """
         self._log.info(
-            "Position reconciliation disabled - using backend-managed positions for bot isolation"
+            "Position reconciliation disabled - using backend-managed positions for bot isolation",
         )
         return []
 

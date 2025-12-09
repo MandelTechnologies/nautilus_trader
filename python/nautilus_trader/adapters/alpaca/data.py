@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.adapters.alpaca.config import AlpacaDataClientConfig
@@ -21,20 +20,18 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core.datetime import dt_to_unix_nanos
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.data.messages import SubscribeBars
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
 from nautilus_trader.data.messages import UnsubscribeBars
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeTradeTicks
+from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
-from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AggressorSide
-from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
@@ -69,7 +66,6 @@ class AlpacaDataClient(LiveMarketDataClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
-
     """
 
     def __init__(
@@ -310,7 +306,7 @@ class AlpacaDataClient(LiveMarketDataClient):
 
             bars = []
             bars_data = response.get("bars", {})
-            
+
             # Handle different response formats:
             # - Stocks: {"bars": [...]} (list)
             # - Crypto: {"bars": {"BTC/USD": [...]}} (dict keyed by symbol)
@@ -320,7 +316,7 @@ class AlpacaDataClient(LiveMarketDataClient):
             else:
                 # Stocks format - bars is already a list
                 symbol_bars = bars_data
-                
+
             for bar_data in symbol_bars:
                 bar = self._parse_bar(bar_data, bar_type)
                 bars.append(bar)
@@ -440,17 +436,18 @@ class AlpacaDataClient(LiveMarketDataClient):
     async def _emit_latest_bar(self, symbol: str, bar_type: BarType) -> None:
         """
         Fetch and emit the latest bar for quick startup.
-        
-        This is called when subscribing to bars to provide immediate price data
-        to strategies, rather than making them wait for the current bar to close.
-        
-        Uses the historical bars endpoint with limit=1 to get the most recent
-        completed bar at the correct timeframe.
+
+        This is called when subscribing to bars to provide immediate
+        price data to strategies, rather than making them wait for the
+        current bar to close.
+
+        Uses the historical bars endpoint with limit=1 to get the most
+        recent completed bar at the correct timeframe.
         """
         try:
             feed = "crypto" if self._is_crypto_symbol(symbol) else self._config.data_feed
             timeframe = self._map_bar_type_to_timeframe(bar_type)
-            
+
             # Use get_bars with limit=1 to get the most recent bar at the correct timeframe
             response = await self._http_client.get_bars(
                 symbol=symbol,
@@ -458,7 +455,7 @@ class AlpacaDataClient(LiveMarketDataClient):
                 limit=1,
                 feed=feed,
             )
-            
+
             # Parse response - format differs between crypto and stocks
             bars_data = response.get("bars", {})
             if self._is_crypto_symbol(symbol):
@@ -467,7 +464,7 @@ class AlpacaDataClient(LiveMarketDataClient):
             else:
                 # Stocks: {"bars": [...]}
                 symbol_bars = bars_data if isinstance(bars_data, list) else []
-            
+
             if symbol_bars:
                 bar_data = symbol_bars[-1]  # Get the most recent bar
                 bar = self._parse_bar(bar_data, bar_type)
@@ -479,7 +476,7 @@ class AlpacaDataClient(LiveMarketDataClient):
                 )
             else:
                 self._log.warning(f"Quick-start: No latest bar available for {symbol}")
-                
+
         except Exception as e:
             # Don't fail the subscription if quick-start fails - just log and continue
             self._log.warning(f"Quick-start: Failed to fetch latest bar for {symbol}: {e}")

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from urllib.parse import quote
 
@@ -36,7 +35,6 @@ class AlpacaHttpClient:
         If using paper trading endpoints.
     logger : Logger, optional
         The logger for the client.
-
     """
 
     def __init__(
@@ -121,7 +119,6 @@ class AlpacaHttpClient:
             If client is not connected.
         aiohttp.ClientResponseError
             If the request fails.
-
         """
         if self._session is None:
             raise RuntimeError("AlpacaHttpClient not connected. Call connect() first.")
@@ -263,7 +260,7 @@ class AlpacaHttpClient:
             body["client_order_id"] = client_order_id
 
         return await self._request(
-            "PATCH", f"{self._trading_base_url}/v2/orders/{order_id}", json=body
+            "PATCH", f"{self._trading_base_url}/v2/orders/{order_id}", json=body,
         )
 
     # ---- Assets API Methods ----
@@ -298,15 +295,16 @@ class AlpacaHttpClient:
         return "/" in symbol
 
     def _get_data_endpoint(self, symbol: str, data_type: str) -> str:
-        """Get the appropriate data endpoint for a symbol.
-        
+        """
+        Get the appropriate data endpoint for a symbol.
+
         Parameters
         ----------
         symbol : str
             The symbol (e.g., "AAPL" for stocks, "BTC/USD" for crypto).
         data_type : str
             The data type: "bars", "quotes", "trades".
-            
+
         Returns
         -------
         str
@@ -331,12 +329,12 @@ class AlpacaHttpClient:
     ) -> dict[str, Any]:
         """Get historical bars for a symbol."""
         is_crypto = self._is_crypto_symbol(symbol)
-        
+
         params: dict[str, Any] = {
             "timeframe": timeframe,
             "limit": limit,
         }
-        
+
         if is_crypto:
             # Crypto endpoint uses "symbols" parameter
             params["symbols"] = symbol
@@ -344,7 +342,7 @@ class AlpacaHttpClient:
             # Stocks endpoint uses path parameter and additional options
             params["adjustment"] = adjustment
             params["feed"] = feed
-            
+
         if start:
             params["start"] = start
         if end:
@@ -363,16 +361,16 @@ class AlpacaHttpClient:
     ) -> dict[str, Any]:
         """Get historical quotes for a symbol."""
         is_crypto = self._is_crypto_symbol(symbol)
-        
+
         params: dict[str, Any] = {
             "limit": limit,
         }
-        
+
         if is_crypto:
             params["symbols"] = symbol
         else:
             params["feed"] = feed
-            
+
         if start:
             params["start"] = start
         if end:
@@ -391,16 +389,16 @@ class AlpacaHttpClient:
     ) -> dict[str, Any]:
         """Get historical trades for a symbol."""
         is_crypto = self._is_crypto_symbol(symbol)
-        
+
         params: dict[str, Any] = {
             "limit": limit,
         }
-        
+
         if is_crypto:
             params["symbols"] = symbol
         else:
             params["feed"] = feed
-            
+
         if start:
             params["start"] = start
         if end:
@@ -412,7 +410,7 @@ class AlpacaHttpClient:
     async def get_latest_quote(self, symbol: str, feed: str = "iex") -> dict[str, Any]:
         """Get latest quote for a symbol."""
         is_crypto = self._is_crypto_symbol(symbol)
-        
+
         if is_crypto:
             return await self._request(
                 "GET",
@@ -429,7 +427,7 @@ class AlpacaHttpClient:
     async def get_latest_trade(self, symbol: str, feed: str = "iex") -> dict[str, Any]:
         """Get latest trade for a symbol."""
         is_crypto = self._is_crypto_symbol(symbol)
-        
+
         if is_crypto:
             return await self._request(
                 "GET",

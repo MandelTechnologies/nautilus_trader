@@ -1,11 +1,11 @@
 """
 Trading Engine entry point for bot-folio.
 
-Fetches strategy code and config from Redis, sets up credentials as environment
-variables, then executes the strategy using Nautilus Trader.
+Fetches strategy code and config from Redis, sets up credentials as
+environment variables, then executes the strategy using Nautilus Trader.
 
-All output is captured and persisted to Redis before exit so logs are always
-available even after the container is removed.
+All output is captured and persisted to Redis before exit so logs are
+always available even after the container is removed.
 """
 import io
 import json
@@ -13,14 +13,15 @@ import os
 import sys
 import time
 import traceback
-from contextlib import redirect_stdout, redirect_stderr
-from datetime import datetime, timezone
+from datetime import UTC
+from datetime import datetime
 
 import redis
 
 
 class TeeWriter:
     """Write to multiple streams simultaneously."""
+
     def __init__(self, *streams):
         self.streams = streams
 
@@ -46,11 +47,11 @@ def _persist_logs():
         return
     try:
         logs = _log_buffer.getvalue()
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         log_entry = json.dumps({
             "logs": logs,
             "timestamp": timestamp,
-            "exitedAt": timestamp
+            "exitedAt": timestamp,
         })
         # Persist to Redis with 24h TTL so logs are available after container dies
         _redis_client.setex(f"bot:{_bot_id}:logs", 86400, log_entry)
@@ -61,7 +62,7 @@ def _persist_logs():
 
 def log(message: str):
     """Log a message with timestamp."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     print(f"{ts} [Trading Node] {message}")
 
 
@@ -79,7 +80,9 @@ def fetch_from_redis(r: redis.Redis, key: str, max_attempts: int = 10) -> str | 
 def setup_credentials_env(config: dict) -> None:
     """
     Set up environment variables from the config credentials.
-    This allows the strategy code to access credentials via standard env vars.
+
+    This allows the strategy code to access credentials via standard env
+    vars.
     """
     credentials = config.get("credentials", {})
 

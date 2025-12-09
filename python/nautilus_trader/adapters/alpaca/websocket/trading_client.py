@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import aiohttp
 
@@ -33,7 +34,6 @@ class AlpacaTradingWebSocketClient:
         If using paper trading endpoints.
     logger : Logger, optional
         The logger for the client.
-
     """
 
     def __init__(
@@ -61,7 +61,10 @@ class AlpacaTradingWebSocketClient:
         self._on_error: Callable[[str], None] | None = None
 
     def set_on_trade_update(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        """Set callback for trade update messages (order fills, cancels, etc.)."""
+        """
+        Set callback for trade update messages (order fills, cancels,
+        etc.).
+        """
         self._on_trade_update = callback
 
     def set_on_error(self, callback: Callable[[str], None]) -> None:
@@ -96,7 +99,7 @@ class AlpacaTradingWebSocketClient:
         if response.get("stream") == "authorization":
             if response.get("data", {}).get("status") != "authorized":
                 raise RuntimeError(
-                    f"Alpaca trading WS auth failed: {response.get('data', {}).get('message')}"
+                    f"Alpaca trading WS auth failed: {response.get('data', {}).get('message')}",
                 )
 
         # Subscribe to trade updates
@@ -175,7 +178,11 @@ class AlpacaTradingWebSocketClient:
                     self._on_error(str(e))
 
     async def _process_ws_message(self, msg: aiohttp.WSMessage) -> bool:
-        """Process a WebSocket message. Returns True if loop should break."""
+        """
+        Process a WebSocket message.
+
+        Returns True if loop should break.
+        """
         if msg.type == aiohttp.WSMsgType.TEXT:
             await self._handle_message(json.loads(msg.data))
         elif msg.type == aiohttp.WSMsgType.BINARY:

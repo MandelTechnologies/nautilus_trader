@@ -6,7 +6,8 @@ for the backend to persist orders, fills, and positions.
 """
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -14,10 +15,10 @@ import redis
 
 from nautilus_trader.common.actor import Actor
 from nautilus_trader.config import ActorConfig
+from nautilus_trader.model.events import OrderAccepted
+from nautilus_trader.model.events import OrderCanceled
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderRejected
-from nautilus_trader.model.events import OrderCanceled
-from nautilus_trader.model.events import OrderAccepted
 from nautilus_trader.model.events import PositionChanged
 from nautilus_trader.model.events import PositionClosed
 from nautilus_trader.model.events import PositionOpened
@@ -86,7 +87,7 @@ class EventEmitter(Actor):
         if not self._redis:
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ts_ns = int(now.timestamp() * 1_000_000_000)
 
         envelope = {
@@ -133,60 +134,68 @@ class EventEmitter(Actor):
 
     def _on_order_accepted(self, event: OrderAccepted) -> None:
         """Handle order accepted event."""
-        self._publish("order_accepted", {
-            "client_order_id": str(event.client_order_id),
-            "venue_order_id": str(event.venue_order_id) if event.venue_order_id else None,
-            "instrument_id": str(event.instrument_id),
-            "strategy_id": str(event.strategy_id),
-            "account_id": str(event.account_id),
-            "event_id": str(event.id),
-            "ts_event": event.ts_event,
-        })
+        self._publish(
+            "order_accepted", {
+                "client_order_id": str(event.client_order_id),
+                "venue_order_id": str(event.venue_order_id) if event.venue_order_id else None,
+                "instrument_id": str(event.instrument_id),
+                "strategy_id": str(event.strategy_id),
+                "account_id": str(event.account_id),
+                "event_id": str(event.id),
+                "ts_event": event.ts_event,
+            },
+        )
 
     def _on_order_filled(self, event: OrderFilled) -> None:
         """Handle order filled event."""
-        self._publish("order_filled", {
-            "client_order_id": str(event.client_order_id),
-            "venue_order_id": str(event.venue_order_id),
-            "trade_id": str(event.trade_id),
-            "instrument_id": str(event.instrument_id),
-            "strategy_id": str(event.strategy_id),
-            "account_id": str(event.account_id),
-            "order_side": event.order_side.name,
-            "order_type": event.order_type.name,
-            "last_qty": str(event.last_qty),
-            "last_px": str(event.last_px),
-            "currency": str(event.currency),
-            "liquidity_side": event.liquidity_side.name,
-            "commission": str(event.commission) if event.commission else None,
-            "position_id": str(event.position_id) if event.position_id else None,
-            "event_id": str(event.id),
-            "ts_event": event.ts_event,
-        })
+        self._publish(
+            "order_filled", {
+                "client_order_id": str(event.client_order_id),
+                "venue_order_id": str(event.venue_order_id),
+                "trade_id": str(event.trade_id),
+                "instrument_id": str(event.instrument_id),
+                "strategy_id": str(event.strategy_id),
+                "account_id": str(event.account_id),
+                "order_side": event.order_side.name,
+                "order_type": event.order_type.name,
+                "last_qty": str(event.last_qty),
+                "last_px": str(event.last_px),
+                "currency": str(event.currency),
+                "liquidity_side": event.liquidity_side.name,
+                "commission": str(event.commission) if event.commission else None,
+                "position_id": str(event.position_id) if event.position_id else None,
+                "event_id": str(event.id),
+                "ts_event": event.ts_event,
+            },
+        )
 
     def _on_order_rejected(self, event: OrderRejected) -> None:
         """Handle order rejected event."""
-        self._publish("order_rejected", {
-            "client_order_id": str(event.client_order_id),
-            "instrument_id": str(event.instrument_id),
-            "strategy_id": str(event.strategy_id),
-            "account_id": str(event.account_id),
-            "reason": event.reason,
-            "event_id": str(event.id),
-            "ts_event": event.ts_event,
-        })
+        self._publish(
+            "order_rejected", {
+                "client_order_id": str(event.client_order_id),
+                "instrument_id": str(event.instrument_id),
+                "strategy_id": str(event.strategy_id),
+                "account_id": str(event.account_id),
+                "reason": event.reason,
+                "event_id": str(event.id),
+                "ts_event": event.ts_event,
+            },
+        )
 
     def _on_order_canceled(self, event: OrderCanceled) -> None:
         """Handle order canceled event."""
-        self._publish("order_canceled", {
-            "client_order_id": str(event.client_order_id),
-            "venue_order_id": str(event.venue_order_id) if event.venue_order_id else None,
-            "instrument_id": str(event.instrument_id),
-            "strategy_id": str(event.strategy_id),
-            "account_id": str(event.account_id),
-            "event_id": str(event.id),
-            "ts_event": event.ts_event,
-        })
+        self._publish(
+            "order_canceled", {
+                "client_order_id": str(event.client_order_id),
+                "venue_order_id": str(event.venue_order_id) if event.venue_order_id else None,
+                "instrument_id": str(event.instrument_id),
+                "strategy_id": str(event.strategy_id),
+                "account_id": str(event.account_id),
+                "event_id": str(event.id),
+                "ts_event": event.ts_event,
+            },
+        )
 
     def _on_position_event(self, event: PositionOpened | PositionChanged | PositionClosed) -> None:
         """Handle position events."""
@@ -200,20 +209,22 @@ class EventEmitter(Actor):
             PositionClosed: "position_closed",
         }.get(type(event), "position")
 
-        self._publish(event_type, {
-            "position_id": str(event.position_id),
-            "instrument_id": str(event.instrument_id),
-            "strategy_id": str(event.strategy_id),
-            "account_id": str(position.account_id),
-            "side": position.side.name,
-            "quantity": str(position.quantity),
-            "avg_px_open": str(position.avg_px_open),
-            "avg_px_close": str(position.avg_px_close) if position.avg_px_close else None,
-            "realized_pnl": str(position.realized_pnl) if position.realized_pnl else None,
-            "unrealized_pnl": str(position.unrealized_pnl(Price(position.avg_px_open, position.price_precision))) if position.is_open else None,
-            "ts_opened": position.ts_opened,
-            "ts_closed": position.ts_closed if position.is_closed else None,
-            "event_id": str(event.id),
-            "ts_event": event.ts_event,
-        })
+        self._publish(
+            event_type, {
+                "position_id": str(event.position_id),
+                "instrument_id": str(event.instrument_id),
+                "strategy_id": str(event.strategy_id),
+                "account_id": str(position.account_id),
+                "side": position.side.name,
+                "quantity": str(position.quantity),
+                "avg_px_open": str(position.avg_px_open),
+                "avg_px_close": str(position.avg_px_close) if position.avg_px_close else None,
+                "realized_pnl": str(position.realized_pnl) if position.realized_pnl else None,
+                "unrealized_pnl": str(position.unrealized_pnl(Price(position.avg_px_open, position.price_precision))) if position.is_open else None,
+                "ts_opened": position.ts_opened,
+                "ts_closed": position.ts_closed if position.is_closed else None,
+                "event_id": str(event.id),
+                "ts_event": event.ts_event,
+            },
+        )
 

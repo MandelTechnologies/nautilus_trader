@@ -1,17 +1,19 @@
 """
 Position restoration for bot-folio position isolation.
 
-When multiple bots share the same Alpaca account, each bot needs to track
-only its own positions. This module restores a bot's positions from the
-backend database into the Nautilus cache on startup.
+When multiple bots share the same Alpaca account, each bot needs to
+track only its own positions. This module restores a bot's positions
+from the backend database into the Nautilus cache on startup.
 """
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC
+from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+from typing import Any
 
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.core.uuid import UUID4
@@ -30,13 +32,14 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.position import Position
 
+
 if TYPE_CHECKING:
     from nautilus_trader.trading.strategy import Strategy
 
 
 def _log(message: str, logger: Any = None) -> None:
     """Log a message using logger if available, otherwise print."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"{ts} [PositionRestore] {message}"
     if logger is not None:
         try:
@@ -49,7 +52,7 @@ def _log(message: str, logger: Any = None) -> None:
 
 def _log_warning(message: str, logger: Any = None) -> None:
     """Log a warning using logger if available, otherwise print."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"{ts} [PositionRestore] WARNING: {message}"
     if logger is not None:
         try:
@@ -62,7 +65,7 @@ def _log_warning(message: str, logger: Any = None) -> None:
 
 def _log_error(message: str, logger: Any = None) -> None:
     """Log an error using logger if available, otherwise print."""
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"{ts} [PositionRestore] ERROR: {message}"
     if logger is not None:
         try:
@@ -107,7 +110,6 @@ def restore_positions_from_env(
     -------
     int
         Number of positions restored.
-
     """
     positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
 
@@ -222,7 +224,11 @@ def _restore_single_position(
     position_strategy_id: StrategyId,
     account: Any,
 ) -> bool:
-    """Restore a single position. Returns True if restored successfully."""
+    """
+    Restore a single position.
+
+    Returns True if restored successfully.
+    """
     symbol = pos_data.get("symbol")
     quantity = Decimal(str(pos_data.get("quantity", 0)))
     avg_price = Decimal(str(pos_data.get("averagePrice", 0)))
@@ -329,7 +335,6 @@ def restore_positions_for_strategy(
 
             # ... rest of strategy logic
     ```
-
     """
     positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
 

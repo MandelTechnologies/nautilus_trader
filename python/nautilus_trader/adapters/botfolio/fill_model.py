@@ -46,7 +46,6 @@ class BotfolioFillModel:
         Probability of a partial fill (0.0 to 1.0).
     min_partial_fill_pct : float, default 0.5
         Minimum percentage of order filled on partial fill.
-
     """
 
     def __init__(
@@ -85,7 +84,6 @@ class BotfolioFillModel:
         -------
         FillResult
             The simulated fill result with price, quantity, and latency.
-
         """
         # Calculate latency (S311: using random for simulation, not cryptography)
         latency_ms = self.base_latency_ms + random.randint(0, self.latency_jitter_ms)  # noqa: S311
@@ -156,7 +154,6 @@ class BotfolioFillModel:
         -------
         Price
             The fill price with slippage applied.
-
         """
         result = self.simulate_fill(order_side, quantity, market_price)
         return result.fill_price

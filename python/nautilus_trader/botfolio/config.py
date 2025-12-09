@@ -1,16 +1,19 @@
 """
 Bot-folio configuration helpers.
 
-Provides easy access to credentials and settings injected by run_strategy.py.
+Provides easy access to credentials and settings injected by
+run_strategy.py.
 """
 import os
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
 class BotfolioConfig:
-    """Configuration loaded from environment variables set by the trading engine."""
+    """
+    Configuration loaded from environment variables set by the trading
+    engine.
+    """
 
     bot_id: str
     provider: str
@@ -19,10 +22,10 @@ class BotfolioConfig:
     virtual_cash: float
 
     # Alpaca credentials (may be None if using a different provider)
-    alpaca_api_key: Optional[str] = None
-    alpaca_api_secret: Optional[str] = None
-    alpaca_access_token: Optional[str] = None
-    alpaca_base_url: Optional[str] = None
+    alpaca_api_key: str | None = None
+    alpaca_api_secret: str | None = None
+    alpaca_access_token: str | None = None
+    alpaca_base_url: str | None = None
 
     @property
     def is_paper(self) -> bool:
@@ -43,7 +46,6 @@ def get_config() -> BotfolioConfig:
     -------
     BotfolioConfig
         The configuration object with credentials and settings.
-
     """
     return BotfolioConfig(
         bot_id=os.environ.get("BOTFOLIO_BOT_ID", ""),

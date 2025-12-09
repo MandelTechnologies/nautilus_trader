@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
 from nautilus_trader.adapters.botfolio.constants import BOTFOLIO_VENUE
 from nautilus_trader.common.component import LiveClock
@@ -14,11 +13,9 @@ from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
-from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.objects import Currency
-from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
@@ -39,7 +36,6 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         The clock for the provider.
     config : InstrumentProviderConfig
         The configuration for the provider.
-
     """
 
     def __init__(
@@ -55,7 +51,8 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         """
         Load all available instruments.
 
-        For Botfolio, instruments are created on-demand, so this is a no-op.
+        For Botfolio, instruments are created on-demand, so this is a
+        no-op.
         """
         self._log.info("Botfolio instruments are created on-demand")
 
@@ -101,7 +98,6 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         -------
         Equity | CurrencyPair
             The created instrument.
-
         """
         instrument_id = InstrumentId(
             symbol=Symbol(symbol_str),
@@ -142,7 +138,7 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         )
 
     def _create_currency_pair(
-        self, instrument_id: InstrumentId, symbol_str: str
+        self, instrument_id: InstrumentId, symbol_str: str,
     ) -> CurrencyPair:
         """Create a currency pair instrument (crypto or forex)."""
         # Parse base and quote currencies

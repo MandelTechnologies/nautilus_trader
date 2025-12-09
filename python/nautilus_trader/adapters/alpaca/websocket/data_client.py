@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import aiohttp
 
 from nautilus_trader.adapters.alpaca.constants import get_data_ws_url
-from nautilus_trader.adapters.alpaca.credentials import get_auth_headers
 from nautilus_trader.common.component import Logger
 
 
@@ -34,7 +34,6 @@ class AlpacaDataWebSocketClient:
         The data feed: "iex" (free) or "sip" (paid).
     logger : Logger, optional
         The logger for the client.
-
     """
 
     def __init__(
@@ -173,7 +172,11 @@ class AlpacaDataWebSocketClient:
                     self._on_error(str(e))
 
     async def _process_ws_message(self, msg: aiohttp.WSMessage) -> bool:
-        """Process a WebSocket message. Returns True if loop should break."""
+        """
+        Process a WebSocket message.
+
+        Returns True if loop should break.
+        """
         if msg.type == aiohttp.WSMsgType.TEXT:
             await self._handle_messages(json.loads(msg.data))
         elif msg.type == aiohttp.WSMsgType.BINARY:

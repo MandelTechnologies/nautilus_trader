@@ -99,13 +99,13 @@ def get_trading_ws_url(paper: bool) -> str:
 
 
 def get_data_ws_url(feed: str) -> str:
-    """Get the data WebSocket URL for the given feed.
+    """
+    Get the data WebSocket URL for the given feed.
 
     Parameters
     ----------
     feed : str
         The data feed: "iex", "sip" for stocks, or "crypto" for crypto.
-
     """
     if feed == "crypto":
         return ALPACA_CRYPTO_DATA_WS_URL

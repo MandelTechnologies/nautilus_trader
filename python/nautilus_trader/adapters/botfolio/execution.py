@@ -1,4 +1,4 @@
-        # -------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
 #  Bot-folio Local Paper Trading Adapter for Nautilus Trader
 #  https://github.com/mandeltechnologies/bot-folio
 # -------------------------------------------------------------------------------------------------
@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 from decimal import Decimal
-from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -71,7 +70,6 @@ class BotfolioExecutionClient(LiveExecutionClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
-
     """
 
     def __init__(
@@ -130,11 +128,14 @@ class BotfolioExecutionClient(LiveExecutionClient):
         return self._account_id
 
     def _parse_starting_balance(self) -> list[AccountBalance]:
-        """Parse the starting_balance config string into AccountBalance objects."""
+        """
+        Parse the starting_balance config string into AccountBalance
+        objects.
+        """
         # Format: "100000 USD" or "100000 USD, 1.5 BTC"
         balances = []
         parts = self._config.starting_balance.split(",")
-        
+
         for part in parts:
             part = part.strip()
             if not part:
@@ -143,7 +144,7 @@ class BotfolioExecutionClient(LiveExecutionClient):
             if len(tokens) != 2:
                 self._log.warning(f"Invalid balance format: {part}, expected 'AMOUNT CURRENCY'")
                 continue
-            
+
             amount_str, currency_str = tokens
             try:
                 currency = Currency.from_str(currency_str.upper())
@@ -153,11 +154,11 @@ class BotfolioExecutionClient(LiveExecutionClient):
                         total=money,
                         locked=Money(0, currency),
                         free=money,
-                    )
+                    ),
                 )
             except Exception as e:
                 self._log.warning(f"Failed to parse balance '{part}': {e}")
-        
+
         return balances
 
     async def _connect(self) -> None:
@@ -335,13 +336,13 @@ class BotfolioExecutionClient(LiveExecutionClient):
 
             self._log.info(
                 f"Order filled: {order.client_order_id} "
-                f"@ {fill_result.fill_price} (qty: {fill_result.fill_qty})"
+                f"@ {fill_result.fill_price} (qty: {fill_result.fill_qty})",
             )
 
             # Handle partial fill if applicable
             if fill_result.is_partial:
                 remaining_qty = Quantity.from_str(
-                    str(Decimal(str(order.quantity)) - Decimal(str(fill_result.fill_qty)))
+                    str(Decimal(str(order.quantity)) - Decimal(str(fill_result.fill_qty))),
                 )
                 self._log.info(f"Partial fill, remaining qty: {remaining_qty}")
                 # For simplicity, we'll fill the rest immediately

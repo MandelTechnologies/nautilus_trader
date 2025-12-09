@@ -43,7 +43,6 @@ Example
 ...         ),
 ...     },
 ... )
-
 """
 
 from nautilus_trader.adapters.botfolio.config import BotfolioDataClientConfig

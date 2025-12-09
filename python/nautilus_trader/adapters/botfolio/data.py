@@ -66,7 +66,6 @@ class BotfolioDataClient(LiveMarketDataClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
-
     """
 
     def __init__(
@@ -246,7 +245,7 @@ class BotfolioDataClient(LiveMarketDataClient):
         except Exception:
             return self._clock.timestamp_ns()
 
-    def _parse_timestamp_ms(self, ts_ms: int | float) -> int:
+    def _parse_timestamp_ms(self, ts_ms: float) -> int:
         """Parse millisecond timestamp to nanoseconds."""
         if not ts_ms:
             return self._clock.timestamp_ns()

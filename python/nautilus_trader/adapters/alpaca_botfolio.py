@@ -6,7 +6,6 @@ This is a placeholder for live execution; methods must be implemented before pro
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -14,14 +13,14 @@ class AlpacaAuth:
     api_key: str
     api_secret: str
     paper: bool = True
-    base_url: Optional[str] = None
+    base_url: str | None = None
 
 
 @dataclass
 class RiskLimits:
     max_orders_per_minute: int
-    max_notional_usd: Optional[float] = None
-    allowed_symbols: Optional[List[str]] = None
+    max_notional_usd: float | None = None
+    allowed_symbols: list[str] | None = None
 
 
 class AlpacaBotfolioAdapter:
@@ -47,27 +46,27 @@ class AlpacaBotfolioAdapter:
         side: str,
         quantity: float,
         order_type: str,
-        tif: Optional[str] = None,
-        limit_price: Optional[float] = None,
-        stop_price: Optional[float] = None,
-        client_order_id: Optional[str] = None,
-    ) -> Dict:
+        tif: str | None = None,
+        limit_price: float | None = None,
+        stop_price: float | None = None,
+        client_order_id: str | None = None,
+    ) -> dict:
         """
         Enforce risk limits then forward to Alpaca.
         """
         raise NotImplementedError("submit_order() not implemented")
 
-    async def cancel_order(self, order_id: str) -> Dict:
+    async def cancel_order(self, order_id: str) -> dict:
         raise NotImplementedError("cancel_order() not implemented")
 
     # --- State / snapshots ---------------------------------------------
-    async def fetch_positions(self) -> List[Dict]:
+    async def fetch_positions(self) -> list[dict]:
         raise NotImplementedError("fetch_positions() not implemented")
 
-    async def fetch_cash(self) -> Dict:
+    async def fetch_cash(self) -> dict:
         raise NotImplementedError("fetch_cash() not implemented")
 
-    async def poll_health(self) -> Dict:
+    async def poll_health(self) -> dict:
         raise NotImplementedError("poll_health() not implemented")
 
 
