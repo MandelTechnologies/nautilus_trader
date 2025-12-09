@@ -66,6 +66,7 @@ class AlpacaDataClient(LiveMarketDataClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
+
     """
 
     def __init__(
@@ -130,15 +131,21 @@ class AlpacaDataClient(LiveMarketDataClient):
         self._subscribed_bar_types: dict[str, BarType] = {}
 
     def _is_crypto_symbol(self, symbol: str) -> bool:
-        """Check if a symbol is a crypto pair (e.g., BTC/USD)."""
+        """
+        Check if a symbol is a crypto pair (e.g., BTC/USD).
+        """
         return "/" in symbol
 
     def _get_ws_client(self, symbol: str) -> AlpacaDataWebSocketClient:
-        """Get the appropriate WebSocket client for a symbol."""
+        """
+        Get the appropriate WebSocket client for a symbol.
+        """
         return self._crypto_ws_client if self._is_crypto_symbol(symbol) else self._stocks_ws_client
 
     async def _ensure_ws_connected(self, symbol: str) -> None:
-        """Ensure the appropriate WebSocket client is connected."""
+        """
+        Ensure the appropriate WebSocket client is connected.
+        """
         if self._is_crypto_symbol(symbol):
             if not self._crypto_ws_connected:
                 await self._crypto_ws_client.connect()
@@ -151,7 +158,9 @@ class AlpacaDataClient(LiveMarketDataClient):
                 self._log.info("Alpaca stocks WebSocket connected", LogColor.GREEN)
 
     async def _ensure_instrument_loaded(self, instrument_id: InstrumentId) -> None:
-        """Ensure an instrument is loaded, loading on-demand if needed."""
+        """
+        Ensure an instrument is loaded, loading on-demand if needed.
+        """
         # Check if already in cache
         if self._cache.instrument(instrument_id) is not None:
             return
@@ -178,7 +187,9 @@ class AlpacaDataClient(LiveMarketDataClient):
             self._log.warning(f"Failed to load instrument: {instrument_id}")
 
     async def _connect(self) -> None:
-        """Connect the data client."""
+        """
+        Connect the data client.
+        """
         # Connect HTTP client first (needed for instrument provider)
         await self._http_client.connect()
 
@@ -193,7 +204,9 @@ class AlpacaDataClient(LiveMarketDataClient):
         self._log.info("Alpaca data client connected", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
-        """Disconnect the data client."""
+        """
+        Disconnect the data client.
+        """
         if self._stocks_ws_connected:
             await self._stocks_ws_client.disconnect()
             self._stocks_ws_connected = False
@@ -206,7 +219,9 @@ class AlpacaDataClient(LiveMarketDataClient):
     # -- Subscriptions ----
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
-        """Subscribe to quote ticks for an instrument."""
+        """
+        Subscribe to quote ticks for an instrument.
+        """
         instrument_id = command.instrument_id
         symbol = instrument_id.symbol.value
 
@@ -219,7 +234,9 @@ class AlpacaDataClient(LiveMarketDataClient):
         self._log.debug(f"Subscribed to quotes for {symbol}")
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
-        """Subscribe to trade ticks for an instrument."""
+        """
+        Subscribe to trade ticks for an instrument.
+        """
         instrument_id = command.instrument_id
         symbol = instrument_id.symbol.value
 
@@ -232,7 +249,9 @@ class AlpacaDataClient(LiveMarketDataClient):
         self._log.debug(f"Subscribed to trades for {symbol}")
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
-        """Subscribe to bars for an instrument."""
+        """
+        Subscribe to bars for an instrument.
+        """
         instrument_id = command.bar_type.instrument_id
         symbol = instrument_id.symbol.value
 
@@ -253,19 +272,25 @@ class AlpacaDataClient(LiveMarketDataClient):
         await self._emit_latest_bar(symbol, command.bar_type)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
-        """Unsubscribe from quote ticks for an instrument."""
+        """
+        Unsubscribe from quote ticks for an instrument.
+        """
         symbol = command.instrument_id.symbol.value
         ws_client = self._get_ws_client(symbol)
         await ws_client.unsubscribe_quotes([symbol])
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
-        """Unsubscribe from trade ticks for an instrument."""
+        """
+        Unsubscribe from trade ticks for an instrument.
+        """
         symbol = command.instrument_id.symbol.value
         ws_client = self._get_ws_client(symbol)
         await ws_client.unsubscribe_trades([symbol])
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
-        """Unsubscribe from bars for an instrument."""
+        """
+        Unsubscribe from bars for an instrument.
+        """
         symbol = command.bar_type.instrument_id.symbol.value
         ws_client = self._get_ws_client(symbol)
         await ws_client.unsubscribe_bars([symbol])
@@ -282,7 +307,9 @@ class AlpacaDataClient(LiveMarketDataClient):
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> None:
-        """Request historical bars."""
+        """
+        Request historical bars.
+        """
         symbol = bar_type.instrument_id.symbol.value
 
         # Map bar type to Alpaca timeframe
@@ -327,7 +354,9 @@ class AlpacaDataClient(LiveMarketDataClient):
             self._log.error(f"Failed to request bars: {e}")
 
     def _map_bar_type_to_timeframe(self, bar_type: BarType) -> str:
-        """Map Nautilus BarType to Alpaca timeframe string."""
+        """
+        Map Nautilus BarType to Alpaca timeframe string.
+        """
         # Simple mapping - extend as needed
         step = bar_type.spec.step
         aggregation = str(bar_type.spec.aggregation)
@@ -348,7 +377,9 @@ class AlpacaDataClient(LiveMarketDataClient):
     # -- Message handlers ----
 
     def _handle_quote(self, data: dict[str, Any]) -> None:
-        """Handle incoming quote message from WebSocket."""
+        """
+        Handle incoming quote message from WebSocket.
+        """
         try:
             symbol = data.get("S")
             if not symbol:
@@ -379,7 +410,9 @@ class AlpacaDataClient(LiveMarketDataClient):
             self._log.error(f"Error handling quote: {e}")
 
     def _handle_trade(self, data: dict[str, Any]) -> None:
-        """Handle incoming trade message from WebSocket."""
+        """
+        Handle incoming trade message from WebSocket.
+        """
         try:
             symbol = data.get("S")
             if not symbol:
@@ -410,7 +443,9 @@ class AlpacaDataClient(LiveMarketDataClient):
             self._log.error(f"Error handling trade: {e}")
 
     def _handle_bar(self, data: dict[str, Any]) -> None:
-        """Handle incoming bar message from WebSocket."""
+        """
+        Handle incoming bar message from WebSocket.
+        """
         try:
             symbol = data.get("S")
             if not symbol:
@@ -430,19 +465,21 @@ class AlpacaDataClient(LiveMarketDataClient):
             self._log.error(f"Error handling bar: {e}")
 
     def _handle_ws_error(self, error: str) -> None:
-        """Handle WebSocket error."""
+        """
+        Handle WebSocket error.
+        """
         self._log.error(f"Alpaca data WebSocket error: {error}")
 
     async def _emit_latest_bar(self, symbol: str, bar_type: BarType) -> None:
         """
         Fetch and emit the latest bar for quick startup.
 
-        This is called when subscribing to bars to provide immediate
-        price data to strategies, rather than making them wait for the
-        current bar to close.
+        This is called when subscribing to bars to provide immediate price data to
+        strategies, rather than making them wait for the current bar to close.
 
-        Uses the historical bars endpoint with limit=1 to get the most
-        recent completed bar at the correct timeframe.
+        Uses the historical bars endpoint with limit=1 to get the most recent completed
+        bar at the correct timeframe.
+
         """
         try:
             feed = "crypto" if self._is_crypto_symbol(symbol) else self._config.data_feed
@@ -482,7 +519,9 @@ class AlpacaDataClient(LiveMarketDataClient):
             self._log.warning(f"Quick-start: Failed to fetch latest bar for {symbol}: {e}")
 
     def _parse_bar(self, data: dict[str, Any], bar_type: BarType) -> Bar:
-        """Parse bar data from Alpaca response."""
+        """
+        Parse bar data from Alpaca response.
+        """
         ts_str = data.get("t")
         ts_event = self._parse_timestamp(ts_str)
 
@@ -498,7 +537,9 @@ class AlpacaDataClient(LiveMarketDataClient):
         )
 
     def _parse_timestamp(self, ts_str: str | None) -> int:
-        """Parse ISO timestamp string to nanoseconds."""
+        """
+        Parse ISO timestamp string to nanoseconds.
+        """
         if not ts_str:
             return self._clock.timestamp_ns()
 

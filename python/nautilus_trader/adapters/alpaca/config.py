@@ -27,6 +27,7 @@ class AlpacaInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         The venue specific instrument loading filters to apply.
     log_warnings : bool, default True
         If parser warnings should be logged.
+
     """
 
     load_all: bool = False  # Default to False - strategies should specify what they need
@@ -56,6 +57,7 @@ class AlpacaDataClientConfig(LiveDataClientConfig, frozen=True):
         The data feed to use: "iex" (free stocks), "sip" (paid stocks), or "crypto".
     update_instruments_interval_mins : PositiveInt or None, default 60
         The interval (minutes) between reloading instruments from the venue.
+
     """
 
     venue: Venue = ALPACA_VENUE
@@ -91,6 +93,7 @@ class AlpacaExecClientConfig(LiveExecClientConfig, frozen=True):
         The maximum number of times a submit or cancel order request will be retried.
     retry_delay_secs : float, default 1.0
         The delay (seconds) between retries.
+
     """
 
     venue: Venue = ALPACA_VENUE

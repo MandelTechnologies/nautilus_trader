@@ -14,6 +14,7 @@ def get_api_key() -> str | None:
     -------
     str or None
         The API key from APCA_API_KEY_ID env var, or None if not set.
+
     """
     return os.environ.get("APCA_API_KEY_ID")
 
@@ -26,6 +27,7 @@ def get_api_secret() -> str | None:
     -------
     str or None
         The API secret from APCA_API_SECRET_KEY env var, or None if not set.
+
     """
     return os.environ.get("APCA_API_SECRET_KEY")
 
@@ -38,6 +40,7 @@ def get_access_token() -> str | None:
     -------
     str or None
         The access token from APCA_API_ACCESS_TOKEN env var, or None if not set.
+
     """
     return os.environ.get("APCA_API_ACCESS_TOKEN")
 
@@ -50,6 +53,7 @@ def get_base_url() -> str | None:
     -------
     str or None
         The base URL from APCA_API_BASE_URL env var, or None if not set.
+
     """
     return os.environ.get("APCA_API_BASE_URL")
 
@@ -79,6 +83,7 @@ def resolve_credentials(
     -------
     tuple[str | None, str | None, str | None]
         Tuple of (api_key, api_secret, access_token).
+
     """
     resolved_access_token = access_token or get_access_token()
     resolved_api_key = api_key or get_api_key()
@@ -115,6 +120,7 @@ def get_auth_headers(
     ------
     ValueError
         If no valid credentials are provided.
+
     """
     resolved_key, resolved_secret, resolved_token = resolve_credentials(
         api_key, api_secret, access_token,

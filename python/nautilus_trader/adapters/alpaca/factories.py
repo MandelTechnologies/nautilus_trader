@@ -53,6 +53,7 @@ def get_cached_alpaca_http_client(
     Returns
     -------
     AlpacaHttpClient
+
     """
     resolved_key, resolved_secret, resolved_token = resolve_credentials(
         api_key, api_secret, access_token,
@@ -90,6 +91,7 @@ def get_cached_alpaca_instrument_provider(
     Returns
     -------
     AlpacaInstrumentProvider
+
     """
     return AlpacaInstrumentProvider(
         client=client,
@@ -99,7 +101,9 @@ def get_cached_alpaca_instrument_provider(
 
 
 class AlpacaLiveDataClientFactory(LiveDataClientFactory):
-    """Provides an Alpaca live data client factory."""
+    """
+    Provides an Alpaca live data client factory.
+    """
 
     @staticmethod
     def create(  # type: ignore
@@ -131,6 +135,7 @@ class AlpacaLiveDataClientFactory(LiveDataClientFactory):
         Returns
         -------
         AlpacaDataClient
+
         """
         # Get HTTP client singleton
         client = get_cached_alpaca_http_client(
@@ -167,7 +172,9 @@ class AlpacaLiveDataClientFactory(LiveDataClientFactory):
 
 
 class AlpacaLiveExecClientFactory(LiveExecClientFactory):
-    """Provides an Alpaca live execution client factory."""
+    """
+    Provides an Alpaca live execution client factory.
+    """
 
     @staticmethod
     def create(  # type: ignore
@@ -199,6 +206,7 @@ class AlpacaLiveExecClientFactory(LiveExecClientFactory):
         Returns
         -------
         AlpacaExecutionClient
+
         """
         # Get HTTP client singleton
         client = get_cached_alpaca_http_client(

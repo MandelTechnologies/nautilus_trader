@@ -43,6 +43,7 @@ Example
 ...         ALPACA: AlpacaExecClientConfig(paper=True),
 ...     },
 ... )
+
 """
 
 from nautilus_trader.adapters.alpaca.config import AlpacaDataClientConfig

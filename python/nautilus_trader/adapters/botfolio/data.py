@@ -66,6 +66,7 @@ class BotfolioDataClient(LiveMarketDataClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
+
     """
 
     def __init__(
@@ -103,7 +104,9 @@ class BotfolioDataClient(LiveMarketDataClient):
         self._bar_types: dict[str, BarType] = {}  # symbol -> BarType mapping
 
     async def _connect(self) -> None:
-        """Connect the data client."""
+        """
+        Connect the data client.
+        """
         self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
         self._pubsub = self._redis.pubsub()
 
@@ -113,7 +116,9 @@ class BotfolioDataClient(LiveMarketDataClient):
         self._log.info("Botfolio data client connected", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
-        """Disconnect the data client."""
+        """
+        Disconnect the data client.
+        """
         if self._listen_task:
             self._listen_task.cancel()
             try:
@@ -138,7 +143,9 @@ class BotfolioDataClient(LiveMarketDataClient):
         self._log.info("Botfolio data client disconnected")
 
     async def _listen_loop(self) -> None:
-        """Listen for Redis pub/sub messages."""
+        """
+        Listen for Redis pub/sub messages.
+        """
         if not self._pubsub:
             return
 
@@ -154,7 +161,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._log.error(f"Error in Redis listen loop: {e}")
 
     async def _handle_message(self, channel: str, data: str) -> None:
-        """Handle incoming Redis message."""
+        """
+        Handle incoming Redis message.
+        """
         try:
             payload = json.loads(data)
 
@@ -169,7 +178,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._log.error(f"Error handling message from {channel}: {e}")
 
     def _handle_bar_message(self, symbol: str, data: dict[str, Any]) -> None:
-        """Handle incoming bar message from Redis."""
+        """
+        Handle incoming bar message from Redis.
+        """
         bar_type = self._bar_types.get(symbol)
         if not bar_type:
             # Create default 1-minute bar type for this symbol
@@ -198,7 +209,9 @@ class BotfolioDataClient(LiveMarketDataClient):
         self._handle_data(bar)
 
     def _handle_quote_message(self, symbol: str, data: dict[str, Any]) -> None:
-        """Handle incoming quote message from Redis."""
+        """
+        Handle incoming quote message from Redis.
+        """
         instrument_id = InstrumentId(
             symbol=Symbol(symbol),
             venue=BOTFOLIO_VENUE,
@@ -235,7 +248,9 @@ class BotfolioDataClient(LiveMarketDataClient):
         self._handle_data(trade)
 
     def _parse_timestamp(self, ts_str: str | None) -> int:
-        """Parse ISO timestamp string to nanoseconds."""
+        """
+        Parse ISO timestamp string to nanoseconds.
+        """
         if not ts_str:
             return self._clock.timestamp_ns()
 
@@ -246,7 +261,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             return self._clock.timestamp_ns()
 
     def _parse_timestamp_ms(self, ts_ms: float) -> int:
-        """Parse millisecond timestamp to nanoseconds."""
+        """
+        Parse millisecond timestamp to nanoseconds.
+        """
         if not ts_ms:
             return self._clock.timestamp_ns()
         return int(ts_ms * 1_000_000)  # ms to ns
@@ -254,7 +271,9 @@ class BotfolioDataClient(LiveMarketDataClient):
     # -- Subscriptions ----
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
-        """Subscribe to quote ticks for an instrument."""
+        """
+        Subscribe to quote ticks for an instrument.
+        """
         symbol = command.instrument_id.symbol.value
         if symbol in self._subscribed_quote_symbols:
             return
@@ -266,7 +285,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._log.debug(f"Subscribed to quotes for {symbol}")
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
-        """Subscribe to trade ticks for an instrument."""
+        """
+        Subscribe to trade ticks for an instrument.
+        """
         # Trade ticks come from the same quote channel
         symbol = command.instrument_id.symbol.value
         if symbol in self._subscribed_quote_symbols:
@@ -279,7 +300,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._log.debug(f"Subscribed to trades for {symbol}")
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
-        """Subscribe to bars for an instrument."""
+        """
+        Subscribe to bars for an instrument.
+        """
         symbol = command.bar_type.instrument_id.symbol.value
         if symbol in self._subscribed_bar_symbols:
             return
@@ -294,7 +317,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._log.debug(f"Subscribed to bars for {symbol}")
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
-        """Unsubscribe from quote ticks for an instrument."""
+        """
+        Unsubscribe from quote ticks for an instrument.
+        """
         symbol = command.instrument_id.symbol.value
         if symbol not in self._subscribed_quote_symbols:
             return
@@ -305,7 +330,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._subscribed_quote_symbols.discard(symbol)
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
-        """Unsubscribe from trade ticks for an instrument."""
+        """
+        Unsubscribe from trade ticks for an instrument.
+        """
         symbol = command.instrument_id.symbol.value
         if symbol not in self._subscribed_quote_symbols:
             return
@@ -316,7 +343,9 @@ class BotfolioDataClient(LiveMarketDataClient):
             self._subscribed_quote_symbols.discard(symbol)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
-        """Unsubscribe from bars for an instrument."""
+        """
+        Unsubscribe from bars for an instrument.
+        """
         symbol = command.bar_type.instrument_id.symbol.value
         if symbol not in self._subscribed_bar_symbols:
             return

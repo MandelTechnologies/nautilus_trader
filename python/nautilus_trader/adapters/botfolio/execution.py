@@ -70,6 +70,7 @@ class BotfolioExecutionClient(LiveExecutionClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
+
     """
 
     def __init__(
@@ -124,13 +125,14 @@ class BotfolioExecutionClient(LiveExecutionClient):
 
     @property
     def account_id(self) -> AccountId:
-        """Return the account ID."""
+        """
+        Return the account ID.
+        """
         return self._account_id
 
     def _parse_starting_balance(self) -> list[AccountBalance]:
         """
-        Parse the starting_balance config string into AccountBalance
-        objects.
+        Parse the starting_balance config string into AccountBalance objects.
         """
         # Format: "100000 USD" or "100000 USD, 1.5 BTC"
         balances = []
@@ -162,7 +164,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         return balances
 
     async def _connect(self) -> None:
-        """Connect the execution client."""
+        """
+        Connect the execution client.
+        """
         self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
         self._pubsub = self._redis.pubsub()
 
@@ -186,7 +190,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         )
 
     async def _disconnect(self) -> None:
-        """Disconnect the execution client."""
+        """
+        Disconnect the execution client.
+        """
         if self._listen_task:
             self._listen_task.cancel()
             try:
@@ -211,7 +217,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         self._log.info("Botfolio execution client disconnected")
 
     async def _listen_loop(self) -> None:
-        """Listen for Redis pub/sub messages for price updates."""
+        """
+        Listen for Redis pub/sub messages for price updates.
+        """
         if not self._pubsub:
             return
 
@@ -227,7 +235,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
             self._log.error(f"Error in Redis listen loop: {e}")
 
     def _handle_price_update(self, channel: str, data: str) -> None:
-        """Handle incoming price update from Redis."""
+        """
+        Handle incoming price update from Redis.
+        """
         try:
             payload = json.loads(data)
 
@@ -241,7 +251,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
             self._log.error(f"Error handling price update: {e}")
 
     async def _subscribe_to_symbol(self, symbol: str) -> None:
-        """Subscribe to price updates for a symbol."""
+        """
+        Subscribe to price updates for a symbol.
+        """
         if symbol in self._subscribed_symbols:
             return
 
@@ -252,7 +264,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
             self._log.debug(f"Subscribed to price updates for {symbol}")
 
     def _get_latest_price(self, instrument_id: InstrumentId) -> Price | None:
-        """Get the latest price for an instrument."""
+        """
+        Get the latest price for an instrument.
+        """
         symbol = instrument_id.symbol.value
         price_decimal = self._latest_prices.get(symbol)
         if price_decimal is not None:
@@ -268,7 +282,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
     # -- Order submission ----
 
     async def _submit_order(self, command: SubmitOrder) -> None:
-        """Submit an order for simulated execution."""
+        """
+        Submit an order for simulated execution.
+        """
         order = command.order
         symbol = order.instrument_id.symbol.value
 
@@ -354,7 +370,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
             self._log.info(f"Limit/stop order queued: {order.client_order_id}")
 
     async def _cancel_order(self, command: CancelOrder) -> None:
-        """Cancel a pending order."""
+        """
+        Cancel a pending order.
+        """
         client_order_id = command.client_order_id.value
 
         if client_order_id in self._pending_orders:
@@ -381,7 +399,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
             )
 
     async def _modify_order(self, command: ModifyOrder) -> None:
-        """Modify a pending order."""
+        """
+        Modify a pending order.
+        """
         # For simplicity, reject all modify requests
         self._log.warning(f"Order modify not supported: {command.client_order_id}")
         self.generate_order_modify_rejected(
@@ -399,7 +419,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         self,
         command: GenerateOrderStatusReports,
     ) -> list[OrderStatusReport]:
-        """Generate order status reports."""
+        """
+        Generate order status reports.
+        """
         # For paper trading, we don't persist orders externally
         # Return empty list - the cache has the order state
         return []
@@ -408,7 +430,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         self,
         command: GenerateFillReports,
     ) -> list[FillReport]:
-        """Generate fill reports."""
+        """
+        Generate fill reports.
+        """
         # For paper trading, fills are not persisted externally
         return []
 
@@ -416,7 +440,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         self,
         command: GeneratePositionStatusReports,
     ) -> list[PositionStatusReport]:
-        """Generate position status reports."""
+        """
+        Generate position status reports.
+        """
         # For paper trading, positions are tracked in the cache
         return []
 

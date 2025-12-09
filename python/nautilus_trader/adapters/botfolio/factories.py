@@ -41,6 +41,7 @@ def get_cached_botfolio_instrument_provider(
     Returns
     -------
     BotfolioInstrumentProvider
+
     """
     return BotfolioInstrumentProvider(
         clock=clock,
@@ -49,7 +50,9 @@ def get_cached_botfolio_instrument_provider(
 
 
 class BotfolioLiveDataClientFactory(LiveDataClientFactory):
-    """Provides a Botfolio live data client factory."""
+    """
+    Provides a Botfolio live data client factory.
+    """
 
     @staticmethod
     def create(  # type: ignore
@@ -81,6 +84,7 @@ class BotfolioLiveDataClientFactory(LiveDataClientFactory):
         Returns
         -------
         BotfolioDataClient
+
         """
         # Get instrument provider singleton
         provider = get_cached_botfolio_instrument_provider(
@@ -100,7 +104,9 @@ class BotfolioLiveDataClientFactory(LiveDataClientFactory):
 
 
 class BotfolioLiveExecClientFactory(LiveExecClientFactory):
-    """Provides a Botfolio live execution client factory."""
+    """
+    Provides a Botfolio live execution client factory.
+    """
 
     @staticmethod
     def create(  # type: ignore
@@ -132,6 +138,7 @@ class BotfolioLiveExecClientFactory(LiveExecClientFactory):
         Returns
         -------
         BotfolioExecutionClient
+
         """
         # Get instrument provider singleton
         provider = get_cached_botfolio_instrument_provider(

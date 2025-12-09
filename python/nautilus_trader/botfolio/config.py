@@ -1,8 +1,8 @@
 """
 Bot-folio configuration helpers.
 
-Provides easy access to credentials and settings injected by
-run_strategy.py.
+Provides easy access to credentials and settings injected by run_strategy.py.
+
 """
 import os
 from dataclasses import dataclass
@@ -11,8 +11,7 @@ from dataclasses import dataclass
 @dataclass
 class BotfolioConfig:
     """
-    Configuration loaded from environment variables set by the trading
-    engine.
+    Configuration loaded from environment variables set by the trading engine.
     """
 
     bot_id: str
@@ -46,6 +45,7 @@ def get_config() -> BotfolioConfig:
     -------
     BotfolioConfig
         The configuration object with credentials and settings.
+
     """
     return BotfolioConfig(
         bot_id=os.environ.get("BOTFOLIO_BOT_ID", ""),

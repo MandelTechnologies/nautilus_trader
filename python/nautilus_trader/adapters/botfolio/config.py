@@ -26,6 +26,7 @@ class BotfolioDataClientConfig(LiveDataClientConfig, frozen=True):
         The Redis connection URL for subscribing to market data.
     symbols : list[str], optional
         List of symbols to subscribe to on startup.
+
     """
 
     venue: Venue = BOTFOLIO_VENUE
@@ -51,6 +52,7 @@ class BotfolioExecClientConfig(LiveExecClientConfig, frozen=True):
         Slippage in basis points per $10K notional.
     partial_fill_prob : float, default 0.0
         Probability of partial fill (0.0 to 1.0).
+
     """
 
     venue: Venue = BOTFOLIO_VENUE

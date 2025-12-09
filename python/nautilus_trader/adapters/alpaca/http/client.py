@@ -35,6 +35,7 @@ class AlpacaHttpClient:
         If using paper trading endpoints.
     logger : Logger, optional
         The logger for the client.
+
     """
 
     def __init__(
@@ -61,16 +62,22 @@ class AlpacaHttpClient:
 
     @property
     def trading_base_url(self) -> str:
-        """Return the trading API base URL."""
+        """
+        Return the trading API base URL.
+        """
         return self._trading_base_url
 
     @property
     def data_base_url(self) -> str:
-        """Return the data API base URL."""
+        """
+        Return the data API base URL.
+        """
         return self._data_base_url
 
     async def connect(self) -> None:
-        """Connect the HTTP client (create session)."""
+        """
+        Connect the HTTP client (create session).
+        """
         if self._session is None:
             self._session = aiohttp.ClientSession(
                 headers=self._auth_headers,
@@ -80,7 +87,9 @@ class AlpacaHttpClient:
                 self._logger.info("Alpaca HTTP client connected")
 
     async def disconnect(self) -> None:
-        """Disconnect the HTTP client (close session)."""
+        """
+        Disconnect the HTTP client (close session).
+        """
         if self._session:
             await self._session.close()
             self._session = None
@@ -119,6 +128,7 @@ class AlpacaHttpClient:
             If client is not connected.
         aiohttp.ClientResponseError
             If the request fails.
+
         """
         if self._session is None:
             raise RuntimeError("AlpacaHttpClient not connected. Call connect() first.")
@@ -135,15 +145,21 @@ class AlpacaHttpClient:
     # ---- Trading API Methods ----
 
     async def get_account(self) -> dict[str, Any]:
-        """Get account information."""
+        """
+        Get account information.
+        """
         return await self._request("GET", f"{self._trading_base_url}/v2/account")
 
     async def get_positions(self) -> list[dict[str, Any]]:
-        """Get all open positions."""
+        """
+        Get all open positions.
+        """
         return await self._request("GET", f"{self._trading_base_url}/v2/positions")
 
     async def get_position(self, symbol: str) -> dict[str, Any]:
-        """Get position for a specific symbol."""
+        """
+        Get position for a specific symbol.
+        """
         return await self._request("GET", f"{self._trading_base_url}/v2/positions/{symbol}")
 
     async def get_orders(
@@ -156,7 +172,9 @@ class AlpacaHttpClient:
         nested: bool = False,
         symbols: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Get orders with optional filters."""
+        """
+        Get orders with optional filters.
+        """
         params: dict[str, Any] = {
             "status": status,
             "limit": limit,
@@ -173,11 +191,15 @@ class AlpacaHttpClient:
         return await self._request("GET", f"{self._trading_base_url}/v2/orders", params=params)
 
     async def get_order(self, order_id: str) -> dict[str, Any]:
-        """Get a specific order by ID."""
+        """
+        Get a specific order by ID.
+        """
         return await self._request("GET", f"{self._trading_base_url}/v2/orders/{order_id}")
 
     async def get_order_by_client_id(self, client_order_id: str) -> dict[str, Any]:
-        """Get a specific order by client order ID."""
+        """
+        Get a specific order by client order ID.
+        """
         return await self._request(
             "GET",
             f"{self._trading_base_url}/v2/orders:by_client_order_id",
@@ -202,7 +224,9 @@ class AlpacaHttpClient:
         trail_price: str | None = None,
         trail_percent: str | None = None,
     ) -> dict[str, Any]:
-        """Submit a new order."""
+        """
+        Submit a new order.
+        """
         body: dict[str, Any] = {
             "symbol": symbol,
             "side": side,
@@ -229,11 +253,15 @@ class AlpacaHttpClient:
         return await self._request("POST", f"{self._trading_base_url}/v2/orders", json=body)
 
     async def cancel_order(self, order_id: str) -> None:
-        """Cancel an order by ID."""
+        """
+        Cancel an order by ID.
+        """
         await self._request("DELETE", f"{self._trading_base_url}/v2/orders/{order_id}")
 
     async def cancel_all_orders(self) -> list[dict[str, Any]]:
-        """Cancel all open orders."""
+        """
+        Cancel all open orders.
+        """
         return await self._request("DELETE", f"{self._trading_base_url}/v2/orders")
 
     async def replace_order(
@@ -245,7 +273,9 @@ class AlpacaHttpClient:
         time_in_force: str | None = None,
         client_order_id: str | None = None,
     ) -> dict[str, Any]:
-        """Replace/modify an existing order."""
+        """
+        Replace/modify an existing order.
+        """
         body: dict[str, Any] = {}
 
         if qty:
@@ -271,7 +301,9 @@ class AlpacaHttpClient:
         asset_class: str | None = None,
         exchange: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Get list of assets."""
+        """
+        Get list of assets.
+        """
         params: dict[str, Any] = {}
         if status:
             params["status"] = status
@@ -283,7 +315,9 @@ class AlpacaHttpClient:
         return await self._request("GET", f"{self._trading_base_url}/v2/assets", params=params)
 
     async def get_asset(self, symbol_or_id: str) -> dict[str, Any]:
-        """Get a specific asset by symbol or ID."""
+        """
+        Get a specific asset by symbol or ID.
+        """
         # URL-encode the symbol to handle crypto pairs with "/" (e.g., "BTC/USD" -> "BTC%2FUSD")
         encoded_symbol = quote(symbol_or_id, safe="")
         return await self._request("GET", f"{self._trading_base_url}/v2/assets/{encoded_symbol}")
@@ -291,7 +325,9 @@ class AlpacaHttpClient:
     # ---- Data API Methods ----
 
     def _is_crypto_symbol(self, symbol: str) -> bool:
-        """Check if a symbol is a crypto pair (e.g., BTC/USD)."""
+        """
+        Check if a symbol is a crypto pair (e.g., BTC/USD).
+        """
         return "/" in symbol
 
     def _get_data_endpoint(self, symbol: str, data_type: str) -> str:
@@ -309,6 +345,7 @@ class AlpacaHttpClient:
         -------
         str
             The full endpoint URL.
+
         """
         if self._is_crypto_symbol(symbol):
             # Crypto uses v1beta3 endpoint
@@ -327,7 +364,9 @@ class AlpacaHttpClient:
         adjustment: str = "raw",
         feed: str = "iex",
     ) -> dict[str, Any]:
-        """Get historical bars for a symbol."""
+        """
+        Get historical bars for a symbol.
+        """
         is_crypto = self._is_crypto_symbol(symbol)
 
         params: dict[str, Any] = {
@@ -359,7 +398,9 @@ class AlpacaHttpClient:
         limit: int = 1000,
         feed: str = "iex",
     ) -> dict[str, Any]:
-        """Get historical quotes for a symbol."""
+        """
+        Get historical quotes for a symbol.
+        """
         is_crypto = self._is_crypto_symbol(symbol)
 
         params: dict[str, Any] = {
@@ -387,7 +428,9 @@ class AlpacaHttpClient:
         limit: int = 1000,
         feed: str = "iex",
     ) -> dict[str, Any]:
-        """Get historical trades for a symbol."""
+        """
+        Get historical trades for a symbol.
+        """
         is_crypto = self._is_crypto_symbol(symbol)
 
         params: dict[str, Any] = {
@@ -408,7 +451,9 @@ class AlpacaHttpClient:
         return await self._request("GET", endpoint, params=params)
 
     async def get_latest_quote(self, symbol: str, feed: str = "iex") -> dict[str, Any]:
-        """Get latest quote for a symbol."""
+        """
+        Get latest quote for a symbol.
+        """
         is_crypto = self._is_crypto_symbol(symbol)
 
         if is_crypto:
@@ -425,7 +470,9 @@ class AlpacaHttpClient:
             )
 
     async def get_latest_trade(self, symbol: str, feed: str = "iex") -> dict[str, Any]:
-        """Get latest trade for a symbol."""
+        """
+        Get latest trade for a symbol.
+        """
         is_crypto = self._is_crypto_symbol(symbol)
 
         if is_crypto:

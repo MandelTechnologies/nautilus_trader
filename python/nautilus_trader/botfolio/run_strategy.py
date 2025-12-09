@@ -1,11 +1,12 @@
 """
 Trading Engine entry point for bot-folio.
 
-Fetches strategy code and config from Redis, sets up credentials as
-environment variables, then executes the strategy using Nautilus Trader.
+Fetches strategy code and config from Redis, sets up credentials as environment
+variables, then executes the strategy using Nautilus Trader.
 
-All output is captured and persisted to Redis before exit so logs are
-always available even after the container is removed.
+All output is captured and persisted to Redis before exit so logs are always available
+even after the container is removed.
+
 """
 import io
 import json
@@ -20,7 +21,9 @@ import redis
 
 
 class TeeWriter:
-    """Write to multiple streams simultaneously."""
+    """
+    Write to multiple streams simultaneously.
+    """
 
     def __init__(self, *streams):
         self.streams = streams
@@ -42,7 +45,9 @@ _bot_id: str | None = None
 
 
 def _persist_logs():
-    """Persist captured logs to Redis before exit."""
+    """
+    Persist captured logs to Redis before exit.
+    """
     if not _redis_client or not _bot_id:
         return
     try:
@@ -61,13 +66,17 @@ def _persist_logs():
 
 
 def log(message: str):
-    """Log a message with timestamp."""
+    """
+    Log a message with timestamp.
+    """
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     print(f"{ts} [Trading Node] {message}")
 
 
 def fetch_from_redis(r: redis.Redis, key: str, max_attempts: int = 10) -> str | None:
-    """Fetch a value from Redis with retry logic."""
+    """
+    Fetch a value from Redis with retry logic.
+    """
     for attempt in range(max_attempts):
         value = r.get(key)
         if value:
@@ -81,8 +90,8 @@ def setup_credentials_env(config: dict) -> None:
     """
     Set up environment variables from the config credentials.
 
-    This allows the strategy code to access credentials via standard env
-    vars.
+    This allows the strategy code to access credentials via standard env vars.
+
     """
     credentials = config.get("credentials", {})
 

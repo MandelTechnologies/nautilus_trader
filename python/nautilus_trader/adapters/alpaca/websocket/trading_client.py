@@ -34,6 +34,7 @@ class AlpacaTradingWebSocketClient:
         If using paper trading endpoints.
     logger : Logger, optional
         The logger for the client.
+
     """
 
     def __init__(
@@ -62,17 +63,20 @@ class AlpacaTradingWebSocketClient:
 
     def set_on_trade_update(self, callback: Callable[[dict[str, Any]], None]) -> None:
         """
-        Set callback for trade update messages (order fills, cancels,
-        etc.).
+        Set callback for trade update messages (order fills, cancels, etc.).
         """
         self._on_trade_update = callback
 
     def set_on_error(self, callback: Callable[[str], None]) -> None:
-        """Set callback for error messages."""
+        """
+        Set callback for error messages.
+        """
         self._on_error = callback
 
     async def connect(self) -> None:
-        """Connect to the WebSocket and authenticate."""
+        """
+        Connect to the WebSocket and authenticate.
+        """
         if self._ws is not None:
             return
 
@@ -112,7 +116,9 @@ class AlpacaTradingWebSocketClient:
             self._logger.info("Alpaca trading WebSocket connected")
 
     async def disconnect(self) -> None:
-        """Disconnect from the WebSocket."""
+        """
+        Disconnect from the WebSocket.
+        """
         self._running = False
 
         if self._task:
@@ -135,7 +141,9 @@ class AlpacaTradingWebSocketClient:
             self._logger.info("Alpaca trading WebSocket disconnected")
 
     def _build_auth_message(self) -> dict[str, Any]:
-        """Build authentication message using Alpaca's current format."""
+        """
+        Build authentication message using Alpaca's current format.
+        """
         if self._access_token:
             return {
                 "action": "auth",
@@ -149,7 +157,9 @@ class AlpacaTradingWebSocketClient:
         }
 
     async def _subscribe_trade_updates(self) -> None:
-        """Subscribe to trade updates stream."""
+        """
+        Subscribe to trade updates stream.
+        """
         if not self._ws:
             return
 
@@ -162,7 +172,9 @@ class AlpacaTradingWebSocketClient:
             self._logger.debug("Subscribed to trade_updates stream")
 
     async def _listen(self) -> None:
-        """Listen for incoming messages."""
+        """
+        Listen for incoming messages.
+        """
         while self._running and self._ws:
             try:
                 msg = await self._ws.receive()
@@ -182,6 +194,7 @@ class AlpacaTradingWebSocketClient:
         Process a WebSocket message.
 
         Returns True if loop should break.
+
         """
         if msg.type == aiohttp.WSMsgType.TEXT:
             await self._handle_message(json.loads(msg.data))
@@ -200,7 +213,9 @@ class AlpacaTradingWebSocketClient:
         return False
 
     async def _handle_message(self, data: dict[str, Any]) -> None:
-        """Handle incoming WebSocket message."""
+        """
+        Handle incoming WebSocket message.
+        """
         stream = data.get("stream")
 
         if stream == "trade_updates":

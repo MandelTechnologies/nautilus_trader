@@ -1,8 +1,9 @@
 """
 Event Emitter Actor for bot-folio.
 
-Subscribes to trading events within Nautilus and publishes them to Redis
-for the backend to persist orders, fills, and positions.
+Subscribes to trading events within Nautilus and publishes them to Redis for the backend
+to persist orders, fills, and positions.
+
 """
 import json
 import os
@@ -27,7 +28,9 @@ from nautilus_trader.model.position import Position
 
 
 class EventEmitterConfig(ActorConfig, frozen=True):
-    """Configuration for the EventEmitter actor."""
+    """
+    Configuration for the EventEmitter actor.
+    """
 
     bot_id: str = ""
     redis_url: str = "redis://localhost:6379"
@@ -42,6 +45,7 @@ class EventEmitter(Actor):
     - Position events (opened, changed, closed)
 
     Publishes to Redis channel: engine:events:{bot_id}
+
     """
 
     def __init__(self, config: EventEmitterConfig) -> None:
@@ -52,7 +56,9 @@ class EventEmitter(Actor):
         self._channel = f"engine:events:{self._bot_id}"
 
     def on_start(self) -> None:
-        """Connect to Redis and subscribe to trading events."""
+        """
+        Connect to Redis and subscribe to trading events.
+        """
         if not self._bot_id:
             self._log.warning("No bot_id configured, events will not be emitted")
             return
@@ -73,7 +79,9 @@ class EventEmitter(Actor):
         self._log.info("EventEmitter started, subscribed to order and position events")
 
     def on_stop(self) -> None:
-        """Clean up Redis connection."""
+        """
+        Clean up Redis connection.
+        """
         if self._redis:
             try:
                 self._redis.close()
@@ -83,7 +91,9 @@ class EventEmitter(Actor):
         self._log.info("EventEmitter stopped")
 
     def _publish(self, event_type: str, data: dict[str, Any]) -> None:
-        """Publish an event to Redis."""
+        """
+        Publish an event to Redis.
+        """
         if not self._redis:
             return
 
@@ -106,7 +116,9 @@ class EventEmitter(Actor):
 
     @staticmethod
     def _json_default(obj: Any) -> Any:
-        """JSON serializer for objects not serializable by default."""
+        """
+        JSON serializer for objects not serializable by default.
+        """
         if isinstance(obj, Decimal):
             return str(obj)
         if hasattr(obj, "to_str"):
@@ -116,7 +128,9 @@ class EventEmitter(Actor):
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
     def _handle_order_event(self, event: Any) -> None:
-        """Handle order events from the message bus."""
+        """
+        Handle order events from the message bus.
+        """
         self._log.info(f"Received order event: {type(event).__name__}")
         if isinstance(event, OrderFilled):
             self._on_order_filled(event)
@@ -128,12 +142,16 @@ class EventEmitter(Actor):
             self._on_order_canceled(event)
 
     def _handle_position_event(self, event: Any) -> None:
-        """Handle position events from the message bus."""
+        """
+        Handle position events from the message bus.
+        """
         if isinstance(event, (PositionOpened, PositionChanged, PositionClosed)):
             self._on_position_event(event)
 
     def _on_order_accepted(self, event: OrderAccepted) -> None:
-        """Handle order accepted event."""
+        """
+        Handle order accepted event.
+        """
         self._publish(
             "order_accepted", {
                 "client_order_id": str(event.client_order_id),
@@ -147,7 +165,9 @@ class EventEmitter(Actor):
         )
 
     def _on_order_filled(self, event: OrderFilled) -> None:
-        """Handle order filled event."""
+        """
+        Handle order filled event.
+        """
         self._publish(
             "order_filled", {
                 "client_order_id": str(event.client_order_id),
@@ -170,7 +190,9 @@ class EventEmitter(Actor):
         )
 
     def _on_order_rejected(self, event: OrderRejected) -> None:
-        """Handle order rejected event."""
+        """
+        Handle order rejected event.
+        """
         self._publish(
             "order_rejected", {
                 "client_order_id": str(event.client_order_id),
@@ -184,7 +206,9 @@ class EventEmitter(Actor):
         )
 
     def _on_order_canceled(self, event: OrderCanceled) -> None:
-        """Handle order canceled event."""
+        """
+        Handle order canceled event.
+        """
         self._publish(
             "order_canceled", {
                 "client_order_id": str(event.client_order_id),
@@ -198,7 +222,9 @@ class EventEmitter(Actor):
         )
 
     def _on_position_event(self, event: PositionOpened | PositionChanged | PositionClosed) -> None:
-        """Handle position events."""
+        """
+        Handle position events.
+        """
         position: Position | None = self.cache.position(event.position_id)
         if not position:
             return

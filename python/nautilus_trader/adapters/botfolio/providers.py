@@ -36,6 +36,7 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         The clock for the provider.
     config : InstrumentProviderConfig
         The configuration for the provider.
+
     """
 
     def __init__(
@@ -51,8 +52,8 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         """
         Load all available instruments.
 
-        For Botfolio, instruments are created on-demand, so this is a
-        no-op.
+        For Botfolio, instruments are created on-demand, so this is a no-op.
+
         """
         self._log.info("Botfolio instruments are created on-demand")
 
@@ -61,7 +62,9 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
     ) -> None:
-        """Load specific instruments by ID."""
+        """
+        Load specific instruments by ID.
+        """
         for instrument_id in instrument_ids:
             await self.load_async(instrument_id, filters)
 
@@ -70,7 +73,9 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         instrument_id: InstrumentId,
         filters: dict | None = None,
     ) -> None:
-        """Load a single instrument by ID."""
+        """
+        Load a single instrument by ID.
+        """
         # Check if already loaded
         if instrument_id in self._instruments:
             return
@@ -98,6 +103,7 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         -------
         Equity | CurrencyPair
             The created instrument.
+
         """
         instrument_id = InstrumentId(
             symbol=Symbol(symbol_str),
@@ -116,7 +122,9 @@ class BotfolioInstrumentProvider(InstrumentProvider):
             return self._create_equity(instrument_id, symbol_str)
 
     def _create_equity(self, instrument_id: InstrumentId, symbol_str: str) -> Equity:
-        """Create an equity instrument."""
+        """
+        Create an equity instrument.
+        """
         return Equity(
             instrument_id=instrument_id,
             raw_symbol=Symbol(symbol_str),
@@ -140,7 +148,9 @@ class BotfolioInstrumentProvider(InstrumentProvider):
     def _create_currency_pair(
         self, instrument_id: InstrumentId, symbol_str: str,
     ) -> CurrencyPair:
-        """Create a currency pair instrument (crypto or forex)."""
+        """
+        Create a currency pair instrument (crypto or forex).
+        """
         # Parse base and quote currencies
         if "/" in symbol_str:
             base_str, quote_str = symbol_str.split("/")

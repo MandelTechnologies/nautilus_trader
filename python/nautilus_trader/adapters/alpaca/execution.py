@@ -76,6 +76,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
         The configuration for the client.
     name : str, optional
         The custom client ID.
+
     """
 
     def __init__(
@@ -125,7 +126,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         self._alpaca_account_id: str | None = None
 
     async def _connect(self) -> None:
-        """Connect the execution client."""
+        """
+        Connect the execution client.
+        """
         # Connect HTTP client first (needed for instrument provider)
         await self._http_client.connect()
 
@@ -162,6 +165,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
         environment variable instead of the full Alpaca account balance. This
         ensures each bot only sees its allocated capital, preventing bots from
         accidentally trading with capital allocated to other bots.
+
         """
         import os
 
@@ -214,7 +218,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         self._log.info(f"Account state updated: cash={cash} USD")
 
     async def _ensure_instrument_loaded(self, instrument_id: InstrumentId) -> None:
-        """Ensure an instrument is loaded, loading on-demand if needed."""
+        """
+        Ensure an instrument is loaded, loading on-demand if needed.
+        """
         # Check if already in cache
         if self._cache.instrument(instrument_id) is not None:
             return
@@ -238,7 +244,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
             self._log.warning(f"Failed to load instrument: {instrument_id}")
 
     async def _disconnect(self) -> None:
-        """Disconnect the execution client."""
+        """
+        Disconnect the execution client.
+        """
         await self._ws_client.disconnect()
         await self._http_client.disconnect()
         self._log.info("Alpaca execution client disconnected")
@@ -246,7 +254,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
     # -- Order submission ----
 
     async def _submit_order(self, command: SubmitOrder) -> None:
-        """Submit an order to Alpaca."""
+        """
+        Submit an order to Alpaca.
+        """
         order = command.order
         instrument_id = order.instrument_id
         symbol = instrument_id.symbol.value
@@ -306,7 +316,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
             )
 
     async def _cancel_order(self, command: CancelOrder) -> None:
-        """Cancel an order on Alpaca."""
+        """
+        Cancel an order on Alpaca.
+        """
         try:
             venue_order_id = command.venue_order_id
 
@@ -333,7 +345,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
             )
 
     async def _modify_order(self, command: ModifyOrder) -> None:
-        """Modify an order on Alpaca."""
+        """
+        Modify an order on Alpaca.
+        """
         try:
             venue_order_id = command.venue_order_id
             if not venue_order_id:
@@ -366,7 +380,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         self,
         command: GenerateOrderStatusReports,
     ) -> list[OrderStatusReport]:
-        """Generate order status reports."""
+        """
+        Generate order status reports.
+        """
         reports = []
 
         try:
@@ -391,7 +407,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         self,
         command: GenerateFillReports,
     ) -> list[FillReport]:
-        """Generate fill reports."""
+        """
+        Generate fill reports.
+        """
         # Alpaca doesn't have a separate fills endpoint
         # Fills are part of order data
         return []
@@ -408,6 +426,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
         manages its own positions via the backend database, which are restored
         on startup. This ensures bots sharing the same Alpaca account never
         see or interact with each other's positions.
+
         """
         self._log.info(
             "Position reconciliation disabled - using backend-managed positions for bot isolation",
@@ -417,7 +436,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
     # -- WebSocket handlers ----
 
     def _handle_trade_update(self, data: dict[str, Any]) -> None:
-        """Handle trade update from WebSocket."""
+        """
+        Handle trade update from WebSocket.
+        """
         try:
             event = data.get("event")
             order_data = data.get("order", {})
@@ -496,13 +517,17 @@ class AlpacaExecutionClient(LiveExecutionClient):
             self._log.error(f"Error handling trade update: {e}")
 
     def _handle_ws_error(self, error: str) -> None:
-        """Handle WebSocket error."""
+        """
+        Handle WebSocket error.
+        """
         self._log.error(f"Alpaca trading WebSocket error: {error}")
 
     # -- Parsing helpers ----
 
     def _parse_order_status_report(self, data: dict[str, Any]) -> OrderStatusReport:
-        """Parse order data into OrderStatusReport."""
+        """
+        Parse order data into OrderStatusReport.
+        """
         instrument_id = InstrumentId(
             symbol=Symbol(data["symbol"]),
             venue=ALPACA_VENUE,
@@ -529,7 +554,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         )
 
     def _parse_position_status_report(self, data: dict[str, Any]) -> PositionStatusReport:
-        """Parse position data into PositionStatusReport."""
+        """
+        Parse position data into PositionStatusReport.
+        """
         instrument_id = InstrumentId(
             symbol=Symbol(data["symbol"]),
             venue=ALPACA_VENUE,
@@ -550,7 +577,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         )
 
     def _parse_timestamp(self, ts_str: str | None) -> int:
-        """Parse timestamp string to nanoseconds."""
+        """
+        Parse timestamp string to nanoseconds.
+        """
         if not ts_str:
             return self._clock.timestamp_ns()
         try:
@@ -562,11 +591,15 @@ class AlpacaExecutionClient(LiveExecutionClient):
     # -- Mapping helpers ----
 
     def _map_order_side(self, side: OrderSide) -> str:
-        """Map Nautilus OrderSide to Alpaca side string."""
+        """
+        Map Nautilus OrderSide to Alpaca side string.
+        """
         return "buy" if side == OrderSide.BUY else "sell"
 
     def _map_order_type(self, order_type: OrderType) -> str:
-        """Map Nautilus OrderType to Alpaca type string."""
+        """
+        Map Nautilus OrderType to Alpaca type string.
+        """
         mapping = {
             OrderType.MARKET: "market",
             OrderType.LIMIT: "limit",
@@ -576,7 +609,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         return mapping.get(order_type, "market")
 
     def _map_time_in_force(self, tif: TimeInForce) -> str:
-        """Map Nautilus TimeInForce to Alpaca TIF string."""
+        """
+        Map Nautilus TimeInForce to Alpaca TIF string.
+        """
         mapping = {
             TimeInForce.DAY: "day",
             TimeInForce.GTC: "gtc",
@@ -586,11 +621,15 @@ class AlpacaExecutionClient(LiveExecutionClient):
         return mapping.get(tif, "day")
 
     def _parse_order_side(self, side: str) -> OrderSide:
-        """Parse Alpaca side string to Nautilus OrderSide."""
+        """
+        Parse Alpaca side string to Nautilus OrderSide.
+        """
         return OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
 
     def _parse_order_type(self, order_type: str) -> OrderType:
-        """Parse Alpaca type string to Nautilus OrderType."""
+        """
+        Parse Alpaca type string to Nautilus OrderType.
+        """
         mapping = {
             "market": OrderType.MARKET,
             "limit": OrderType.LIMIT,
@@ -600,7 +639,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         return mapping.get(order_type.lower(), OrderType.MARKET)
 
     def _parse_time_in_force(self, tif: str) -> TimeInForce:
-        """Parse Alpaca TIF string to Nautilus TimeInForce."""
+        """
+        Parse Alpaca TIF string to Nautilus TimeInForce.
+        """
         mapping = {
             "day": TimeInForce.DAY,
             "gtc": TimeInForce.GTC,
@@ -610,7 +651,9 @@ class AlpacaExecutionClient(LiveExecutionClient):
         return mapping.get(tif.lower(), TimeInForce.DAY)
 
     def _parse_order_status(self, status: str) -> OrderStatus:
-        """Parse Alpaca status string to Nautilus OrderStatus."""
+        """
+        Parse Alpaca status string to Nautilus OrderStatus.
+        """
         mapping = {
             "new": OrderStatus.ACCEPTED,
             "accepted": OrderStatus.ACCEPTED,

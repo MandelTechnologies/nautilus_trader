@@ -1,9 +1,10 @@
 """
 Position restoration for bot-folio position isolation.
 
-When multiple bots share the same Alpaca account, each bot needs to
-track only its own positions. This module restores a bot's positions
-from the backend database into the Nautilus cache on startup.
+When multiple bots share the same Alpaca account, each bot needs to track only its own
+positions. This module restores a bot's positions from the backend database into the
+Nautilus cache on startup.
+
 """
 from __future__ import annotations
 
@@ -38,7 +39,9 @@ if TYPE_CHECKING:
 
 
 def _log(message: str, logger: Any = None) -> None:
-    """Log a message using logger if available, otherwise print."""
+    """
+    Log a message using logger if available, otherwise print.
+    """
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"{ts} [PositionRestore] {message}"
     if logger is not None:
@@ -51,7 +54,9 @@ def _log(message: str, logger: Any = None) -> None:
 
 
 def _log_warning(message: str, logger: Any = None) -> None:
-    """Log a warning using logger if available, otherwise print."""
+    """
+    Log a warning using logger if available, otherwise print.
+    """
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"{ts} [PositionRestore] WARNING: {message}"
     if logger is not None:
@@ -64,7 +69,9 @@ def _log_warning(message: str, logger: Any = None) -> None:
 
 
 def _log_error(message: str, logger: Any = None) -> None:
-    """Log an error using logger if available, otherwise print."""
+    """
+    Log an error using logger if available, otherwise print.
+    """
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"{ts} [PositionRestore] ERROR: {message}"
     if logger is not None:
@@ -110,6 +117,7 @@ def restore_positions_from_env(
     -------
     int
         Number of positions restored.
+
     """
     positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
 
@@ -195,7 +203,9 @@ def restore_positions_from_env(
 
 
 def _get_position_strategy_id(strategy: Strategy) -> StrategyId:
-    """Get the strategy ID to use for position isolation."""
+    """
+    Get the strategy ID to use for position isolation.
+    """
     bot_id = os.environ.get("BOTFOLIO_BOT_ID", "")
     if not bot_id:
         strategy.log.warning("Position restore: BOTFOLIO_BOT_ID not set, using strategy.id")
@@ -207,7 +217,9 @@ def _get_account_for_restore(
     strategy: Strategy,
     instrument_ids: list[InstrumentId] | None,
 ) -> Any | None:
-    """Get account from portfolio for position restore."""
+    """
+    Get account from portfolio for position restore.
+    """
     account = strategy.portfolio.account(strategy.portfolio.default_venue())
     if account is None:
         for iid in instrument_ids or []:
@@ -228,6 +240,7 @@ def _restore_single_position(
     Restore a single position.
 
     Returns True if restored successfully.
+
     """
     symbol = pos_data.get("symbol")
     quantity = Decimal(str(pos_data.get("quantity", 0)))
@@ -335,6 +348,7 @@ def restore_positions_for_strategy(
 
             # ... rest of strategy logic
     ```
+
     """
     positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
 

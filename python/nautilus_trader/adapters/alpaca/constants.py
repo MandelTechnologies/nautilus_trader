@@ -26,14 +26,18 @@ ALPACA_LIVE_TRADING_WS_URL = "wss://api.alpaca.markets/stream"
 
 
 class AlpacaOrderSide(Enum):
-    """Alpaca order side."""
+    """
+    Alpaca order side.
+    """
 
     BUY = "buy"
     SELL = "sell"
 
 
 class AlpacaOrderType(Enum):
-    """Alpaca order type."""
+    """
+    Alpaca order type.
+    """
 
     MARKET = "market"
     LIMIT = "limit"
@@ -43,7 +47,9 @@ class AlpacaOrderType(Enum):
 
 
 class AlpacaTimeInForce(Enum):
-    """Alpaca time in force."""
+    """
+    Alpaca time in force.
+    """
 
     DAY = "day"
     GTC = "gtc"
@@ -54,7 +60,9 @@ class AlpacaTimeInForce(Enum):
 
 
 class AlpacaOrderStatus(Enum):
-    """Alpaca order status."""
+    """
+    Alpaca order status.
+    """
 
     NEW = "new"
     PARTIALLY_FILLED = "partially_filled"
@@ -75,26 +83,34 @@ class AlpacaOrderStatus(Enum):
 
 
 class AlpacaAssetClass(Enum):
-    """Alpaca asset class."""
+    """
+    Alpaca asset class.
+    """
 
     US_EQUITY = "us_equity"
     CRYPTO = "crypto"
 
 
 class AlpacaAssetStatus(Enum):
-    """Alpaca asset status."""
+    """
+    Alpaca asset status.
+    """
 
     ACTIVE = "active"
     INACTIVE = "inactive"
 
 
 def get_trading_api_url(paper: bool) -> str:
-    """Get the trading API base URL."""
+    """
+    Get the trading API base URL.
+    """
     return ALPACA_PAPER_API_URL if paper else ALPACA_LIVE_API_URL
 
 
 def get_trading_ws_url(paper: bool) -> str:
-    """Get the trading WebSocket URL."""
+    """
+    Get the trading WebSocket URL.
+    """
     return ALPACA_PAPER_TRADING_WS_URL if paper else ALPACA_LIVE_TRADING_WS_URL
 
 
@@ -106,6 +122,7 @@ def get_data_ws_url(feed: str) -> str:
     ----------
     feed : str
         The data feed: "iex", "sip" for stocks, or "crypto" for crypto.
+
     """
     if feed == "crypto":
         return ALPACA_CRYPTO_DATA_WS_URL

@@ -34,6 +34,7 @@ class AlpacaDataWebSocketClient:
         The data feed: "iex" (free) or "sip" (paid).
     logger : Logger, optional
         The logger for the client.
+
     """
 
     def __init__(
@@ -68,23 +69,33 @@ class AlpacaDataWebSocketClient:
         self._subscribed_bars: set[str] = set()
 
     def set_on_quote(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        """Set callback for quote messages."""
+        """
+        Set callback for quote messages.
+        """
         self._on_quote = callback
 
     def set_on_trade(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        """Set callback for trade messages."""
+        """
+        Set callback for trade messages.
+        """
         self._on_trade = callback
 
     def set_on_bar(self, callback: Callable[[dict[str, Any]], None]) -> None:
-        """Set callback for bar messages."""
+        """
+        Set callback for bar messages.
+        """
         self._on_bar = callback
 
     def set_on_error(self, callback: Callable[[str], None]) -> None:
-        """Set callback for error messages."""
+        """
+        Set callback for error messages.
+        """
         self._on_error = callback
 
     async def connect(self) -> None:
-        """Connect to the WebSocket and authenticate."""
+        """
+        Connect to the WebSocket and authenticate.
+        """
         if self._ws is not None:
             return
 
@@ -119,7 +130,9 @@ class AlpacaDataWebSocketClient:
             self._logger.info(f"Alpaca data WebSocket connected to {self._feed} feed")
 
     async def disconnect(self) -> None:
-        """Disconnect from the WebSocket."""
+        """
+        Disconnect from the WebSocket.
+        """
         self._running = False
 
         if self._task:
@@ -146,7 +159,9 @@ class AlpacaDataWebSocketClient:
             self._logger.info("Alpaca data WebSocket disconnected")
 
     def _build_auth_message(self) -> dict[str, Any]:
-        """Build authentication message."""
+        """
+        Build authentication message.
+        """
         if self._access_token:
             return {"action": "auth", "oauth_token": self._access_token}
         return {
@@ -156,7 +171,9 @@ class AlpacaDataWebSocketClient:
         }
 
     async def _listen(self) -> None:
-        """Listen for incoming messages."""
+        """
+        Listen for incoming messages.
+        """
         while self._running and self._ws:
             try:
                 msg = await self._ws.receive()
@@ -176,6 +193,7 @@ class AlpacaDataWebSocketClient:
         Process a WebSocket message.
 
         Returns True if loop should break.
+
         """
         if msg.type == aiohttp.WSMsgType.TEXT:
             await self._handle_messages(json.loads(msg.data))
@@ -194,7 +212,9 @@ class AlpacaDataWebSocketClient:
         return False
 
     async def _handle_messages(self, data: list[dict[str, Any]] | dict[str, Any]) -> None:
-        """Handle incoming WebSocket messages."""
+        """
+        Handle incoming WebSocket messages.
+        """
         messages = data if isinstance(data, list) else [data]
 
         for msg in messages:
@@ -216,7 +236,9 @@ class AlpacaDataWebSocketClient:
                     self._logger.debug(f"Alpaca subscription update: {msg}")
 
     async def subscribe_quotes(self, symbols: list[str]) -> None:
-        """Subscribe to quote updates for symbols."""
+        """
+        Subscribe to quote updates for symbols.
+        """
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
@@ -231,7 +253,9 @@ class AlpacaDataWebSocketClient:
             self._logger.debug(f"Subscribed to quotes: {new_symbols}")
 
     async def subscribe_trades(self, symbols: list[str]) -> None:
-        """Subscribe to trade updates for symbols."""
+        """
+        Subscribe to trade updates for symbols.
+        """
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
@@ -246,7 +270,9 @@ class AlpacaDataWebSocketClient:
             self._logger.debug(f"Subscribed to trades: {new_symbols}")
 
     async def subscribe_bars(self, symbols: list[str]) -> None:
-        """Subscribe to bar updates for symbols."""
+        """
+        Subscribe to bar updates for symbols.
+        """
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
 
@@ -261,7 +287,9 @@ class AlpacaDataWebSocketClient:
             self._logger.debug(f"Subscribed to bars: {new_symbols}")
 
     async def unsubscribe_quotes(self, symbols: list[str]) -> None:
-        """Unsubscribe from quote updates for symbols."""
+        """
+        Unsubscribe from quote updates for symbols.
+        """
         if not self._ws:
             return
 
@@ -273,7 +301,9 @@ class AlpacaDataWebSocketClient:
         self._subscribed_quotes.difference_update(to_unsub)
 
     async def unsubscribe_trades(self, symbols: list[str]) -> None:
-        """Unsubscribe from trade updates for symbols."""
+        """
+        Unsubscribe from trade updates for symbols.
+        """
         if not self._ws:
             return
 
@@ -285,7 +315,9 @@ class AlpacaDataWebSocketClient:
         self._subscribed_trades.difference_update(to_unsub)
 
     async def unsubscribe_bars(self, symbols: list[str]) -> None:
-        """Unsubscribe from bar updates for symbols."""
+        """
+        Unsubscribe from bar updates for symbols.
+        """
         if not self._ws:
             return
 

@@ -39,6 +39,7 @@ class AlpacaInstrumentProvider(InstrumentProvider):
         The clock for the provider.
     config : InstrumentProviderConfig
         The configuration for the provider.
+
     """
 
     def __init__(
@@ -56,9 +57,10 @@ class AlpacaInstrumentProvider(InstrumentProvider):
         """
         Initialize the instrument provider.
 
-        For Alpaca, if neither load_all nor load_ids is configured,
-        instruments are loaded on-demand when subscribed. This is the
-        recommended mode for faster startup.
+        For Alpaca, if neither load_all nor load_ids is configured, instruments are
+        loaded on-demand when subscribed. This is the recommended mode for faster
+        startup.
+
         """
         if not reload and self._loaded:
             return
@@ -82,7 +84,9 @@ class AlpacaInstrumentProvider(InstrumentProvider):
         self._loaded = True
 
     async def load_all_async(self, filters: dict | None = None) -> None:
-        """Load all available instruments from Alpaca."""
+        """
+        Load all available instruments from Alpaca.
+        """
         filters_str = "..." if not filters else f" with filters {filters}..."
         self._log.info(f"Loading all instruments{filters_str}")
 
@@ -113,7 +117,9 @@ class AlpacaInstrumentProvider(InstrumentProvider):
         self._log.info(f"Loaded {len(self._instruments)} Alpaca instruments")
 
     def _is_crypto_symbol(self, symbol: str) -> bool:
-        """Check if a symbol is a crypto pair (e.g., BTC/USD)."""
+        """
+        Check if a symbol is a crypto pair (e.g., BTC/USD).
+        """
         return "/" in symbol
 
     async def load_ids_async(
@@ -121,7 +127,9 @@ class AlpacaInstrumentProvider(InstrumentProvider):
         instrument_ids: list[InstrumentId],
         filters: dict | None = None,
     ) -> None:
-        """Load specific instruments by ID."""
+        """
+        Load specific instruments by ID.
+        """
         for instrument_id in instrument_ids:
             symbol = instrument_id.symbol.value
 
@@ -150,11 +158,15 @@ class AlpacaInstrumentProvider(InstrumentProvider):
         instrument_id: InstrumentId,
         filters: dict | None = None,
     ) -> None:
-        """Load a single instrument by ID."""
+        """
+        Load a single instrument by ID.
+        """
         await self.load_ids_async([instrument_id], filters)
 
     def _parse_equity(self, data: dict[str, Any]) -> Equity:
-        """Parse Alpaca asset data into a Nautilus Equity instrument."""
+        """
+        Parse Alpaca asset data into a Nautilus Equity instrument.
+        """
         symbol_str = data["symbol"]
         instrument_id = InstrumentId(
             symbol=Symbol(symbol_str),
@@ -188,8 +200,7 @@ class AlpacaInstrumentProvider(InstrumentProvider):
 
     def _parse_crypto(self, data: dict[str, Any]) -> CurrencyPair:
         """
-        Parse Alpaca crypto asset data into a Nautilus CurrencyPair
-        instrument.
+        Parse Alpaca crypto asset data into a Nautilus CurrencyPair instrument.
         """
         symbol_str = data["symbol"]
         instrument_id = InstrumentId(
