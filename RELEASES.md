@@ -106,6 +106,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed Polymarket account balance update timing issue (#3161), thanks for reporting @santivazq
 - Fixed Polymarket handling of overfilled FOK orders using `allow_overfills` execution engine config option (#3221), thanks for reporting @Javdu10
 - Fixed Polymarket `match_time` timestamp parsing (#3273), thanks for reporting @santivazq
+- Fixed Tardis book snapshot to deltas CLEAR prepending
 
 ### Internal Improvements
 - Added BitMEX submit broadcaster
@@ -123,6 +124,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added dYdX v4 order execution via gRPC with Python bindings (#3245), thanks @nicolad
 - Added dYdX v4 conditional orders (#3259), thanks @nicolad
 - Added dYdX v4 Python adapter layer (#3275), thanks @nicolad
+- Added dYdX v4 batch cancel and expose missing Python bindings (#3282), thanks @nicolad
 - Added Kraken Futures demo support (#3262), thanks @nicolad
 - Added check for empty data in _handle_table_nautilus (#3248), thanks @faysou
 - Integrated trade analytics across DeFi pools swaps and simulated quotes (#3174), thanks @filipmacek
@@ -279,6 +281,7 @@ This will be the final release with support for Python 3.11.
 - Fixed Databento CMBP-1/CBBO/TBBO symbology resolution
 - Fixed `on_load` called before strategy added bug (#2953), thanks @lisiyuan656
 - Fixed filesystem usage in catalog for `isfile` and `isdir` (#2954), thanks @limx0
+- Fixed `ParquetDataCatalog.from_uri` to support Windows paths (#3283), thanks @nikitium
 - Fixed `SandboxExecutionClient` instrument data handling
 - Fixed `AccountState` Arrow serialization (#3005), thanks for reporting @nikzasel
 - Fixed `CryptoOption` Arrow schema `option_kind` field to accept string values
@@ -389,6 +392,7 @@ This will be the final release with support for Python 3.11.
 - Improved BitMEX instrument cache error logging
 - Improved Binance, Bybit, OKX, BitMEX, and Coinbase International HTTP rate limiting to enforce documented per-endpoint quotas
 - Improved Binance fill handling when instrument not cached with clearer error log
+- Improved dYdX v4 websocket lifecycle and add fixture-based tests (#3285), thanks @nicolad
 - Improved OKX trade mode detection and fee currency parsing
 - Improved OKX client connection reliability
 - Improved OKX liquidation and ADL fill handling and logging

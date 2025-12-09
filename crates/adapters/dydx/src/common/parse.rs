@@ -17,6 +17,7 @@
 
 use std::str::FromStr;
 
+use nautilus_core::{UnixNanos, datetime::NANOSECONDS_IN_SECOND};
 use nautilus_model::{
     enums::{OrderSide, TimeInForce},
     identifiers::{InstrumentId, Symbol},
@@ -167,6 +168,15 @@ pub fn parse_decimal(value: &str, field_name: &str) -> anyhow::Result<Decimal> {
     })
 }
 
+/// Converts [`UnixNanos`] to seconds as `i64` using integer division.
+///
+/// Uses pure integer arithmetic to avoid floating-point precision loss that can
+/// occur when converting large nanosecond timestamps (e.g., order expiry times).
+#[must_use]
+pub fn nanos_to_secs_i64(nanos: UnixNanos) -> i64 {
+    (nanos.as_u64() / NANOSECONDS_IN_SECOND) as i64
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////
@@ -258,5 +268,19 @@ mod tests {
     fn test_parse_decimal() {
         let decimal = parse_decimal("0.001", "test_decimal").unwrap();
         assert_eq!(decimal.to_string(), "0.001");
+    }
+
+    #[rstest]
+    fn test_nanos_to_secs_i64() {
+        assert_eq!(nanos_to_secs_i64(UnixNanos::from(0)), 0);
+        assert_eq!(nanos_to_secs_i64(UnixNanos::from(1_000_000_000)), 1);
+        assert_eq!(nanos_to_secs_i64(UnixNanos::from(1_500_000_000)), 1);
+        assert_eq!(nanos_to_secs_i64(UnixNanos::from(1_999_999_999)), 1);
+        assert_eq!(nanos_to_secs_i64(UnixNanos::from(2_000_000_000)), 2);
+        // Test with a realistic order expiry timestamp (2024-01-01 00:00:00 UTC)
+        assert_eq!(
+            nanos_to_secs_i64(UnixNanos::from(1_704_067_200_000_000_000)),
+            1_704_067_200
+        );
     }
 }

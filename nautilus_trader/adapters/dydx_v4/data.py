@@ -169,10 +169,8 @@ class DYDXv4DataClient(LiveMarketDataClient):
         await self._ws_client.wait_until_active(timeout_secs=30.0)
         self._log.info(f"Connected to WebSocket {self._ws_client.py_url}", LogColor.BLUE)
 
-        # NOTE: subscribe_markets() is not called here because the Rust WebSocket
-        # Python bindings have a bug where the command channel is not properly
-        # shared after connect(). The markets data will still flow through the
-        # initial connection subscriptions.
+        # Subscribe to markets channel for instrument updates (mark prices, funding rates, etc.)
+        await self._ws_client.subscribe_markets()
 
     async def _disconnect(self) -> None:
         # Delay to allow websocket to send any unsubscribe messages
@@ -423,16 +421,56 @@ class DYDXv4DataClient(LiveMarketDataClient):
             self._log.error(f"Error requesting bars for {bar_type}: {e}")
 
     async def _request_quote_ticks(self, request: RequestQuoteTicks) -> None:
-        # Historical quote tick requests
-        # TODO: Implement when HTTP client exposes historical quotes endpoint
-        self._log.warning("Historical quote tick requests not yet implemented for dYdX v4")
+        # dYdX does not publish historical quote tick data
+        self._log.warning(
+            "Cannot request historical quotes: not published by dYdX. "
+            "Subscribe to order book for top-of-book data.",
+        )
 
     async def _request_trade_ticks(self, request: RequestTradeTicks) -> None:
-        # Historical trade tick requests
-        # TODO: Implement when HTTP client exposes historical trades endpoint
-        self._log.warning("Historical trade tick requests not yet implemented for dYdX v4")
+        try:
+            pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+                request.instrument_id.value,
+            )
+
+            pyo3_trades = await self._http_client.request_trade_ticks(
+                instrument_id=pyo3_instrument_id,
+                limit=request.limit,
+            )
+
+            from nautilus_trader.model.data import TradeTick
+
+            trades = TradeTick.from_pyo3_list(pyo3_trades)
+
+            self._handle_trade_ticks(
+                request.instrument_id,
+                trades,
+                request.id,
+                request.start,
+                request.end,
+                request.params,
+            )
+
+        except Exception as e:
+            self._log.error(f"Error requesting trade ticks for {request.instrument_id}: {e}")
 
     async def _request_order_book_snapshot(self, request: RequestOrderBookSnapshot) -> None:
-        # Order book snapshot requests
-        # TODO: Implement when HTTP client exposes orderbook snapshot endpoint
-        self._log.warning("Order book snapshot requests not yet implemented for dYdX v4")
+        try:
+            pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+                request.instrument_id.value,
+            )
+
+            pyo3_deltas = await self._http_client.request_orderbook_snapshot(
+                instrument_id=pyo3_instrument_id,
+            )
+
+            from nautilus_trader.model.data import OrderBookDeltas
+
+            deltas = OrderBookDeltas.from_pyo3(pyo3_deltas)
+
+            self._handle_order_book_deltas(deltas)
+
+        except Exception as e:
+            self._log.error(
+                f"Error requesting order book snapshot for {request.instrument_id}: {e}",
+            )

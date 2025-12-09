@@ -18,7 +18,7 @@
 use std::sync::LazyLock;
 
 use nautilus_model::identifiers::Venue;
-use reqwest::StatusCode;
+use nautilus_network::http::StatusCode;
 use ustr::Ustr;
 
 /// dYdX adapter name.

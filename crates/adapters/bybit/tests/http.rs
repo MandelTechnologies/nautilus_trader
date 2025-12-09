@@ -43,6 +43,7 @@ use nautilus_model::{
     instruments::{CurrencyPair, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
+use nautilus_network::http::HttpClient;
 use rstest::rstest;
 use serde_json::{Value, json};
 
@@ -67,6 +68,22 @@ impl Default for TestServerState {
             history_requests: Arc::new(tokio::sync::Mutex::new(0)),
         }
     }
+}
+
+/// Wait for the test server to be ready by polling a health endpoint.
+async fn wait_for_server(addr: SocketAddr, path: &str) {
+    let health_url = format!("http://{addr}{path}");
+    let http_client =
+        HttpClient::new(HashMap::new(), Vec::new(), Vec::new(), None, None, None).unwrap();
+    wait_until_async(
+        || {
+            let url = health_url.clone();
+            let client = http_client.clone();
+            async move { client.get(url, None, None, Some(1), None).await.is_ok() }
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 // Load test data from existing files
@@ -717,7 +734,7 @@ async fn start_test_server()
     });
 
     // Give server time to start
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v5/market/time").await;
     Ok((addr, state))
 }
 
@@ -1237,7 +1254,7 @@ async fn start_reconciliation_test_server()
         axum::serve(listener, router).await.unwrap();
     });
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    wait_for_server(addr, "/v5/market/time").await;
     Ok((addr, state))
 }
 
@@ -2271,15 +2288,7 @@ async fn start_partial_first_page_test_server()
         axum::serve(listener, router).await.unwrap();
     });
 
-    let health_url = format!("http://{addr}/v5/market/time");
-    wait_until_async(
-        || {
-            let url = health_url.clone();
-            async move { reqwest::get(&url).await.is_ok() }
-        },
-        Duration::from_secs(5),
-    )
-    .await;
+    wait_for_server(addr, "/v5/market/time").await;
 
     Ok((addr, state))
 }

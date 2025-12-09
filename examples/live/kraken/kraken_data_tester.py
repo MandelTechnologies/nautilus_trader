@@ -46,7 +46,7 @@ elif product_type == KrakenProductType.FUTURES:
     # Kraken Futures perpetual symbols use PI_ prefix (e.g., PI_XBTUSD, PI_ETHUSD)
     symbol = f"PI_{token}USD"
     environment = KrakenEnvironment.MAINNET
-    # environment = KrakenEnvironment.TESTNET  # Use demo-futures.kraken.com
+    # environment = KrakenEnvironment.DEMO  # Use demo-futures.kraken.com
 else:
     raise ValueError(f"Unsupported product type: {product_type}")
 

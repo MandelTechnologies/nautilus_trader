@@ -17,6 +17,7 @@
 
 use nautilus_model::{
     data::{Data, OrderBookDeltas},
+    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderUpdated},
     reports::{FillReport, OrderStatusReport},
 };
 use serde::{Deserialize, Serialize};
@@ -34,8 +35,13 @@ use crate::common::enums::{KrakenOrderSide, KrakenOrderType, KrakenTimeInForce};
 pub enum NautilusWsMessage {
     Data(Vec<Data>),
     Deltas(OrderBookDeltas),
+    OrderAccepted(OrderAccepted),
+    OrderCanceled(OrderCanceled),
+    OrderExpired(OrderExpired),
+    OrderUpdated(OrderUpdated),
     OrderStatusReport(Box<OrderStatusReport>),
     FillReport(Box<FillReport>),
+    Reconnected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

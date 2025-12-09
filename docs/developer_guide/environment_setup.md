@@ -53,20 +53,38 @@ make pre-commit
 
 Make sure the Rust compiler reports **zero errors** – broken builds slow everyone down.
 
-3. **Required for Rust tests**: When using Python installed via `uv`, set the `PYTHONHOME` environment variable for Rust tests to work correctly:
+3. **Required for Rust/PyO3 (Linux only)**: When using Python installed via `uv` on Linux, set the following environment variables:
 
 ```bash
-# Get the Python home path
-PYTHON_HOME=$(python -c "import sys; print(sys.base_prefix)")
-
 # Add to your shell configuration (e.g., ~/.zshrc or ~/.bashrc)
-export PYTHONHOME="$PYTHON_HOME"
+
+# Linux only: Set the library path for the Python interpreter
+export LD_LIBRARY_PATH="$HOME/.local/share/uv/python/cpython-3.13.4-linux-x86_64-gnu/lib:$LD_LIBRARY_PATH"
+
+# Set the Python executable path for PyO3
+export PYO3_PYTHON=$(pwd)/.venv/bin/python
+
+# Set the Python home path (required for Rust tests)
+export PYTHONHOME=$(python -c "import sys; print(sys.base_prefix)")
 ```
 
 :::note
-The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`-installed Python.
-Without it, tests that depend on PyO3 may fail to locate the Python runtime.
+The `LD_LIBRARY_PATH` export is Linux-specific and not needed on macOS or Windows.
+Adjust the Python version in the path to match your system. Use `uv python list` to find the exact path.
+
+- `PYO3_PYTHON` tells PyO3 which Python interpreter to use, reducing unnecessary recompilation.
+- `PYTHONHOME` is required when running `make cargo-test` with a `uv`-installed Python.
+  Without it, tests that depend on PyO3 may fail to locate the Python runtime.
+
 :::
+
+To verify your environment is configured correctly:
+
+```bash
+python -c "import sys; print('Python:', sys.executable, sys.version)"
+echo "PYO3_PYTHON: $PYO3_PYTHON"
+echo "PYTHONHOME: $PYTHONHOME"
+```
 
 ## Builds
 
@@ -101,6 +119,10 @@ rustup override set stable # reset to stable
 ```
 
 Activate the nightly feature and use "cranelift" backend for dev and testing profiles in workspace `Cargo.toml`. You can apply the below patch using `git apply <patch>`. You can remove it using `git apply -R <patch>` before pushing changes.
+
+:::warning
+Do not commit these changes. The cranelift patch is for local development only and will break CI if pushed.
+:::
 
 ```
 diff --git a/Cargo.toml b/Cargo.toml
@@ -215,7 +237,7 @@ either through command-line arguments or a `.env` file located in the root direc
 
 - `--host` or `POSTGRES_HOST` for the database host
 - `--port` or `POSTGRES_PORT` for the database port
-- `--user` or `POSTGRES_USER` for the root administrator (typically the postgres user)
+- `--user` or `POSTGRES_USERNAME` for the root administrator (typically the postgres user)
 - `--password` or `POSTGRES_PASSWORD` for the root administrator's password
 - `--database` or `POSTGRES_DATABASE` for both the database **name and the new user** with privileges to that database
     (e.g., if you provide `nautilus` as the value, a new user named nautilus will be created with the password from `POSTGRES_PASSWORD`, and the `nautilus` database will be bootstrapped with this user as the owner).

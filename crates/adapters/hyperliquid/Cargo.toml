@@ -79,7 +79,6 @@ alloy-signer-local = { workspace = true }
 alloy-sol-types = "1.4.1"
 rmp-serde = { workspace = true }
 log = { workspace = true }
-reqwest = { workspace = true }
 rust_decimal = { workspace = true }
 rust_decimal_macros = { workspace = true }
 serde = { workspace = true }

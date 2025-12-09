@@ -1,17 +1,11 @@
 # Architecture
 
-Welcome to the architectural overview of NautilusTrader.
+This guide covers the architectural principles and structure of NautilusTrader:
 
-This guide dives deep into the foundational principles, structures, and designs that underpin
-the platform. Whether you're a developer, system architect, or just curious about the inner workings
-of NautilusTrader, this section covers:
-
-- The design philosophy that drives decisions and shapes the system's evolution.
-- The overarching system architecture providing a bird's-eye view of the entire system framework.
-- How the framework is organized to facilitate modularity and maintainability.
-- The code structure that ensures readability and scalability.
-- A breakdown of component organization and interaction to understand how different parts communicate and collaborate.
-- And finally, the implementation techniques that are crucial for performance, reliability, and robustness.
+- Design philosophy and quality attributes.
+- Core components and how they interact.
+- Environment contexts (backtest, sandbox, live).
+- Framework organization and code structure.
 
 :::note
 Throughout the documentation, the term *"Nautilus system boundary"* refers to operations within

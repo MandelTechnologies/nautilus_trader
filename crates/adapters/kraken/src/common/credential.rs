@@ -38,23 +38,15 @@ impl KrakenCredential {
 
     /// Load credentials from environment variables for Kraken Spot.
     ///
-    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET` (mainnet)
-    /// or `KRAKEN_SPOT_TESTNET_API_KEY` and `KRAKEN_SPOT_TESTNET_API_SECRET` (testnet).
+    /// Looks for `KRAKEN_SPOT_API_KEY` and `KRAKEN_SPOT_API_SECRET`.
+    ///
+    /// Note: Kraken Spot does not have a testnet environment.
     ///
     /// Returns `None` if either key or secret is not set.
     #[must_use]
-    pub fn from_env_spot(testnet: bool) -> Option<Self> {
-        let (key_var, secret_var) = if testnet {
-            (
-                "KRAKEN_SPOT_TESTNET_API_KEY",
-                "KRAKEN_SPOT_TESTNET_API_SECRET",
-            )
-        } else {
-            ("KRAKEN_SPOT_API_KEY", "KRAKEN_SPOT_API_SECRET")
-        };
-
-        let key = std::env::var(key_var).ok()?;
-        let secret = std::env::var(secret_var).ok()?;
+    pub fn from_env_spot() -> Option<Self> {
+        let key = std::env::var("KRAKEN_SPOT_API_KEY").ok()?;
+        let secret = std::env::var("KRAKEN_SPOT_API_SECRET").ok()?;
 
         Some(Self::new(key, secret))
     }
@@ -62,15 +54,15 @@ impl KrakenCredential {
     /// Load credentials from environment variables for Kraken Futures.
     ///
     /// Looks for `KRAKEN_FUTURES_API_KEY` and `KRAKEN_FUTURES_API_SECRET` (mainnet)
-    /// or `KRAKEN_FUTURES_TESTNET_API_KEY` and `KRAKEN_FUTURES_TESTNET_API_SECRET` (testnet).
+    /// or `KRAKEN_FUTURES_DEMO_API_KEY` and `KRAKEN_FUTURES_DEMO_API_SECRET` (demo).
     ///
     /// Returns `None` if either key or secret is not set.
     #[must_use]
-    pub fn from_env_futures(testnet: bool) -> Option<Self> {
-        let (key_var, secret_var) = if testnet {
+    pub fn from_env_futures(demo: bool) -> Option<Self> {
+        let (key_var, secret_var) = if demo {
             (
-                "KRAKEN_FUTURES_TESTNET_API_KEY",
-                "KRAKEN_FUTURES_TESTNET_API_SECRET",
+                "KRAKEN_FUTURES_DEMO_API_KEY",
+                "KRAKEN_FUTURES_DEMO_API_SECRET",
             )
         } else {
             ("KRAKEN_FUTURES_API_KEY", "KRAKEN_FUTURES_API_SECRET")
@@ -80,6 +72,34 @@ impl KrakenCredential {
         let secret = std::env::var(secret_var).ok()?;
 
         Some(Self::new(key, secret))
+    }
+
+    /// Resolves credentials from provided values or environment for Spot.
+    ///
+    /// If both `api_key` and `api_secret` are provided, uses those.
+    /// Otherwise falls back to loading from environment variables.
+    #[must_use]
+    pub fn resolve_spot(api_key: Option<String>, api_secret: Option<String>) -> Option<Self> {
+        match (api_key, api_secret) {
+            (Some(k), Some(s)) => Some(Self::new(k, s)),
+            _ => Self::from_env_spot(),
+        }
+    }
+
+    /// Resolves credentials from provided values or environment for Futures.
+    ///
+    /// If both `api_key` and `api_secret` are provided, uses those.
+    /// Otherwise falls back to loading from environment variables.
+    #[must_use]
+    pub fn resolve_futures(
+        api_key: Option<String>,
+        api_secret: Option<String>,
+        demo: bool,
+    ) -> Option<Self> {
+        match (api_key, api_secret) {
+            (Some(k), Some(s)) => Some(Self::new(k, s)),
+            _ => Self::from_env_futures(demo),
+        }
     }
 
     pub fn api_key(&self) -> &str {
@@ -145,6 +165,24 @@ impl KrakenCredential {
         let signing_path = path.strip_prefix("/derivatives").unwrap_or(path);
         let message = format!("{post_data}{nonce}{signing_path}");
         let hash = digest::digest(&digest::SHA256, message.as_bytes());
+        let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);
+        let signature = hmac::sign(&key, hash.as_ref());
+
+        Ok(STANDARD.encode(signature.as_ref()))
+    }
+
+    /// Sign a WebSocket challenge for Kraken Futures private feeds.
+    ///
+    /// The signing process is similar to REST API authentication:
+    /// 1. SHA-256 hash the challenge string
+    /// 2. HMAC-SHA-512 of the hash using decoded API secret
+    /// 3. Base64 encode the result
+    pub fn sign_ws_challenge(&self, challenge: &str) -> anyhow::Result<String> {
+        let secret = STANDARD
+            .decode(&self.api_secret)
+            .map_err(|e| anyhow::anyhow!("Failed to decode API secret: {e}"))?;
+
+        let hash = digest::digest(&digest::SHA256, challenge.as_bytes());
         let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);
         let signature = hmac::sign(&key, hash.as_ref());
 
@@ -233,5 +271,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(with_prefix, without_prefix);
+    }
+
+    #[rstest]
+    fn test_resolve_spot_with_both_args() {
+        let result =
+            KrakenCredential::resolve_spot(Some("key".to_string()), Some("secret".to_string()));
+        assert!(result.is_some());
+        let cred = result.unwrap();
+        assert_eq!(cred.api_key(), "key");
+    }
+
+    #[rstest]
+    fn test_resolve_spot_with_partial_args_falls_back_to_env() {
+        // With partial args, should fall back to from_env_spot behavior
+        // (either returns env creds or None if env not set)
+        let result = KrakenCredential::resolve_spot(Some("key".to_string()), None);
+
+        // If env vars are set, result should NOT use the partial key
+        if let Some(cred) = result {
+            assert_ne!(cred.api_key(), "key");
+        }
+    }
+
+    #[rstest]
+    fn test_resolve_futures_with_both_args() {
+        let result = KrakenCredential::resolve_futures(
+            Some("key".to_string()),
+            Some("secret".to_string()),
+            false,
+        );
+        assert!(result.is_some());
+        let cred = result.unwrap();
+        assert_eq!(cred.api_key(), "key");
+    }
+
+    #[rstest]
+    fn test_resolve_futures_with_partial_args_falls_back_to_env() {
+        // With partial args, should fall back to from_env_futures behavior
+        let result = KrakenCredential::resolve_futures(Some("key".to_string()), None, false);
+
+        // If env vars are set, result should NOT use the partial key
+        if let Some(cred) = result {
+            assert_ne!(cred.api_key(), "key");
+        }
     }
 }

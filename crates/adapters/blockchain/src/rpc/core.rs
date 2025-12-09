@@ -19,9 +19,9 @@ use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::defi::{Block, Chain, rpc::RpcNodeWssResponse};
 use nautilus_network::{
     RECONNECTED,
+    http::USER_AGENT,
     websocket::{WebSocketClient, WebSocketConfig, channel_message_handler},
 };
-use reqwest::header::USER_AGENT;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::rpc::{

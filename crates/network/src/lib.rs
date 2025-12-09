@@ -71,7 +71,6 @@ pub mod http;
 pub mod mode;
 pub mod net;
 pub mod retry;
-pub mod runtime;
 pub mod socket;
 pub mod websocket;
 

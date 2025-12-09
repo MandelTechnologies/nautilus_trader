@@ -705,17 +705,19 @@ async fn test_websocket_multiple_subscriptions() {
         .await
         .unwrap();
 
+    // Note: quotes and book share the same underlying Book channel,
+    // so with reference counting only 2 distinct subscriptions are sent (Book + Trade)
     wait_until_async(
         || {
             let state = state.clone();
-            async move { state.subscriptions.lock().await.len() >= 3 }
+            async move { state.subscriptions.lock().await.len() >= 2 }
         },
         Duration::from_secs(5),
     )
     .await;
 
     let subs = state.subscriptions.lock().await;
-    assert_eq!(subs.len(), 3, "Expected 3 subscriptions");
+    assert_eq!(subs.len(), 2, "Expected 2 subscriptions (Book + Trade)");
 
     client.disconnect().await.unwrap();
 }
@@ -1159,17 +1161,19 @@ async fn test_websocket_concurrent_subscriptions() {
     assert!(r2.is_ok(), "Trades subscription failed: {r2:?}");
     assert!(r3.is_ok(), "Book subscription failed: {r3:?}");
 
+    // Note: quotes and book share the same underlying Book channel,
+    // so with reference counting only 2 distinct subscriptions are sent (Book + Trade)
     wait_until_async(
         || {
             let state = state.clone();
-            async move { state.subscriptions.lock().await.len() >= 3 }
+            async move { state.subscriptions.lock().await.len() >= 2 }
         },
         Duration::from_secs(5),
     )
     .await;
 
     let subs = state.subscriptions.lock().await;
-    assert_eq!(subs.len(), 3);
+    assert_eq!(subs.len(), 2);
 
     client.disconnect().await.unwrap();
 }

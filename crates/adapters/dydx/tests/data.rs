@@ -13,6 +13,4 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Schema definitions for dYdX API messages.
-
-pub mod ws;
+//! Integration tests for dYdX data client.

@@ -422,7 +422,8 @@ impl ExecutionClient for OKXExecutionClient {
         let order = &cmd.order;
 
         if order.is_closed() {
-            tracing::warn!("Cannot submit closed order {}", order.client_order_id());
+            let client_order_id = order.client_order_id();
+            tracing::warn!("Cannot submit closed order {client_order_id}");
             return Ok(());
         }
 
@@ -583,8 +584,40 @@ impl ExecutionClient for OKXExecutionClient {
             self.instruments_initialized.store(true, Ordering::Release);
         }
 
+        let Some(sender) = self.exec_event_sender.as_ref() else {
+            tracing::error!("Execution event sender not initialized");
+            anyhow::bail!("Execution event sender not initialized");
+        };
+
         self.ws_private.connect().await?;
         self.ws_private.wait_until_active(10.0).await?;
+
+        if self.ws_stream_handle.is_none() {
+            let stream = self.ws_private.stream();
+            let sender = sender.clone();
+            let handle = tokio::spawn(async move {
+                pin_mut!(stream);
+                while let Some(message) = stream.next().await {
+                    dispatch_ws_message(message, &sender);
+                }
+            });
+            self.ws_stream_handle = Some(handle);
+        }
+
+        self.ws_business.connect().await?;
+        self.ws_business.wait_until_active(10.0).await?;
+
+        if self.ws_business_stream_handle.is_none() {
+            let stream = self.ws_business.stream();
+            let sender = sender.clone();
+            let handle = tokio::spawn(async move {
+                pin_mut!(stream);
+                while let Some(message) = stream.next().await {
+                    dispatch_ws_message(message, &sender);
+                }
+            });
+            self.ws_business_stream_handle = Some(handle);
+        }
 
         for inst_type in &instrument_types {
             tracing::info!(
@@ -602,43 +635,11 @@ impl ExecutionClient for OKXExecutionClient {
 
         self.ws_private.subscribe_account().await?;
 
-        self.ws_business.connect().await?;
-        self.ws_business.wait_until_active(10.0).await?;
-
         // Subscribe to algo orders on business WebSocket (OKX requires this endpoint)
         for inst_type in &instrument_types {
             if *inst_type != OKXInstrumentType::Option {
                 self.ws_business.subscribe_orders_algo(*inst_type).await?;
             }
-        }
-
-        let Some(sender) = self.exec_event_sender.as_ref() else {
-            tracing::error!("Execution event sender not initialized");
-            anyhow::bail!("Execution event sender not initialized");
-        };
-
-        if self.ws_stream_handle.is_none() {
-            let stream = self.ws_private.stream();
-            let sender = sender.clone();
-            let handle = tokio::spawn(async move {
-                pin_mut!(stream);
-                while let Some(message) = stream.next().await {
-                    dispatch_ws_message(message, &sender);
-                }
-            });
-            self.ws_stream_handle = Some(handle);
-        }
-
-        if self.ws_business_stream_handle.is_none() {
-            let stream = self.ws_business.stream();
-            let sender = sender.clone();
-            let handle = tokio::spawn(async move {
-                pin_mut!(stream);
-                while let Some(message) = stream.next().await {
-                    dispatch_ws_message(message, &sender);
-                }
-            });
-            self.ws_business_stream_handle = Some(handle);
         }
 
         let account_state = self
@@ -876,9 +877,19 @@ fn dispatch_ws_message(
             dispatch_position_status_report(report, sender);
         }
         NautilusWsMessage::ExecutionReports(reports) => {
+            tracing::debug!("Dispatching {} execution report(s)", reports.len());
             for report in reports {
                 dispatch_execution_report(report, sender);
             }
+        }
+        NautilusWsMessage::OrderAccepted(event) => {
+            dispatch_order_event(OrderEventAny::Accepted(event), sender);
+        }
+        NautilusWsMessage::OrderCanceled(event) => {
+            dispatch_order_event(OrderEventAny::Canceled(event), sender);
+        }
+        NautilusWsMessage::OrderExpired(event) => {
+            dispatch_order_event(OrderEventAny::Expired(event), sender);
         }
         NautilusWsMessage::OrderRejected(event) => {
             dispatch_order_event(OrderEventAny::Rejected(event), sender);
@@ -888,6 +899,12 @@ fn dispatch_ws_message(
         }
         NautilusWsMessage::OrderModifyRejected(event) => {
             dispatch_order_event(OrderEventAny::ModifyRejected(event), sender);
+        }
+        NautilusWsMessage::OrderTriggered(event) => {
+            dispatch_order_event(OrderEventAny::Triggered(event), sender);
+        }
+        NautilusWsMessage::OrderUpdated(event) => {
+            dispatch_order_event(OrderEventAny::Updated(event), sender);
         }
         NautilusWsMessage::Error(e) => {
             tracing::warn!(

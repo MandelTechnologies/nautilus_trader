@@ -1278,7 +1278,7 @@ class BybitExecutionClient(LiveExecutionClient):
             )
             self._order_filled_qty.pop(report.client_order_id, None)
         elif report.order_status == OrderStatus.ACCEPTED:
-            if is_order_updated(order, report):
+            if report.is_order_updated(order):
                 self.generate_order_updated(
                     strategy_id=order.strategy_id,
                     instrument_id=report.instrument_id,
@@ -1529,17 +1529,3 @@ class BybitExecutionClient(LiveExecutionClient):
 
     def _is_external_order(self, client_order_id: ClientOrderId) -> bool:
         return not client_order_id or not self._cache.strategy_id_for_order(client_order_id)
-
-
-def is_order_updated(order: Order, report: OrderStatusReport) -> bool:
-    if order.has_price and report.price and order.price != report.price:
-        return True
-
-    if (
-        order.has_trigger_price
-        and report.trigger_price
-        and order.trigger_price != report.trigger_price
-    ):
-        return True
-
-    return order.quantity != report.quantity

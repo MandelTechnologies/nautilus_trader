@@ -13,25 +13,4 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! A common Tokio runtime for network operations.
-
-use std::sync::OnceLock;
-
-static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-
-/// Returns a reference to the global network Tokio runtime.
-///
-/// The runtime is lazily initialized on the first call and reused thereafter.
-///
-/// # Panics
-///
-/// Panics if the Tokio runtime fails to build, which should only occur in
-/// extremely rare circumstances such as system resource exhaustion.
-pub fn get_runtime() -> &'static tokio::runtime::Runtime {
-    RUNTIME.get_or_init(|| {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime")
-    })
-}
+//! Integration tests for dYdX execution client.

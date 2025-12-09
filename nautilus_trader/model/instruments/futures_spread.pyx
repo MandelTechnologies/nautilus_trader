@@ -218,6 +218,17 @@ cdef class FuturesSpread(Instrument):
         """
         return pd.Timestamp(self.expiration_ns, tz=pytz.utc)
 
+    cpdef bint is_spread(self):
+        """
+        Return whether the instrument is a spread instrument.
+
+        Returns
+        -------
+        bool
+
+        """
+        return True
+
     @staticmethod
     cdef FuturesSpread from_dict_c(dict values):
         Condition.not_none(values, "values")

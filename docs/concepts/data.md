@@ -35,22 +35,55 @@ Top-of-book data, such as `QuoteTick`, `TradeTick` and `Bar`, can also be used f
 
 ## Instruments
 
-The following instrument definitions are available:
+NautilusTrader supports a variety of instrument types across spot, derivatives, and specialty markets:
 
-- `Betting`: Represents an instrument in a betting market.
-- `BinaryOption`: Represents a generic binary option instrument.
-- `Cfd`: Represents a Contract for Difference (CFD) instrument.
-- `Commodity`:  Represents a commodity instrument in a spot/cash market.
-- `CryptoFuture`: Represents a deliverable futures contract instrument, with crypto assets as underlying and for settlement.
-- `CryptoPerpetual`: Represents a crypto perpetual futures contract instrument (a.k.a. perpetual swap).
-- `CurrencyPair`: Represents a generic currency pair instrument in a spot/cash market.
-- `Equity`: Represents a generic equity instrument.
-- `FuturesContract`: Represents a generic deliverable futures contract instrument.
-- `FuturesSpread`: Represents a generic deliverable futures spread instrument.
-- `Index`: Represents a generic index instrument.
-- `OptionContract`: Represents a generic option contract instrument.
-- `OptionSpread`: Represents a generic option spread instrument.
-- `Synthetic`: Represents a synthetic instrument with prices derived from component instruments using a formula.
+```mermaid
+flowchart TD
+    I[Instrument Types]
+    I --> Spot
+    I --> Derivatives
+    I --> Other
+
+    Spot --> Equity
+    Spot --> CurrencyPair
+    Spot --> Commodity
+    Spot --> IndexInstrument
+
+    Derivatives --> Futures
+    Derivatives --> Options
+    Derivatives --> Cfd
+
+    Futures --> FuturesContract
+    Futures --> FuturesSpread
+    Futures --> CryptoFuture
+    Futures --> CryptoPerpetual
+
+    Options --> OptionContract
+    Options --> OptionSpread
+    Options --> CryptoOption
+    Options --> BinaryOption
+
+    Other --> BettingInstrument
+    Other --> SyntheticInstrument
+```
+
+| Instrument           | Description                                                                      |
+|----------------------|----------------------------------------------------------------------------------|
+| `Equity`             | Generic equity instrument.                                                       |
+| `CurrencyPair`       | Currency pair in a spot/cash market.                                             |
+| `Commodity`          | Commodity in a spot/cash market.                                                 |
+| `IndexInstrument`    | Spot index (reference price, not directly tradable).                             |
+| `FuturesContract`    | Generic deliverable futures contract.                                            |
+| `FuturesSpread`      | Deliverable futures spread.                                                      |
+| `CryptoFuture`       | Deliverable futures with crypto assets as underlying and settlement.             |
+| `CryptoPerpetual`    | Crypto perpetual futures (perpetual swap).                                       |
+| `OptionContract`     | Generic option contract.                                                         |
+| `OptionSpread`       | Generic option spread.                                                           |
+| `CryptoOption`       | Crypto option contract.                                                          |
+| `BinaryOption`       | Binary option instrument.                                                        |
+| `Cfd`                | Contract for Difference (CFD).                                                   |
+| `BettingInstrument`  | Instrument in a betting market.                                                  |
+| `SyntheticInstrument`| Synthetic instrument with prices derived from component instruments via formula. |
 
 ## Bars and aggregation
 
@@ -99,16 +132,6 @@ The platform implements various aggregation methods:
 | `WEEK`             | Aggregation of time intervals with week granularity.                       | Time         |
 | `MONTH`            | Aggregation of time intervals with month granularity.                      | Time         |
 | `YEAR`             | Aggregation of time intervals with year granularity.                       | Time         |
-
-:::note
-The following bar aggregations are not currently implemented:
-
-- `VOLUME_IMBALANCE`
-- `VOLUME_RUNS`
-- `VALUE_IMBALANCE`
-- `VALUE_RUNS`
-
-:::
 
 ### Types of aggregation
 

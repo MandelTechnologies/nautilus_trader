@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account_id = AccountId::from("OKX-001");
     let node_name = "OKX-EXEC-TESTER-001".to_string();
     let client_id = ClientId::new("OKX");
-    let instrument_id = InstrumentId::from("BTC-USDT-SWAP.OKX");
+    let instrument_id = InstrumentId::from("ETH-USDT-SWAP.OKX");
 
     let data_config = OKXDataClientConfig {
         api_key: None,        // Will use 'OKX_API_KEY' env var
@@ -73,9 +73,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         StrategyId::from("EXEC_TESTER-001"),
         instrument_id,
         client_id,
-        Quantity::from("0.01"), // Minimum lot size for BTC-USDT-SWAP
-    );
+        Quantity::from("0.01"),
+    )
+    .with_log_data(false);
 
+    // Use UUIDs for unique client order IDs across restarts
+    tester_config.base.use_uuid_client_order_ids = true;
     // OKX doesn't allow hyphens in client order IDs
     tester_config.base.use_hyphens_in_client_order_ids = false;
 

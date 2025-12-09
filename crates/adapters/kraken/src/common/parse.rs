@@ -18,7 +18,10 @@
 use std::str::FromStr;
 
 use anyhow::Context;
-use nautilus_core::{datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos, uuid::UUID4};
+use nautilus_core::{
+    datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos,
+    parsing::min_increment_precision_from_str, uuid::UUID4,
+};
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{
@@ -31,7 +34,7 @@ use nautilus_model::{
         currency_pair::CurrencyPair,
     },
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
-    types::{Currency, Money, Price, Quantity},
+    types::{Currency, Money, Price, Quantity, fixed::FIXED_PRECISION},
 };
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -244,10 +247,34 @@ pub fn parse_futures_instrument(
         quote_currency
     };
 
-    let price_increment = Price::from(instrument.tick_size.to_string());
+    // Derive precision from tick_size string representation to handle non-power-of-10
+    // tick sizes correctly (e.g., 0.25, 2.5)
+    let tick_size = instrument.tick_size;
+    let price_precision = min_increment_precision_from_str(&tick_size.to_string());
+    if price_precision > FIXED_PRECISION {
+        anyhow::bail!(
+            "Cannot parse instrument '{}': tick_size {tick_size} requires precision {price_precision} \
+             which exceeds FIXED_PRECISION ({FIXED_PRECISION})",
+            instrument.symbol
+        );
+    }
+    let price_increment = Price::new(tick_size, price_precision);
 
-    // Contract size precision: Kraken futures typically use integer contracts
-    let size_precision = if instrument.contract_size.fract() == 0.0 {
+    // Use contract_value_trade_precision for the tradeable size increment
+    // Positive values (e.g., 3) mean fractional sizes (0.001)
+    // Negative values (e.g., -3) mean multiples of powers of 10 (1000) - used for meme coins
+    // Zero means whole number increments (1)
+    let (_size_precision, size_increment) = if instrument.contract_value_trade_precision >= 0 {
+        let precision = instrument.contract_value_trade_precision as u8;
+        let increment = Quantity::new(10.0_f64.powi(-(precision as i32)), precision);
+        (precision, increment)
+    } else {
+        // Negative precision: increment is 10^abs(precision), e.g., -3 → 1000
+        let increment_value = 10.0_f64.powi(-instrument.contract_value_trade_precision);
+        (0, Quantity::new(increment_value, 0))
+    };
+
+    let multiplier_precision = if instrument.contract_size.fract() == 0.0 {
         0
     } else {
         instrument
@@ -257,9 +284,10 @@ pub fn parse_futures_instrument(
             .nth(1)
             .map_or(0, |s| s.len() as u8)
     };
-    let size_increment = Quantity::new(instrument.contract_size, size_precision);
-
-    let multiplier = Some(Quantity::new(instrument.contract_size, size_precision));
+    let multiplier = Some(Quantity::new(
+        instrument.contract_size,
+        multiplier_precision,
+    ));
 
     // Use first margin level if available
     let (margin_init, margin_maint) = instrument
@@ -1081,7 +1109,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_futures_instrument() {
+    fn test_parse_futures_instrument_inverse() {
         let json = load_test_json("http_futures_instruments.json");
         let response: crate::http::models::FuturesInstrumentsResponse =
             serde_json::from_str(&json).unwrap();
@@ -1101,8 +1129,63 @@ mod tests {
                 assert!(perp.is_inverse);
                 assert_eq!(perp.price_increment.as_f64(), 0.5);
                 assert_eq!(perp.size_increment.as_f64(), 1.0);
+                assert_eq!(perp.size_precision(), 0);
                 assert_eq!(perp.margin_init, dec!(0.02));
                 assert_eq!(perp.margin_maint, dec!(0.01));
+            }
+            _ => panic!("Expected CryptoPerpetual"),
+        }
+    }
+
+    #[rstest]
+    fn test_parse_futures_instrument_flexible() {
+        let json = load_test_json("http_futures_instruments.json");
+        let response: crate::http::models::FuturesInstrumentsResponse =
+            serde_json::from_str(&json).unwrap();
+
+        let fut_instrument = &response.instruments[1];
+
+        let instrument = parse_futures_instrument(fut_instrument, TS, TS).unwrap();
+
+        match instrument {
+            InstrumentAny::CryptoPerpetual(perp) => {
+                assert_eq!(perp.id.venue.as_str(), "KRAKEN");
+                assert_eq!(perp.id.symbol.as_str(), "PF_ETHUSD");
+                assert_eq!(perp.raw_symbol.as_str(), "PF_ETHUSD");
+                assert_eq!(perp.base_currency.code.as_str(), "ETH");
+                assert_eq!(perp.quote_currency.code.as_str(), "USD");
+                assert_eq!(perp.settlement_currency.code.as_str(), "USD");
+                assert!(!perp.is_inverse);
+                assert_eq!(perp.price_increment.as_f64(), 0.1);
+                assert_eq!(perp.size_increment.as_f64(), 0.001);
+                assert_eq!(perp.size_precision(), 3);
+                assert_eq!(perp.margin_init, dec!(0.02));
+                assert_eq!(perp.margin_maint, dec!(0.01));
+            }
+            _ => panic!("Expected CryptoPerpetual"),
+        }
+    }
+
+    // PF_PEPEUSD has tickSize: 1e-10 which requires precision 10
+    // This test requires high-precision mode (FIXED_PRECISION=16) which is the default build
+    #[rstest]
+    fn test_parse_futures_instrument_negative_precision() {
+        let json = load_test_json("http_futures_instruments.json");
+        let response: crate::http::models::FuturesInstrumentsResponse =
+            serde_json::from_str(&json).unwrap();
+
+        // PF_PEPEUSD has contractValueTradePrecision: -3 (trades in multiples of 1000)
+        let fut_instrument = &response.instruments[2];
+
+        let instrument = parse_futures_instrument(fut_instrument, TS, TS).unwrap();
+
+        match instrument {
+            InstrumentAny::CryptoPerpetual(perp) => {
+                assert_eq!(perp.id.symbol.as_str(), "PF_PEPEUSD");
+                assert_eq!(perp.base_currency.code.as_str(), "PEPE");
+                assert!(!perp.is_inverse);
+                assert_eq!(perp.size_increment.as_f64(), 1000.0);
+                assert_eq!(perp.size_precision(), 0);
             }
             _ => panic!("Expected CryptoPerpetual"),
         }

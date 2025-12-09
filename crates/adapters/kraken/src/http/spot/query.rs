@@ -92,6 +92,7 @@ impl KrakenSpotAddOrderParamsBuilder {
 #[builder(setter(into, strip_option))]
 pub struct KrakenSpotCancelOrderParams {
     /// Transaction ID (venue order ID) to cancel.
+    /// Note: The Kraken v0 API uses `txid` as the parameter name.
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub txid: Option<String>,

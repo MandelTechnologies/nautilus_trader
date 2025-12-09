@@ -427,6 +427,17 @@ cdef class Instrument(Data):
         """
         return self.id.venue
 
+    cpdef bint is_spread(self):
+        """
+        Return whether the instrument is a spread instrument.
+
+        Returns
+        -------
+        bool
+
+        """
+        return False
+
     cpdef Currency get_base_currency(self):
         """
         Return the instruments base currency (if applicable).

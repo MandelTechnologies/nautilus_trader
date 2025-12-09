@@ -34,8 +34,10 @@ use nautilus_model::{
     identifiers::InstrumentId,
     instruments::{Instrument, InstrumentAny},
 };
-use nautilus_network::websocket::{MessageReader, WebSocketClient, WebSocketConfig};
-use reqwest::header::USER_AGENT;
+use nautilus_network::{
+    http::USER_AGENT,
+    websocket::{MessageReader, WebSocketClient, WebSocketConfig},
+};
 use tokio_tungstenite::tungstenite::{Error, Message};
 use ustr::Ustr;
 

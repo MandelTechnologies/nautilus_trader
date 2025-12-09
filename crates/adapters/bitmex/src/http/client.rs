@@ -52,11 +52,10 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_network::{
-    http::HttpClient,
+    http::{HttpClient, Method, StatusCode, USER_AGENT},
     ratelimiter::quota::Quota,
     retry::{RetryConfig, RetryManager},
 };
-use reqwest::{Method, StatusCode, header::USER_AGENT};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;

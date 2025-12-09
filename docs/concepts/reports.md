@@ -1,9 +1,5 @@
 # Reports
 
-:::info
-We are currently working on this concept guide.
-:::
-
 This guide explains the portfolio analysis and reporting capabilities provided by the `ReportProvider`
 class, and how these reports are used for PnL accounting and backtest post-run analysis.
 

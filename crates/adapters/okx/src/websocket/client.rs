@@ -49,6 +49,7 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_network::{
+    http::USER_AGENT,
     mode::ConnectionMode,
     ratelimiter::quota::Quota,
     websocket::{
@@ -56,7 +57,6 @@ use nautilus_network::{
         WebSocketClient, WebSocketConfig, channel_message_handler,
     },
 };
-use reqwest::header::USER_AGENT;
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Error;
 use tokio_util::sync::CancellationToken;

@@ -27,8 +27,6 @@ use nautilus_core::{collections::into_ustr_vec, python::to_pyvalue_err};
 use pyo3::{create_exception, exceptions::PyException, prelude::*, types::PyDict};
 use reqwest::blocking::Client;
 
-#[cfg(test)]
-use crate::runtime::get_runtime;
 use crate::{
     http::{HttpClient, HttpClientError, HttpMethod, HttpResponse, HttpStatus},
     ratelimiter::quota::Quota,
@@ -590,6 +588,7 @@ mod tests {
 
     use axum::{Router, routing::get};
     use pyo3::types::{PyDict, PyList, PyTuple};
+    use pyo3_async_runtimes::tokio::get_runtime;
     use rstest::rstest;
     use tokio::net::TcpListener;
 

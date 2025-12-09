@@ -119,7 +119,7 @@ impl DydxWebSocketClient {
 
                     while let Some(msg) = rx.recv().await {
                         match msg {
-                            crate::websocket::messages::NautilusWsMessage::Data(items) => {
+                            crate::websocket::enums::NautilusWsMessage::Data(items) => {
                                 Python::attach(|py| {
                                     for data in items {
                                         use nautilus_model::python::data::data_to_pycapsule;
@@ -130,7 +130,7 @@ impl DydxWebSocketClient {
                                     }
                                 });
                             }
-                            crate::websocket::messages::NautilusWsMessage::Deltas(deltas) => {
+                            crate::websocket::enums::NautilusWsMessage::Deltas(deltas) => {
                                 Python::attach(|py| {
                                     use nautilus_model::{
                                         data::{Data, OrderBookDeltas_API},
@@ -143,10 +143,10 @@ impl DydxWebSocketClient {
                                     }
                                 });
                             }
-                            crate::websocket::messages::NautilusWsMessage::Error(err) => {
+                            crate::websocket::enums::NautilusWsMessage::Error(err) => {
                                 tracing::error!("dYdX WebSocket error: {err}");
                             }
-                            crate::websocket::messages::NautilusWsMessage::Reconnected => {
+                            crate::websocket::enums::NautilusWsMessage::Reconnected => {
                                 tracing::info!("dYdX WebSocket reconnected");
                             }
                             _ => {

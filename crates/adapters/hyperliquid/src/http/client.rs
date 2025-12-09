@@ -44,10 +44,9 @@ use nautilus_model::{
     types::{Currency, Price, Quantity},
 };
 use nautilus_network::{
-    http::{HttpClient, HttpClientError, HttpResponse},
+    http::{HttpClient, HttpClientError, HttpResponse, Method, USER_AGENT},
     ratelimiter::quota::Quota,
 };
-use reqwest::{Method, header::USER_AGENT};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use ustr::Ustr;

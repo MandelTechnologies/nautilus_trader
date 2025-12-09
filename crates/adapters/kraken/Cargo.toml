@@ -64,7 +64,6 @@ futures-util = { workspace = true }
 hex = { workspace = true }
 indexmap = { workspace = true }
 log = { workspace = true }
-reqwest = { workspace = true }
 rust_decimal = { workspace = true }
 rust_decimal_macros = { workspace = true }
 serde = { workspace = true }
@@ -90,10 +89,6 @@ criterion = { workspace = true }
 rstest = { workspace = true }
 tracing-test = { workspace = true }
 url = { workspace = true }
-
-[[bin]]
-name = "kraken-futures-demo"
-path = "bin/futures-demo.rs"
 
 [[bin]]
 name = "kraken-http-spot-raw"

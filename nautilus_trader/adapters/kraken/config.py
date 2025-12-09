@@ -28,12 +28,14 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     ----------
     api_key : str, optional
         The Kraken API public key.
-        If ``None`` then will source the `KRAKEN_API_KEY` or `KRAKEN_TESTNET_API_KEY`
-        environment variable (depending on environment setting).
+        If ``None`` then will source from environment variables:
+        - Spot: `KRAKEN_SPOT_API_KEY`
+        - Futures: `KRAKEN_FUTURES_API_KEY` or `KRAKEN_FUTURES_DEMO_API_KEY`
     api_secret : str, optional
         The Kraken API secret key.
-        If ``None`` then will source the `KRAKEN_API_SECRET` or `KRAKEN_TESTNET_API_SECRET`
-        environment variable (depending on environment setting).
+        If ``None`` then will source from environment variables:
+        - Spot: `KRAKEN_SPOT_API_SECRET`
+        - Futures: `KRAKEN_FUTURES_API_SECRET` or `KRAKEN_FUTURES_DEMO_API_SECRET`
     environment : KrakenEnvironment, optional
         The Kraken environment to connect to.
         If ``None`` then defaults to ``KrakenEnvironment.Mainnet``.
@@ -94,12 +96,14 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
     ----------
     api_key : str, optional
         The Kraken API public key.
-        If ``None`` then will source the `KRAKEN_API_KEY` or `KRAKEN_TESTNET_API_KEY`
-        environment variable (depending on environment setting).
+        If ``None`` then will source from environment variables:
+        - Spot: `KRAKEN_SPOT_API_KEY`
+        - Futures: `KRAKEN_FUTURES_API_KEY` or `KRAKEN_FUTURES_DEMO_API_KEY`
     api_secret : str, optional
         The Kraken API secret key.
-        If ``None`` then will source the `KRAKEN_API_SECRET` or `KRAKEN_TESTNET_API_SECRET`
-        environment variable (depending on environment setting).
+        If ``None`` then will source from environment variables:
+        - Spot: `KRAKEN_SPOT_API_SECRET`
+        - Futures: `KRAKEN_FUTURES_API_SECRET` or `KRAKEN_FUTURES_DEMO_API_SECRET`
     environment : KrakenEnvironment, optional
         The Kraken environment to connect to.
         If ``None`` then defaults to ``KrakenEnvironment.Mainnet``.

@@ -171,6 +171,120 @@ impl ExecTesterConfig {
             can_unsubscribe: true,
         }
     }
+
+    #[must_use]
+    pub fn with_log_data(mut self, log_data: bool) -> Self {
+        self.log_data = log_data;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_quotes(mut self, subscribe: bool) -> Self {
+        self.subscribe_quotes = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_trades(mut self, subscribe: bool) -> Self {
+        self.subscribe_trades = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_book(mut self, subscribe: bool) -> Self {
+        self.subscribe_book = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_book_type(mut self, book_type: BookType) -> Self {
+        self.book_type = book_type;
+        self
+    }
+
+    #[must_use]
+    pub fn with_book_depth(mut self, depth: Option<NonZeroUsize>) -> Self {
+        self.book_depth = depth;
+        self
+    }
+
+    #[must_use]
+    pub fn with_enable_limit_buys(mut self, enable: bool) -> Self {
+        self.enable_limit_buys = enable;
+        self
+    }
+
+    #[must_use]
+    pub fn with_enable_limit_sells(mut self, enable: bool) -> Self {
+        self.enable_limit_sells = enable;
+        self
+    }
+
+    #[must_use]
+    pub fn with_enable_stop_buys(mut self, enable: bool) -> Self {
+        self.enable_stop_buys = enable;
+        self
+    }
+
+    #[must_use]
+    pub fn with_enable_stop_sells(mut self, enable: bool) -> Self {
+        self.enable_stop_sells = enable;
+        self
+    }
+
+    #[must_use]
+    pub fn with_tob_offset_ticks(mut self, ticks: u64) -> Self {
+        self.tob_offset_ticks = ticks;
+        self
+    }
+
+    #[must_use]
+    pub fn with_stop_order_type(mut self, order_type: OrderType) -> Self {
+        self.stop_order_type = order_type;
+        self
+    }
+
+    #[must_use]
+    pub fn with_stop_offset_ticks(mut self, ticks: u64) -> Self {
+        self.stop_offset_ticks = ticks;
+        self
+    }
+
+    #[must_use]
+    pub fn with_use_post_only(mut self, use_post_only: bool) -> Self {
+        self.use_post_only = use_post_only;
+        self
+    }
+
+    #[must_use]
+    pub fn with_open_position_on_start(mut self, qty: Option<Decimal>) -> Self {
+        self.open_position_on_start_qty = qty;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cancel_orders_on_stop(mut self, cancel: bool) -> Self {
+        self.cancel_orders_on_stop = cancel;
+        self
+    }
+
+    #[must_use]
+    pub fn with_close_positions_on_stop(mut self, close: bool) -> Self {
+        self.close_positions_on_stop = close;
+        self
+    }
+
+    #[must_use]
+    pub fn with_can_unsubscribe(mut self, can_unsubscribe: bool) -> Self {
+        self.can_unsubscribe = can_unsubscribe;
+        self
+    }
 }
 
 impl Default for ExecTesterConfig {

@@ -127,6 +127,7 @@ impl Debug for AsyncRunner {
 }
 
 impl AsyncRunner {
+    /// Creates a new [`AsyncRunner`] instance.
     #[must_use]
     pub fn new() -> Self {
         use tokio::sync::mpsc::unbounded_channel; // tokio-import-ok
@@ -169,10 +170,14 @@ impl AsyncRunner {
     /// This method processes data events, time events, execution events, and signal events in an async loop.
     /// It will run until a signal is received or the event streams are closed.
     pub async fn run(&mut self) {
-        log::info!("Starting AsyncRunner");
+        log::info!("AsyncRunner starting");
 
         loop {
             tokio::select! {
+                Some(()) = self.signal_rx.recv() => {
+                    tracing::info!("AsyncRunner received signal, shutting down");
+                    return;
+                },
                 Some(handler) = self.time_evt_rx.recv() => {
                     Self::handle_time_event(handler);
                 },
@@ -188,11 +193,10 @@ impl AsyncRunner {
                 Some(evt) = self.exec_evt_rx.recv() => {
                     Self::handle_exec_event(evt);
                 },
-                Some(()) = self.signal_rx.recv() => {
-                    tracing::info!("AsyncRunner received signal, shutting down");
-                    return; // Signal to stop
-                },
-                else => return, // Sentinel event ends run
+                else => {
+                    tracing::debug!("AsyncRunner all channels closed, exiting");
+                    return;
+                }
             };
         }
     }
@@ -234,14 +238,14 @@ impl AsyncRunner {
     #[inline]
     fn handle_exec_event(event: ExecutionEvent) {
         match event {
-            ExecutionEvent::Order(order_event) => {
-                msgbus::send_any(MessagingSwitchboard::exec_engine_process(), &order_event);
+            ExecutionEvent::Order(ref order_event) => {
+                msgbus::send_any(MessagingSwitchboard::exec_engine_process(), order_event);
             }
             ExecutionEvent::Report(report) => {
                 Self::handle_exec_report(report);
             }
-            ExecutionEvent::Account(account) => {
-                msgbus::send_any(MessagingSwitchboard::portfolio_update_account(), &account);
+            ExecutionEvent::Account(ref account) => {
+                msgbus::send_any(MessagingSwitchboard::portfolio_update_account(), account);
             }
         }
     }

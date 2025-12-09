@@ -609,7 +609,7 @@ impl Send for MessageBus {
 
 ## Python bindings
 
-Python bindings are provided via Cython and [PyO3](https://pyo3.rs), allowing users to import NautilusTrader crates directly in Python without a Rust toolchain.
+Python bindings are provided via [PyO3](https://pyo3.rs), allowing users to import NautilusTrader crates directly in Python without a Rust toolchain.
 
 ### PyO3 naming conventions
 
