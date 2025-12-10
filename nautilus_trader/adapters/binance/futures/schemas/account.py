@@ -254,3 +254,55 @@ class BinanceFuturesMarginTypeResponse(msgspec.Struct, frozen=True):
 
     code: int
     msg: str
+
+
+class BinanceFuturesAlgoOrder(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures `POST /fapi/v1/algoOrder`.
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order
+
+    """
+
+    algoId: int
+    clientAlgoId: str
+    algoType: str
+    orderType: str
+    symbol: str
+    side: str
+    positionSide: str | None = None
+    timeInForce: str | None = None
+    quantity: str | None = None
+    algoStatus: str | None = None
+    triggerPrice: str | None = None
+    price: str | None = None
+    workingType: str | None = None
+    priceMatch: str | None = None
+    closePosition: bool | None = None
+    priceProtect: bool | None = None
+    reduceOnly: bool | None = None
+    selfTradePreventionMode: str | None = None
+    activatePrice: str | None = None
+    callbackRate: str | None = None
+    createTime: int | None = None
+    updateTime: int | None = None
+    triggerTime: int | None = None
+    goodTillDate: int | None = None
+
+
+class BinanceFuturesAlgoOrderCancelResponse(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures `DELETE /fapi/v1/algoOrder`.
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-Algo-Order
+
+    """
+
+    algoId: int
+    clientAlgoId: str
+    code: str
+    msg: str

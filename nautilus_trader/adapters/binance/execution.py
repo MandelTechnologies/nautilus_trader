@@ -19,6 +19,7 @@ from collections.abc import Awaitable
 from collections.abc import Callable
 from decimal import Decimal
 
+from nautilus_trader.adapters.binance.common.constants import BINANCE_FUTURES_ALGO_ORDER_TYPES
 from nautilus_trader.adapters.binance.common.constants import BINANCE_MAX_CALLBACK_RATE
 from nautilus_trader.adapters.binance.common.constants import BINANCE_MIN_CALLBACK_RATE
 from nautilus_trader.adapters.binance.common.constants import BINANCE_PRICE_MATCH_ORDER_TYPES
@@ -943,13 +944,10 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         # Stop limit order validations
         elif isinstance(order, (StopLimitOrder, StopMarketOrder)):
-            if (
-                not self._binance_account_type.is_spot_or_margin
-                and order.trigger_type not in (
-                    TriggerType.DEFAULT,
-                    TriggerType.LAST_PRICE,
-                    TriggerType.MARK_PRICE,
-                )
+            if not self._binance_account_type.is_spot_or_margin and order.trigger_type not in (
+                TriggerType.DEFAULT,
+                TriggerType.LAST_PRICE,
+                TriggerType.MARK_PRICE,
             ):
                 return f"INVALID_TRIGGER_TYPE: {trigger_type_to_str(order.trigger_type)}"
 
@@ -1054,23 +1052,41 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         time_in_force = self._determine_time_in_force(order)
 
-        await self._http_account.new_order(
-            symbol=order.instrument_id.symbol.value,
-            side=self._enum_parser.parse_internal_order_side(order.side),
-            order_type=self._enum_parser.parse_internal_order_type(order),
-            time_in_force=time_in_force,
-            good_till_date=self._determine_good_till_date(order, time_in_force),
-            quantity=str(order.quantity),
-            price=None if price_match else str(order.price),
-            stop_price=str(order.trigger_price),
-            working_type=working_type,
-            iceberg_qty=str(order.display_qty) if order.display_qty is not None else None,
-            reduce_only=self._determine_reduce_only_str(order),
-            new_client_order_id=order.client_order_id.value,
-            recv_window=str(self._recv_window),
-            position_side=position_side,
-            price_match=price_match,
-        )
+        if self._binance_account_type.is_futures:
+            await self._http_account.new_algo_order(  # type: ignore [attr-defined]
+                symbol=order.instrument_id.symbol.value,
+                side=self._enum_parser.parse_internal_order_side(order.side),
+                order_type=self._enum_parser.parse_internal_order_type(order),
+                position_side=position_side,
+                quantity=str(order.quantity),
+                price=None if price_match else str(order.price),
+                trigger_price=str(order.trigger_price),
+                time_in_force=time_in_force,
+                working_type=working_type,
+                price_match=price_match,
+                reduce_only=self._determine_reduce_only_str(order),
+                client_algo_id=order.client_order_id.value,
+                good_till_date=self._determine_good_till_date(order, time_in_force),
+                recv_window=str(self._recv_window),
+            )
+        else:
+            await self._http_account.new_order(
+                symbol=order.instrument_id.symbol.value,
+                side=self._enum_parser.parse_internal_order_side(order.side),
+                order_type=self._enum_parser.parse_internal_order_type(order),
+                time_in_force=time_in_force,
+                good_till_date=self._determine_good_till_date(order, time_in_force),
+                quantity=str(order.quantity),
+                price=None if price_match else str(order.price),
+                stop_price=str(order.trigger_price),
+                working_type=working_type,
+                iceberg_qty=str(order.display_qty) if order.display_qty is not None else None,
+                reduce_only=self._determine_reduce_only_str(order),
+                new_client_order_id=order.client_order_id.value,
+                recv_window=str(self._recv_window),
+                position_side=position_side,
+                price_match=price_match,
+            )
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
         position_side = self._get_position_side_from_position_id(
@@ -1112,20 +1128,36 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         time_in_force = self._determine_time_in_force(order)
 
-        await self._http_account.new_order(
-            symbol=order.instrument_id.symbol.value,
-            side=self._enum_parser.parse_internal_order_side(order.side),
-            order_type=self._enum_parser.parse_internal_order_type(order),
-            time_in_force=time_in_force,
-            good_till_date=self._determine_good_till_date(order, time_in_force),
-            quantity=str(order.quantity),
-            stop_price=str(order.trigger_price),
-            working_type=working_type,
-            reduce_only=self._determine_reduce_only_str(order),
-            new_client_order_id=order.client_order_id.value,
-            recv_window=str(self._recv_window),
-            position_side=position_side,
-        )
+        if self._binance_account_type.is_futures:
+            await self._http_account.new_algo_order(  # type: ignore [attr-defined]
+                symbol=order.instrument_id.symbol.value,
+                side=self._enum_parser.parse_internal_order_side(order.side),
+                order_type=self._enum_parser.parse_internal_order_type(order),
+                position_side=position_side,
+                quantity=str(order.quantity),
+                trigger_price=str(order.trigger_price),
+                time_in_force=time_in_force,
+                working_type=working_type,
+                reduce_only=self._determine_reduce_only_str(order),
+                client_algo_id=order.client_order_id.value,
+                good_till_date=self._determine_good_till_date(order, time_in_force),
+                recv_window=str(self._recv_window),
+            )
+        else:
+            await self._http_account.new_order(
+                symbol=order.instrument_id.symbol.value,
+                side=self._enum_parser.parse_internal_order_side(order.side),
+                order_type=self._enum_parser.parse_internal_order_type(order),
+                time_in_force=time_in_force,
+                good_till_date=self._determine_good_till_date(order, time_in_force),
+                quantity=str(order.quantity),
+                stop_price=str(order.trigger_price),
+                working_type=working_type,
+                reduce_only=self._determine_reduce_only_str(order),
+                new_client_order_id=order.client_order_id.value,
+                recv_window=str(self._recv_window),
+                position_side=position_side,
+            )
 
     async def _submit_trailing_stop_market_order(
         self,
@@ -1155,20 +1187,21 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         activation_price: Price | None = order.activation_price
 
-        await self._http_account.new_order(
+        # TRAILING_STOP_MARKET is a futures-only order type
+        await self._http_account.new_algo_order(  # type: ignore [attr-defined]
             symbol=order.instrument_id.symbol.value,
             side=self._enum_parser.parse_internal_order_side(order.side),
             order_type=self._enum_parser.parse_internal_order_type(order),
-            time_in_force=time_in_force,
-            good_till_date=self._determine_good_till_date(order, time_in_force),
+            position_side=position_side,
             quantity=str(order.quantity),
             activation_price=str(activation_price) if activation_price is not None else None,
             callback_rate=str(callback_rate),
+            time_in_force=time_in_force,
             working_type=working_type,
             reduce_only=self._determine_reduce_only_str(order),
-            new_client_order_id=order.client_order_id.value,
+            client_algo_id=order.client_order_id.value,
+            good_till_date=self._determine_good_till_date(order, time_in_force),
             recv_window=str(self._recv_window),
-            position_side=position_side,
         )
 
     def _get_cached_instrument_id(self, symbol: str) -> InstrumentId:
@@ -1247,43 +1280,30 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         finally:
             await self._retry_manager_pool.release(retry_manager)
 
-    async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
-        if command.order_side != OrderSide.NO_ORDER_SIDE:
-            self._log.warning(
-                f"Binance does not support order_side filtering for cancel all orders; "
-                f"ignoring order_side={order_side_to_str(command.order_side)} and canceling all orders",
+    async def _cancel_orders_batch(
+        self,
+        instrument_id: InstrumentId,
+        orders: list[Order],
+    ) -> None:
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
+            await retry_manager.run(
+                "cancel_all_open_orders",
+                [instrument_id],
+                self._http_account.cancel_all_open_orders,
+                symbol=instrument_id.symbol.value,
             )
-
-        open_orders_strategy: list[Order] = self._cache.orders_open(
-            instrument_id=command.instrument_id,
-            strategy_id=command.strategy_id,
-        )
-
-        # Check total orders for instrument
-        open_orders_total_count = self._cache.orders_open_count(
-            instrument_id=command.instrument_id,
-        )
-
-        if open_orders_total_count == len(open_orders_strategy):
-            retry_manager = await self._retry_manager_pool.acquire()
-            try:
-                await retry_manager.run(
-                    "cancel_all_open_orders",
-                    [command.instrument_id],
-                    self._http_account.cancel_all_open_orders,
-                    symbol=command.instrument_id.symbol.value,
-                )
-                if not retry_manager.result:
-                    if (
-                        retry_manager.message is not None
-                        and "Unknown order sent" in retry_manager.message
-                    ):
-                        self._log.info(
-                            "No open orders to cancel according to Binance",
-                            LogColor.GREEN,
-                        )
-                        return
-                    for order in open_orders_strategy:
+            if not retry_manager.result:
+                if (
+                    retry_manager.message is not None
+                    and "Unknown order sent" in retry_manager.message
+                ):
+                    self._log.info(
+                        "No open orders to cancel according to Binance",
+                        LogColor.GREEN,
+                    )
+                else:
+                    for order in orders:
                         if order.is_closed:
                             continue
                         self.generate_order_cancel_rejected(
@@ -1294,13 +1314,11 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
                             retry_manager.message,
                             self._clock.timestamp_ns(),
                         )
-                return
-            finally:
-                await self._retry_manager_pool.release(retry_manager)
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
 
-        # Not every strategy order is included in all orders - so must cancel individually
-        # TODO: A future improvement could be to asyncio.gather all cancel tasks
-        for order in open_orders_strategy:
+    async def _cancel_orders_individual(self, orders: list[Order]) -> None:
+        for order in orders:
             retry_manager = await self._retry_manager_pool.acquire()
             try:
                 await retry_manager.run(
@@ -1323,6 +1341,45 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             finally:
                 await self._retry_manager_pool.release(retry_manager)
 
+    async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
+        if command.order_side != OrderSide.NO_ORDER_SIDE:
+            self._log.warning(
+                f"Binance does not support order_side filtering for cancel all orders; "
+                f"ignoring order_side={order_side_to_str(command.order_side)} and canceling all orders",
+            )
+
+        open_orders_strategy: list[Order] = self._cache.orders_open(
+            instrument_id=command.instrument_id,
+            strategy_id=command.strategy_id,
+        )
+
+        open_orders_total_count = self._cache.orders_open_count(
+            instrument_id=command.instrument_id,
+        )
+
+        if open_orders_total_count == len(open_orders_strategy):
+            algo_orders: list[Order] = []
+            regular_orders: list[Order] = []
+
+            if self._binance_account_type.is_futures:
+                for order in open_orders_strategy:
+                    if order.order_type in BINANCE_FUTURES_ALGO_ORDER_TYPES:
+                        algo_orders.append(order)
+                    else:
+                        regular_orders.append(order)
+            else:
+                regular_orders = open_orders_strategy
+
+            if regular_orders:
+                await self._cancel_orders_batch(command.instrument_id, regular_orders)
+
+            if algo_orders:
+                await self._cancel_orders_individual(algo_orders)
+            return
+
+        # Not every strategy order is included in all orders - so must cancel individually
+        await self._cancel_orders_individual(open_orders_strategy)
+
     async def _cancel_order_single(
         self,
         instrument_id: InstrumentId,
@@ -1342,11 +1399,26 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             )
             return
 
-        await self._http_account.cancel_order(
-            symbol=instrument_id.symbol.value,
-            order_id=int(venue_order_id.value) if venue_order_id else None,
-            orig_client_order_id=client_order_id.value if client_order_id else None,
+        is_algo_order = (
+            self._binance_account_type.is_futures
+            and order.order_type in BINANCE_FUTURES_ALGO_ORDER_TYPES
         )
+
+        if is_algo_order:
+            response = await self._http_account.cancel_algo_order(  # type: ignore [attr-defined]
+                algo_id=int(venue_order_id.value) if venue_order_id else None,
+                client_algo_id=client_order_id.value if client_order_id else None,
+            )
+            self._log.debug(
+                f"Algo order cancel response: algoId={response.algoId}, "
+                f"code={response.code}, msg={response.msg}",
+            )
+        else:
+            await self._http_account.cancel_order(
+                symbol=instrument_id.symbol.value,
+                order_id=int(venue_order_id.value) if venue_order_id else None,
+                orig_client_order_id=client_order_id.value if client_order_id else None,
+            )
 
     # -- WEBSOCKET EVENT HANDLERS -----------------------------------------------------------------
 

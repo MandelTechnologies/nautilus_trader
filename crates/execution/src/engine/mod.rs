@@ -41,7 +41,7 @@ use nautilus_common::{
     cache::Cache,
     clock::Clock,
     generators::position_id::PositionIdGenerator,
-    logging::{CMD, EVT, RECV},
+    logging::{CMD, EVT, RECV, SEND},
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount, QueryOrder,
         SubmitOrder, SubmitOrderList, TradingCommand,
@@ -997,6 +997,10 @@ impl ExecutionEngine {
 
         if let Err(e) = self.cache.borrow_mut().update_order(order) {
             log::error!("Error updating order in cache: {e}");
+        }
+
+        if self.config.debug {
+            log::debug!("{SEND}{EVT} {event}");
         }
 
         let topic = switchboard::get_event_orders_topic(event.strategy_id());

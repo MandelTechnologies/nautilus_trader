@@ -20,7 +20,7 @@ use std::{
     fmt::{Debug, Formatter},
     num::NonZeroU32,
     sync::{
-        Arc, LazyLock, RwLock,
+        Arc, RwLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -65,12 +65,13 @@ use crate::{
     http::error::KrakenHttpError,
 };
 
-/// Default Kraken REST API rate limit.
-pub static KRAKEN_SPOT_REST_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
-    Quota::per_second(NonZeroU32::new(5).expect("Should be a valid non-zero u32"))
-});
+/// Default Kraken Spot REST API rate limit (requests per second).
+pub const KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
 
 const KRAKEN_GLOBAL_RATE_KEY: &str = "kraken:spot:global";
+
+/// Maximum orders per batch cancel request for Kraken Spot API.
+const BATCH_CANCEL_LIMIT: usize = 50;
 
 /// Raw HTTP client for low-level Kraken Spot API operations.
 ///
@@ -93,6 +94,7 @@ impl Default for KrakenSpotRawHttpClient {
             KrakenEnvironment::Mainnet,
             None,
             Some(60),
+            None,
             None,
             None,
             None,
@@ -122,6 +124,7 @@ impl KrakenSpotRawHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(3),
@@ -139,13 +142,16 @@ impl KrakenSpotRawHttpClient {
             get_kraken_http_base_url(KrakenProductType::Spot, environment).to_string()
         });
 
+        let rate_limit =
+            max_requests_per_second.unwrap_or(KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND);
+
         Ok(Self {
             base_url,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(),
-                Some(*KRAKEN_SPOT_REST_QUOTA),
+                Self::rate_limiter_quotas(rate_limit),
+                Some(Self::default_quota(rate_limit)),
                 timeout_secs,
                 proxy_url,
             )
@@ -170,6 +176,7 @@ impl KrakenSpotRawHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(3),
@@ -187,13 +194,16 @@ impl KrakenSpotRawHttpClient {
             get_kraken_http_base_url(KrakenProductType::Spot, environment).to_string()
         });
 
+        let rate_limit =
+            max_requests_per_second.unwrap_or(KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND);
+
         Ok(Self {
             base_url,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(),
-                Some(*KRAKEN_SPOT_REST_QUOTA),
+                Self::rate_limiter_quotas(rate_limit),
+                Some(Self::default_quota(rate_limit)),
                 timeout_secs,
                 proxy_url,
             )
@@ -234,8 +244,19 @@ impl KrakenSpotRawHttpClient {
         HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())])
     }
 
-    fn rate_limiter_quotas() -> Vec<(String, Quota)> {
-        vec![(KRAKEN_GLOBAL_RATE_KEY.to_string(), *KRAKEN_SPOT_REST_QUOTA)]
+    fn default_quota(max_requests_per_second: u32) -> Quota {
+        Quota::per_second(
+            NonZeroU32::new(max_requests_per_second).unwrap_or_else(|| {
+                NonZeroU32::new(KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND).unwrap()
+            }),
+        )
+    }
+
+    fn rate_limiter_quotas(max_requests_per_second: u32) -> Vec<(String, Quota)> {
+        vec![(
+            KRAKEN_GLOBAL_RATE_KEY.to_string(),
+            Self::default_quota(max_requests_per_second),
+        )]
     }
 
     fn rate_limit_keys(endpoint: &str) -> Vec<String> {
@@ -345,9 +366,15 @@ impl KrakenSpotRawHttpClient {
                     .await
                     .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
 
-                if response.status.as_u16() >= 400 {
-                    let status = response.status.as_u16();
+                let status = response.status.as_u16();
+                if status >= 400 {
                     let body = String::from_utf8_lossy(&response.body).to_string();
+                    // Don't retry authentication errors
+                    if status == 401 || status == 403 {
+                        return Err(KrakenHttpError::AuthenticationError(format!(
+                            "HTTP error {status}: {body}"
+                        )));
+                    }
                     return Err(KrakenHttpError::NetworkError(format!(
                         "HTTP error {status}: {body}"
                     )));
@@ -702,6 +729,88 @@ impl KrakenSpotRawHttpClient {
             .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
     }
 
+    /// Cancel multiple orders in a single batch request.
+    ///
+    /// # Parameters
+    /// - `params` - Batch cancel parameters containing list of order IDs (max 50).
+    ///
+    /// Note: This endpoint uses JSON body with `application/json` content type.
+    pub async fn cancel_order_batch(
+        &self,
+        params: &KrakenSpotCancelOrderBatchParams,
+    ) -> anyhow::Result<SpotCancelOrderBatchResponse, KrakenHttpError> {
+        let credential = self.credential.as_ref().ok_or_else(|| {
+            KrakenHttpError::AuthenticationError(
+                "API credentials required for canceling orders".to_string(),
+            )
+        })?;
+
+        // Serialize authenticated requests to ensure nonces arrive at Kraken in order
+        let _guard = self.auth_mutex.lock().await;
+
+        let endpoint = "/0/private/CancelOrderBatch";
+        let nonce = self.generate_nonce();
+
+        // CancelOrderBatch uses JSON body with nonce included
+        let json_body = serde_json::json!({
+            "nonce": nonce.to_string(),
+            "orders": params.orders
+        });
+        let json_str = serde_json::to_string(&json_body)
+            .map_err(|e| KrakenHttpError::ParseError(format!("Failed to serialize: {e}")))?;
+
+        let signature = credential
+            .sign_spot_json(endpoint, nonce, &json_str)
+            .map_err(|e| KrakenHttpError::AuthenticationError(format!("Failed to sign: {e}")))?;
+
+        let mut headers = Self::default_headers();
+        headers.insert("API-Key".to_string(), credential.api_key().to_string());
+        headers.insert("API-Sign".to_string(), signature);
+        headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+        let url = format!("{}{endpoint}", self.base_url);
+        let rate_limit_keys = Self::rate_limit_keys(endpoint);
+
+        let response = self
+            .client
+            .request(
+                Method::POST,
+                url,
+                None,
+                Some(headers),
+                Some(json_str.into_bytes()),
+                None,
+                Some(rate_limit_keys),
+            )
+            .await
+            .map_err(|e| KrakenHttpError::NetworkError(e.to_string()))?;
+
+        if response.status.as_u16() >= 400 {
+            let status = response.status.as_u16();
+            let body = String::from_utf8_lossy(&response.body).to_string();
+            if status == 401 || status == 403 {
+                return Err(KrakenHttpError::AuthenticationError(format!(
+                    "HTTP error {status}: {body}"
+                )));
+            }
+            return Err(KrakenHttpError::NetworkError(format!(
+                "HTTP error {status}: {body}"
+            )));
+        }
+
+        let response_text = String::from_utf8(response.body.to_vec())
+            .map_err(|e| KrakenHttpError::ParseError(format!("Invalid UTF-8: {e}")))?;
+
+        let kraken_response: KrakenResponse<SpotCancelOrderBatchResponse> =
+            serde_json::from_str(&response_text).map_err(|e| {
+                KrakenHttpError::ParseError(format!("Failed to parse response: {e}"))
+            })?;
+
+        kraken_response
+            .result
+            .ok_or_else(|| KrakenHttpError::ParseError("Missing result in response".to_string()))
+    }
+
     pub async fn cancel_all_orders(
         &self,
     ) -> anyhow::Result<SpotCancelOrderResponse, KrakenHttpError> {
@@ -803,6 +912,7 @@ impl Default for KrakenSpotHttpClient {
             None,
             None,
             None,
+            None,
         )
         .expect("Failed to create default KrakenSpotHttpClient")
     }
@@ -827,6 +937,7 @@ impl KrakenSpotHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenSpotRawHttpClient::new(
@@ -837,6 +948,7 @@ impl KrakenSpotHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
@@ -857,6 +969,7 @@ impl KrakenSpotHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenSpotRawHttpClient::with_credentials(
@@ -869,6 +982,7 @@ impl KrakenSpotHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
@@ -893,6 +1007,7 @@ impl KrakenSpotHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         if let Some(credential) = KrakenCredential::from_env_spot() {
             let (api_key, api_secret) = credential.into_parts();
@@ -906,6 +1021,7 @@ impl KrakenSpotHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
         } else {
             Self::new(
@@ -916,6 +1032,7 @@ impl KrakenSpotHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
         }
     }
@@ -1317,22 +1434,29 @@ impl KrakenSpotHttpClient {
             _ => anyhow::bail!("Unsupported order type: {order_type:?}"),
         };
 
-        // Build oflags based on time in force and order options
+        // Note: timeinforce is only valid for limit-type orders, not market orders
         let mut oflags = Vec::new();
+        let is_limit_order = matches!(
+            order_type,
+            OrderType::Limit | OrderType::StopLimit | OrderType::LimitIfTouched
+        );
 
-        match time_in_force {
-            TimeInForce::Gtc => {} // Default, no flag needed
-            TimeInForce::Ioc => {
-                oflags.push("ioc");
+        let timeinforce = if is_limit_order {
+            match time_in_force {
+                TimeInForce::Gtc => None, // Default, no parameter needed
+                TimeInForce::Ioc => Some("IOC".to_string()),
+                TimeInForce::Fok => {
+                    anyhow::bail!("FOK time in force not supported by Kraken Spot API");
+                }
+                TimeInForce::Gtd => {
+                    anyhow::bail!("GTD time in force requires expire_time parameter");
+                }
+                _ => anyhow::bail!("Unsupported time in force: {time_in_force:?}"),
             }
-            TimeInForce::Fok => {
-                anyhow::bail!("FOK time in force not supported by Kraken Spot API");
-            }
-            TimeInForce::Gtd => {
-                anyhow::bail!("GTD time in force requires expire_time parameter");
-            }
-            _ => anyhow::bail!("Unsupported time in force: {time_in_force:?}"),
-        }
+        } else {
+            // Market orders are inherently immediate, timeinforce not applicable
+            None
+        };
 
         if post_only {
             oflags.push("post");
@@ -1377,6 +1501,10 @@ impl KrakenSpotHttpClient {
 
         if !oflags.is_empty() {
             builder.oflags(oflags.join(","));
+        }
+
+        if let Some(tif) = timeinforce {
+            builder.timeinforce(tif);
         }
 
         let params = builder
@@ -1435,6 +1563,36 @@ impl KrakenSpotHttpClient {
         self.inner.cancel_order(&params).await?;
 
         Ok(())
+    }
+
+    /// Cancel multiple orders on the Kraken Spot exchange.
+    ///
+    /// Automatically chunks requests into batches of 50 orders (Kraken's limit).
+    ///
+    /// # Parameters
+    /// - `venue_order_ids` - List of venue order IDs (txids) to cancel.
+    ///
+    /// # Returns
+    /// The total count of successfully cancelled orders.
+    pub async fn cancel_orders_batch(
+        &self,
+        venue_order_ids: Vec<VenueOrderId>,
+    ) -> anyhow::Result<i32> {
+        if venue_order_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut total_cancelled = 0;
+
+        for chunk in venue_order_ids.chunks(BATCH_CANCEL_LIMIT) {
+            let orders: Vec<String> = chunk.iter().map(|id| id.to_string()).collect();
+            let params = KrakenSpotCancelOrderBatchParams { orders };
+
+            let response = self.inner.cancel_order_batch(&params).await?;
+            total_cancelled += response.count;
+        }
+
+        Ok(total_cancelled)
     }
 
     /// Request account state (balances) from Kraken.
@@ -1654,6 +1812,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(client.credential.is_some());
@@ -1671,6 +1830,7 @@ mod tests {
             "test_key".to_string(),
             "test_secret".to_string(),
             KrakenEnvironment::Mainnet,
+            None,
             None,
             None,
             None,

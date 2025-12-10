@@ -83,8 +83,8 @@ use crate::{
     },
     http::{
         parse::{
-            parse_fill_report, parse_instrument_any, parse_order_status_report,
-            parse_position_report, parse_trade, parse_trade_bin,
+            InstrumentParseResult, parse_fill_report, parse_instrument_any,
+            parse_order_status_report, parse_position_report, parse_trade, parse_trade_bin,
         },
         query::{DeleteAllOrdersParamsBuilder, GetOrderParamsBuilder, PutOrderParamsBuilder},
     },
@@ -1177,7 +1177,7 @@ impl BitmexHttpClient {
     /// # Errors
     ///
     /// Returns `Ok(Some(..))` when the venue returns a definition that parses
-    /// successfully, `Ok(None)` when the instrument is unknown or the payload
+    /// successfully, `Ok(None)` when the instrument is unknown, unsupported, or the payload
     /// cannot be converted into a Nautilus `Instrument`.
     pub async fn request_instrument(
         &self,
@@ -1195,7 +1195,28 @@ impl BitmexHttpClient {
 
         let ts_init = self.generate_ts_init();
 
-        Ok(parse_instrument_any(&instrument, ts_init))
+        match parse_instrument_any(&instrument, ts_init) {
+            InstrumentParseResult::Ok(inst) => Ok(Some(*inst)),
+            InstrumentParseResult::Unsupported {
+                symbol,
+                instrument_type,
+            } => {
+                tracing::debug!(
+                    "Instrument {symbol} has unsupported type {instrument_type:?}, returning None"
+                );
+                Ok(None)
+            }
+            InstrumentParseResult::Failed {
+                symbol,
+                instrument_type,
+                error,
+            } => {
+                tracing::error!(
+                    "Failed to parse instrument {symbol} (type={instrument_type:?}): {error}"
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Request all available instruments and parse them into Nautilus types.
@@ -1211,28 +1232,46 @@ impl BitmexHttpClient {
         let ts_init = self.generate_ts_init();
 
         let mut parsed_instruments = Vec::new();
+        let mut skipped_count = 0;
         let mut failed_count = 0;
         let total_count = instruments.len();
 
         for inst in instruments {
-            if let Some(instrument_any) = parse_instrument_any(&inst, ts_init) {
-                parsed_instruments.push(instrument_any);
-            } else {
-                failed_count += 1;
-                tracing::error!(
-                    "Failed to parse instrument: symbol={}, type={:?}, state={:?} - instrument will not be cached",
-                    inst.symbol,
-                    inst.instrument_type,
-                    inst.state
-                );
+            match parse_instrument_any(&inst, ts_init) {
+                InstrumentParseResult::Ok(instrument_any) => {
+                    parsed_instruments.push(*instrument_any);
+                }
+                InstrumentParseResult::Unsupported {
+                    symbol,
+                    instrument_type,
+                } => {
+                    skipped_count += 1;
+                    tracing::debug!(
+                        "Skipping unsupported instrument type: symbol={symbol}, type={instrument_type:?}"
+                    );
+                }
+                InstrumentParseResult::Failed {
+                    symbol,
+                    instrument_type,
+                    error,
+                } => {
+                    failed_count += 1;
+                    tracing::error!(
+                        "Failed to parse instrument: symbol={symbol}, type={instrument_type:?}, error={error}"
+                    );
+                }
             }
+        }
+
+        if skipped_count > 0 {
+            tracing::info!(
+                "Skipped {skipped_count} unsupported instrument type(s) out of {total_count} total"
+            );
         }
 
         if failed_count > 0 {
             tracing::error!(
-                "Instrument parse failures: {} failed out of {} total ({}  successfully parsed)",
-                failed_count,
-                total_count,
+                "Instrument parse failures: {failed_count} failed out of {total_count} total ({} successfully parsed)",
                 parsed_instruments.len()
             );
         }

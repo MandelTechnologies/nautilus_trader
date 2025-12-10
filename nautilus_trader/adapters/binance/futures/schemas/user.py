@@ -41,6 +41,7 @@ from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import PositionId
+from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import AccountBalance
@@ -48,6 +49,7 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import Order
 
 
 ################################################################################
@@ -694,3 +696,241 @@ class BinanceFuturesTradeLiteWrapper(msgspec.Struct, frozen=True):
 
     stream: str
     data: BinanceFuturesTradeLiteMsg
+
+
+class BinanceFuturesAlgoOrderData(msgspec.Struct, kw_only=True, frozen=True):
+    """
+    WebSocket message 'inner struct' for Binance Futures Algo Order Update events.
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/user-data-streams/Event-Algo-Order-Update
+
+    """
+
+    caid: str  # Client Algo ID
+    aid: int  # Algo ID
+    at: str  # Algo Type (CONDITIONAL)
+    o: BinanceOrderType  # Order Type
+    s: str  # Symbol
+    S: BinanceOrderSide  # Side
+    ps: BinanceFuturesPositionSide  # Position Side
+    f: BinanceTimeInForce  # Time In Force
+    q: str  # Quantity
+    X: BinanceOrderStatus  # Algo Status (NEW, CANCELED, EXPIRED, FILLED, etc.)
+    tp: str  # Trigger Price
+    p: str  # Price
+    wt: BinanceFuturesWorkingType  # Working Type
+    pm: str  # Price Match
+    cp: bool  # Close Position
+    pP: bool  # Price Protect
+    R: bool  # Reduce Only
+    tt: int  # Trigger Time
+    gtd: int  # Good Till Date
+    ai: str | None = None  # Activation Price (for trailing stop)
+    cr: str | None = None  # Callback Rate (for trailing stop)
+    V: str | None = None  # Self-Trade Prevention Mode
+
+    def handle_algo_update(
+        self,
+        exec_client: BinanceCommonExecutionClient,
+        ts_event: int,
+    ) -> None:
+        """
+        Handle BinanceFuturesAlgoOrderData as payload of ALGO_UPDATE event.
+        """
+        client_order_id = ClientOrderId(self.caid) if self.caid else None
+        venue_order_id = VenueOrderId(str(self.aid))
+        instrument_id = exec_client._get_cached_instrument_id(self.s)
+        strategy_id = (
+            exec_client._cache.strategy_id_for_order(client_order_id)
+            if client_order_id
+            else None
+        )
+
+        if strategy_id is None:
+            exec_client._log.debug(
+                f"Cannot find strategy for algo order {client_order_id!r}, "
+                f"generating OrderStatusReport",
+            )
+            report = self._parse_to_order_status_report(
+                account_id=exec_client.account_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=ts_event,
+                ts_init=exec_client._clock.timestamp_ns(),
+                enum_parser=exec_client._enum_parser,
+            )
+            exec_client._send_order_status_report(report)
+            return
+
+        order = exec_client._cache.order(client_order_id)
+        if not order:
+            exec_client._log.error(f"Cannot find algo order {client_order_id!r}")
+            return
+
+        self._handle_algo_status(
+            exec_client,
+            order,
+            strategy_id,
+            instrument_id,
+            client_order_id,
+            venue_order_id,
+            ts_event,
+        )
+
+    def _handle_algo_status(
+        self,
+        exec_client: BinanceCommonExecutionClient,
+        order: Order,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId,
+        ts_event: int,
+    ) -> None:
+        if self.X == BinanceOrderStatus.NEW:
+            exec_client.generate_order_accepted(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=ts_event,
+            )
+        elif self.X == BinanceOrderStatus.CANCELED:
+            exec_client.generate_order_canceled(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=ts_event,
+            )
+        elif self.X == BinanceOrderStatus.EXPIRED:
+            self._handle_algo_expired(
+                exec_client,
+                order,
+                strategy_id,
+                instrument_id,
+                client_order_id,
+                venue_order_id,
+                ts_event,
+            )
+        elif self.X == BinanceOrderStatus.REJECTED:
+            exec_client.generate_order_rejected(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                reason="REJECTED",
+                ts_event=ts_event,
+            )
+        else:
+            exec_client._log.warning(f"Received unhandled ALGO_UPDATE status: {self.X}")
+
+    def _handle_algo_expired(
+        self,
+        exec_client: BinanceCommonExecutionClient,
+        order: Order,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId,
+        ts_event: int,
+    ) -> None:
+        if order.order_type == OrderType.TRAILING_STOP_MARKET:
+            instrument = exec_client._instrument_provider.find(instrument_id=instrument_id)
+            if instrument is None:
+                raise ValueError(
+                    f"Cannot process event for {instrument_id}: instrument not found",
+                )
+            price_precision = instrument.price_precision
+            exec_client.generate_order_updated(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                quantity=Quantity.from_str(self.q),
+                price=Price(float(self.p), price_precision) if self.p else None,
+                trigger_price=(
+                    Price(float(self.tp), price_precision) if self.tp else None
+                ),
+                ts_event=ts_event,
+            )
+        elif exec_client.treat_expired_as_canceled:
+            exec_client.generate_order_canceled(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=ts_event,
+            )
+        else:
+            exec_client.generate_order_expired(
+                strategy_id=strategy_id,
+                instrument_id=instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=ts_event,
+            )
+
+    def _parse_to_order_status_report(
+        self,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId | None,
+        venue_order_id: VenueOrderId,
+        ts_event: int,
+        ts_init: int,
+        enum_parser: BinanceEnumParser,
+    ) -> OrderStatusReport:
+        price = Price.from_str(self.p) if self.p and self.p != "0" else None
+        trigger_price = Price.from_str(self.tp) if self.tp else None
+        trailing_offset = Decimal(self.cr) * 100 if self.cr else None
+        order_side = OrderSide.BUY if self.S == BinanceOrderSide.BUY else OrderSide.SELL
+        expire_time = unix_nanos_to_dt(millis_to_nanos(self.gtd)) if self.gtd else None
+
+        return OrderStatusReport(
+            account_id=account_id,
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            order_side=order_side,
+            order_type=enum_parser.parse_binance_order_type(self.o),
+            time_in_force=enum_parser.parse_binance_time_in_force(self.f),
+            order_status=enum_parser.parse_binance_order_status(self.X),
+            expire_time=expire_time,
+            price=price,
+            trigger_price=trigger_price,
+            trigger_type=enum_parser.parse_binance_trigger_type(self.wt.value),
+            trailing_offset=trailing_offset,
+            trailing_offset_type=TrailingOffsetType.BASIS_POINTS,
+            quantity=Quantity.from_str(self.q),
+            filled_qty=Quantity.zero(),
+            avg_px=None,
+            post_only=False,
+            reduce_only=self.R,
+            report_id=UUID4(),
+            ts_accepted=ts_event,
+            ts_last=ts_event,
+            ts_init=ts_init,
+        )
+
+
+class BinanceFuturesAlgoUpdateMsg(msgspec.Struct, frozen=True):
+    """
+    WebSocket message for Binance Futures Algo Order Update events.
+    """
+
+    e: str  # Event Type
+    E: int  # Event Time
+    T: int  # Transaction Time
+    o: BinanceFuturesAlgoOrderData
+
+
+class BinanceFuturesAlgoUpdateWrapper(msgspec.Struct, frozen=True):
+    """
+    WebSocket message wrapper for Binance Futures Algo Order Update events.
+    """
+
+    stream: str
+    data: BinanceFuturesAlgoUpdateMsg

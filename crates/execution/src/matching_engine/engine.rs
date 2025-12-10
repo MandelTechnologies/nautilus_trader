@@ -352,8 +352,12 @@ impl OrderMatchingEngine {
     }
 
     fn process_trade_ticks_from_bar(&mut self, bar: &Bar) {
-        // Split the bar into 4 trades with quarter volume
-        let size = Quantity::new(bar.volume.as_f64() / 4.0, bar.volume.precision);
+        // Split the bar into 4 trades, adding remainder to close trade
+        let quarter_raw = bar.volume.raw / 4;
+        let remainder_raw = bar.volume.raw % 4;
+        let size = Quantity::from_raw(quarter_raw, bar.volume.precision);
+        let close_size = Quantity::from_raw(quarter_raw + remainder_raw, bar.volume.precision);
+
         let aggressor_side = if !self.core.is_last_initialized || bar.open > self.core.last.unwrap()
         {
             AggressorSide::Buyer
@@ -413,6 +417,7 @@ impl OrderMatchingEngine {
         // Assumption: if close price is lower then last, aggressor is seller
         if self.core.last.is_some_and(|last| bar.close != last) {
             trade_tick.price = bar.close;
+            trade_tick.size = close_size;
             trade_tick.aggressor_side = if bar.close > self.core.last.unwrap() {
                 AggressorSide::Buyer
             } else {
@@ -437,8 +442,17 @@ impl OrderMatchingEngine {
         }
         let bid_bar = self.last_bar_bid.unwrap();
         let ask_bar = self.last_bar_ask.unwrap();
-        let bid_size = Quantity::new(bid_bar.volume.as_f64() / 4.0, bar.volume.precision);
-        let ask_size = Quantity::new(ask_bar.volume.as_f64() / 4.0, bar.volume.precision);
+
+        // Split bar volume into 4, adding remainder to close quote
+        let bid_quarter = bid_bar.volume.raw / 4;
+        let bid_remainder = bid_bar.volume.raw % 4;
+        let ask_quarter = ask_bar.volume.raw / 4;
+        let ask_remainder = ask_bar.volume.raw % 4;
+
+        let bid_size = Quantity::from_raw(bid_quarter, bar.volume.precision);
+        let ask_size = Quantity::from_raw(ask_quarter, bar.volume.precision);
+        let bid_close_size = Quantity::from_raw(bid_quarter + bid_remainder, bar.volume.precision);
+        let ask_close_size = Quantity::from_raw(ask_quarter + ask_remainder, bar.volume.precision);
 
         // Create reusable quote tick
         let mut quote_tick = QuoteTick::new(
@@ -470,6 +484,8 @@ impl OrderMatchingEngine {
         // Close
         quote_tick.bid_price = bid_bar.close;
         quote_tick.ask_price = ask_bar.close;
+        quote_tick.bid_size = bid_close_size;
+        quote_tick.ask_size = ask_close_size;
         self.book.update_quote_tick(&quote_tick).unwrap();
         self.iterate(quote_tick.ts_init);
 

@@ -18,9 +18,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::common::enums::{
-    KrakenApiResult, KrakenFillType, KrakenFuturesOrderStatus, KrakenFuturesOrderType,
-    KrakenInstrumentType, KrakenOrderSide, KrakenPositionSide, KrakenTriggerSide,
-    KrakenTriggerSignal,
+    KrakenApiResult, KrakenFillType, KrakenFuturesOrderEventType, KrakenFuturesOrderStatus,
+    KrakenFuturesOrderType, KrakenInstrumentType, KrakenOrderSide, KrakenPositionSide,
+    KrakenSendStatus, KrakenTriggerSide, KrakenTriggerSignal,
 };
 
 // Futures Instruments Models
@@ -330,7 +330,7 @@ pub struct FuturesSendStatus {
 #[serde(rename_all = "camelCase")]
 pub struct FuturesSendOrderEvent {
     #[serde(rename = "type")]
-    pub event_type: KrakenFuturesOrderType,
+    pub event_type: KrakenFuturesOrderEventType,
     #[serde(default)]
     pub order: Option<FuturesOrderEventData>,
     #[serde(default)]
@@ -350,6 +350,11 @@ pub struct FuturesSendOrderEvent {
     pub order_prior_execution: Option<Box<FuturesOrderEventData>>,
     #[serde(rename = "takerReducedQuantity", default)]
     pub taker_reduced_quantity: Option<f64>,
+    // Reject event fields
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -418,7 +423,7 @@ pub struct FuturesCancelOrderResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelStatus {
-    pub status: String,
+    pub status: KrakenSendStatus,
     #[serde(rename = "order_id", default)]
     pub order_id: Option<String>,
     #[serde(rename = "cli_ord_id", default)]
@@ -453,6 +458,35 @@ pub struct FuturesBatchOrderResponse {
     pub batch_status: Vec<FuturesSendStatus>,
 }
 
+/// Response for batch cancel operations via `/derivatives/api/v3/batchorder`.
+///
+/// When sending only cancel operations, the response has a different format
+/// with individual cancel status items.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesBatchCancelResponse {
+    pub result: KrakenApiResult,
+    #[serde(default)]
+    pub server_time: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub batch_status: Vec<FuturesBatchCancelStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FuturesBatchCancelStatus {
+    #[serde(default)]
+    pub order_id: Option<String>,
+    #[serde(default)]
+    pub cli_ord_id: Option<String>,
+    #[serde(default)]
+    pub status: Option<KrakenSendStatus>,
+    #[serde(default)]
+    pub cancel_status: Option<FuturesCancelStatus>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelAllOrdersResponse {
@@ -465,7 +499,7 @@ pub struct FuturesCancelAllOrdersResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FuturesCancelAllStatus {
-    pub status: String,
+    pub status: KrakenSendStatus,
     #[serde(default)]
     pub cancelled_orders: Vec<CancelledOrder>,
 }

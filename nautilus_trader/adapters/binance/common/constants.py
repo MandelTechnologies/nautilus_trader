@@ -68,3 +68,14 @@ BINANCE_PRICE_MATCH_ORDER_TYPES: Final[frozenset[OrderType]] = frozenset(
         OrderType.LIMIT_IF_TOUCHED,
     },
 )
+
+# Conditional order types that require the Algo Order API for Binance Futures (as of 2025-12-09)
+BINANCE_FUTURES_ALGO_ORDER_TYPES: Final[frozenset[OrderType]] = frozenset(
+    {
+        OrderType.STOP_MARKET,
+        OrderType.STOP_LIMIT,
+        OrderType.MARKET_IF_TOUCHED,
+        OrderType.LIMIT_IF_TOUCHED,
+        OrderType.TRAILING_STOP_MARKET,
+    },
+)

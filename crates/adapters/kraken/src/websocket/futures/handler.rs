@@ -511,6 +511,8 @@ impl FuturesFeedHandler {
             tracing::trace!("Received pong response");
         } else if text.contains("\"event\":\"subscribed\"") {
             tracing::debug!("Subscription confirmed: {text}");
+        } else if text.contains("\"event\":\"unsubscribed\"") {
+            tracing::debug!("Unsubscription confirmed: {text}");
         } else if text.contains("\"event\":\"challenge\"") {
             self.handle_challenge_response(text);
         } else if text.contains("\"feed\":\"heartbeat\"") {
@@ -1022,10 +1024,24 @@ impl FuturesFeedHandler {
     }
 
     fn handle_open_orders_cancel(&mut self, text: &str, ts_init: UnixNanos) {
+        // Skip fill-related messages since the fills feed handles order completions,
+        // we only process actual cancellations here.
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
+            && let Some(reason) = value.get("reason").and_then(|r| r.as_str())
+            && (reason == "full_fill" || reason == "partial_fill")
+        {
+            tracing::debug!(
+                reason = %reason,
+                "Skipping open_orders cancel for fill (handled by fills feed)"
+            );
+            return;
+        }
+
         let cancel = match serde_json::from_str::<KrakenFuturesOpenOrdersCancel>(text) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to parse open_orders cancel: {e}");
+                tracing::debug!("Raw message: {text}");
                 return;
             }
         };

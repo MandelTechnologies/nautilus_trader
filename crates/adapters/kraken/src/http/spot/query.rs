@@ -57,10 +57,20 @@ pub struct KrakenSpotAddOrderParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cl_ord_id: Option<String>,
 
-    /// Order flags (comma-separated: post, ioc, fcib, fciq, nompp, viqc).
+    /// Order flags (comma-separated: post, fcib, fciq, nompp, viqc).
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oflags: Option<String>,
+
+    /// Time in force: GTC, IOC, GTD.
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeinforce: Option<String>,
+
+    /// Expiration time for GTD orders (Unix timestamp or "+<seconds>").
+    #[builder(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiretm: Option<String>,
 
     /// Partner/broker attribution ID.
     #[builder(default)]
@@ -101,6 +111,17 @@ pub struct KrakenSpotCancelOrderParams {
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cl_ord_id: Option<String>,
+}
+
+/// Parameters for batch cancelling orders via `POST /0/private/CancelOrderBatch`.
+///
+/// # References
+/// - <https://docs.kraken.com/api/docs/rest-api/cancel-order-batch>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KrakenSpotCancelOrderBatchParams {
+    /// List of transaction IDs (venue order IDs) or client order IDs to cancel.
+    /// Maximum 50 IDs.
+    pub orders: Vec<String>,
 }
 
 /// Parameters for editing an order via `POST /0/private/EditOrder`.

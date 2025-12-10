@@ -28,6 +28,7 @@ from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.live.node import TradingNode
+from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.test_kit.strategies.tester_exec import ExecTester
@@ -38,7 +39,7 @@ from nautilus_trader.test_kit.strategies.tester_exec import ExecTesterConfig
 # *** IT IS NOT INTENDED TO BE USED TO TRADE LIVE WITH REAL MONEY. ***
 
 # Configuration - Change product_type to switch between trading modes
-product_type = KrakenProductType.SPOT  # SPOT or FUTURES
+product_type = KrakenProductType.FUTURES  # SPOT or FUTURES
 token = "ETH"
 
 # Symbol and settings based on product type
@@ -74,6 +75,7 @@ config_node = TradingNodeConfig(
     ),
     exec_engine=LiveExecEngineConfig(
         reconciliation=True,
+        reconciliation_lookback_mins=1440,
         open_check_interval_secs=5.0,
         open_check_open_only=False,
         position_check_interval_secs=10.0,
@@ -128,14 +130,15 @@ strat_config = ExecTesterConfig(
     subscribe_quotes=True,
     subscribe_trades=True,
     order_qty=order_qty,
-    enable_limit_buys=True,
-    enable_limit_sells=enable_sells,
+    open_position_on_start_qty=order_qty,
+    open_position_time_in_force=TimeInForce.IOC,
+    # enable_limit_buys=True,
+    # enable_limit_sells=enable_sells,
     # enable_stop_buys=True,
     # enable_stop_sells=enable_sells,
     # tob_offset_ticks=0,
     # stop_order_type=OrderType.LIMIT_IF_TOUCHED,
     # stop_trigger_type=TriggerType.LAST_PRICE,
-    # open_position_on_start_qty=order_qty,
     # tob_offset_ticks=0,
     # use_batch_cancel_on_stop=True,
     # use_individual_cancels_on_stop=True,
@@ -143,6 +146,7 @@ strat_config = ExecTesterConfig(
     # cancel_orders_on_stop=False,
     # close_positions_on_stop=False,
     reduce_only_on_stop=reduce_only_on_stop,
+    # test_reject_post_only=True,
     log_data=False,
 )
 

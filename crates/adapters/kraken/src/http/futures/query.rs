@@ -125,6 +125,74 @@ pub struct KrakenFuturesCancelOrderParams {
     pub cli_ord_id: Option<String>,
 }
 
+/// A batch cancel item for `POST /derivatives/api/v3/batchorder`.
+///
+/// # References
+/// - <https://docs.kraken.com/api/docs/futures-api/trading/send-batch-order/>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KrakenFuturesBatchCancelItem {
+    /// The operation type, always "cancel" for this item.
+    pub order: String,
+
+    /// The venue order ID to cancel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+
+    /// The client order ID to cancel (alternative to order_id).
+    #[serde(rename = "cliOrdId", skip_serializing_if = "Option::is_none")]
+    pub cli_ord_id: Option<String>,
+}
+
+impl KrakenFuturesBatchCancelItem {
+    /// Create a batch cancel item from a venue order ID.
+    #[must_use]
+    pub fn from_order_id(order_id: impl Into<String>) -> Self {
+        Self {
+            order: "cancel".to_string(),
+            order_id: Some(order_id.into()),
+            cli_ord_id: None,
+        }
+    }
+
+    /// Create a batch cancel item from a client order ID.
+    #[must_use]
+    pub fn from_client_order_id(cli_ord_id: impl Into<String>) -> Self {
+        Self {
+            order: "cancel".to_string(),
+            order_id: None,
+            cli_ord_id: Some(cli_ord_id.into()),
+        }
+    }
+}
+
+/// Parameters for batch order operations via `POST /derivatives/api/v3/batchorder`.
+///
+/// The batchorder endpoint uses a special body format: `json={"batchOrder": [...]}`
+/// where the JSON is NOT URL-encoded.
+///
+/// # References
+/// - <https://docs.kraken.com/api/docs/futures-api/trading/send-batch-order/>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KrakenFuturesBatchOrderParams<T: Serialize> {
+    /// List of batch order operations.
+    pub batch_order: Vec<T>,
+}
+
+impl<T: Serialize> KrakenFuturesBatchOrderParams<T> {
+    /// Create new batch order params.
+    #[must_use]
+    pub fn new(batch_order: Vec<T>) -> Self {
+        Self { batch_order }
+    }
+
+    /// Serialize to the special `json=...` body format required by this endpoint.
+    pub fn to_body(&self) -> Result<String, serde_json::Error> {
+        let json_str = serde_json::to_string(self)?;
+        Ok(format!("json={json_str}"))
+    }
+}
+
 /// Parameters for editing an order via `POST /api/v3/editorder`.
 ///
 /// # References

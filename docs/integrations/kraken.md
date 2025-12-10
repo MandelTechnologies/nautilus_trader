@@ -32,13 +32,17 @@ Most users will define a configuration for a live trading node (as below), and
 won't need to work directly with these lower-level components.
 :::
 
+## Examples
+
+You can find live example scripts [here](https://github.com/nautechsystems/nautilus_trader/tree/develop/examples/live/kraken/).
+
 ## Kraken documentation
 
 Kraken provides extensive documentation for users:
 
 - [Kraken API Documentation](https://docs.kraken.com/api/)
 - [Kraken Spot REST API](https://docs.kraken.com/api/docs/guides/spot-rest-intro)
-- [Kraken Futures Documentation](https://support.kraken.com/hc/en-us/sections/360012894412-Futures-API)
+- [Kraken Futures REST API](https://docs.kraken.com/api/docs/futures-api)
 
 Refer to the Kraken documentation in conjunction with this NautilusTrader
 integration guide.
@@ -47,10 +51,10 @@ integration guide.
 
 Kraken supports two primary product categories:
 
-| Product Type        | Supported | Notes                                                |
-|---------------------|-----------|------------------------------------------------------|
-| Spot                | ✓         | Standard cryptocurrency pairs with margin support.   |
-| Futures (Perpetual) | ✓         | Inverse and USD-margined perpetual swaps.            |
+| Product Type        | Supported | Notes                                              |
+|---------------------|-----------|----------------------------------------------------|
+| Spot                | ✓         | Standard cryptocurrency pairs with margin support. |
+| Futures (Perpetual) | ✓         | Inverse and USD-margined perpetual swaps.          |
 
 ## Symbology
 
@@ -82,6 +86,7 @@ Kraken Futures instruments use a specific naming convention with prefixes:
 - `PI_` - Perpetual Inverse contracts (e.g., `PI_XBTUSD`)
 - `PF_` - Perpetual Fixed-margin contracts (e.g., `PF_XBTUSD`)
 - `FI_` - Fixed maturity Inverse contracts (e.g., `FI_XBTUSD_230929`)
+- `FF_` - Flex futures contracts
 
 **Instrument ID format:**
 
@@ -116,6 +121,11 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # Perpetual fixed-margin BTC
 | `IOC`         | ✓    | Immediate or Cancel.         |
 | `FOK`         | -    | *Not currently supported*.   |
 
+:::note
+**Market orders** are inherently immediate and do not support the `timeinforce`
+parameter. The `IOC` time in force only applies to limit-type orders.
+:::
+
 #### Execution instructions
 
 | Instruction   | Spot | Notes                              |
@@ -134,6 +144,7 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # Perpetual fixed-margin BTC
 | `STOP_MARKET`          | ✓       | Conditional market order (stop).                 |
 | `MARKET_IF_TOUCHED`    | ✓       | Conditional market order (take-profit).          |
 | `STOP_LIMIT`           | ✓       | Conditional limit order (stop-loss).             |
+| `LIMIT_IF_TOUCHED`     | ✓       | Conditional limit order (take-profit-limit).     |
 
 #### Time in force
 
@@ -143,12 +154,52 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # Perpetual fixed-margin BTC
 | `GTD`         | -       | *Not supported*.             |
 | `IOC`         | ✓       | Immediate or Cancel.         |
 
+:::note
+**Market orders** are inherently immediate. For Futures, the `IOC` time in force
+is encoded as a separate order type (`ioc`) and only applies to limit orders.
+:::
+
 #### Execution instructions
 
-| Instruction   | Futures | Notes                              |
-|---------------|---------|---------------------------------------|
-| `post_only`   | ✓       | Available for limit orders.           |
-| `reduce_only` | ✓       | Reduces position only, no reversals.  |
+| Instruction   | Futures | Notes                                |
+|---------------|---------|--------------------------------------|
+| `post_only`   | ✓       | Available for limit orders.          |
+| `reduce_only` | ✓       | Reduces position only, no reversals. |
+
+### Batch operations
+
+| Operation          | Spot | Futures | Notes                                        |
+|--------------------|------|---------|----------------------------------------------|
+| Batch Submit       | -    | -       | *Not yet implemented*.                       |
+| Batch Modify       | -    | -       | *Not yet implemented* (Futures only).        |
+| Batch Cancel       | ✓    | ✓       | Auto-chunks into batches of 50.              |
+
+### Position management
+
+| Feature           | Spot | Futures | Notes                                           |
+|-------------------|------|---------|-------------------------------------------------|
+| Query positions   | -    | ✓       | Real-time position updates via REST/WebSocket.  |
+| Position mode     | -    | -       | Single position per instrument.                 |
+| Leverage control  | -    | ✓       | Configured per account tier.                    |
+| Margin mode       | -    | ✓       | Cross margin for Futures.                       |
+
+### Order querying
+
+| Feature              | Spot | Futures | Notes                                        |
+|----------------------|------|---------|----------------------------------------------|
+| Query open orders    | ✓    | ✓       | List all active orders.                      |
+| Query order history  | ✓    | ✓       | Historical order data with pagination.       |
+| Order status updates | ✓    | ✓       | Real-time order state changes via WebSocket. |
+| Trade history        | ✓    | ✓       | Execution and fill reports.                  |
+
+### Contingent orders
+
+| Feature             | Spot | Futures | Notes                                    |
+|---------------------|------|---------|------------------------------------------|
+| Order lists         | -    | -       | *Not supported*.                         |
+| OCO orders          | -    | -       | *Not supported*.                         |
+| Bracket orders      | -    | -       | *Not supported*.                         |
+| Conditional orders  | ✓    | ✓       | Stop and take-profit orders.             |
 
 ## Reconciliation
 
@@ -231,13 +282,22 @@ holdings.
 
 ## Rate limiting
 
-The adapter implements automatic rate limiting to comply with Kraken's API
-requirements:
+The adapter implements automatic rate limiting to comply with Kraken's API requirements.
 
-| Endpoint Type         | Limit (requests/sec) | Notes                                                |
-|-----------------------|----------------------|------------------------------------------------------|
-| Spot REST (global)    | 1 per second         | Conservative rate for Spot API calls.                |
-| Futures REST (global) | 5 per second         | Higher rate limit for Futures API calls.             |
+| Endpoint Type         | Limit (requests/sec) | Notes                                |
+|-----------------------|----------------------|--------------------------------------|
+| Spot REST (global)    | 5                    | Global rate limit for Spot API.      |
+| Futures REST (global) | 5                    | Global rate limit for Futures API.   |
+
+:::info
+Kraken uses a counter-based rate limiting system with tier-dependent limits:
+
+- **Starter tier**: 15 max counter, -0.33/sec decay
+- **Intermediate tier**: 20 max counter, -0.5/sec decay
+- **Pro tier**: 20 max counter, -1/sec decay
+
+Ledger/trade history calls add +2 to the counter; other calls add +1.
+:::
 
 :::warning
 Kraken may temporarily block IP addresses that exceed rate limits. The adapter
@@ -252,9 +312,9 @@ The product types for each client must be specified in the configurations.
 
 | Option                          | Default   | Description                                                             |
 |---------------------------------|-----------|-------------------------------------------------------------------------|
-| `api_key`                       | `None`    | API key; loaded from `KRAKEN_API_KEY` when omitted.                     |
-| `api_secret`                    | `None`    | API secret; loaded from `KRAKEN_API_SECRET` when omitted.               |
-| `environment`                   | `mainnet` | Trading environment (`mainnet` or `testnet`); testnet only for Futures. |
+| `api_key`                       | `None`    | API key; loaded from environment variables (see below) when omitted.    |
+| `api_secret`                    | `None`    | API secret; loaded from environment variables (see below) when omitted. |
+| `environment`                   | `mainnet` | Trading environment (`mainnet` or `demo`); demo only for Futures.       |
 | `product_types`                 | `(SPOT,)` | Product types tuple (e.g., `(KrakenProductType.SPOT,)`).                |
 | `base_url_http_spot`            | `None`    | Override for Kraken Spot REST base URL.                                 |
 | `base_url_http_futures`         | `None`    | Override for Kraken Futures REST base URL.                              |
@@ -267,14 +327,15 @@ The product types for each client must be specified in the configurations.
 | `retry_delay_max_ms`            | `None`    | Maximum delay (milliseconds) between retries.                           |
 | `http_timeout_secs`             | `None`    | HTTP request timeout in seconds.                                        |
 | `ws_heartbeat_secs`             | `30`      | WebSocket heartbeat interval in seconds.                                |
+| `max_requests_per_second`       | `None`    | Override rate limit (default 5 req/s); for higher tier accounts.        |
 
 ### Execution client configuration options
 
 | Option                          | Default   | Description                                                             |
 |---------------------------------|-----------|-------------------------------------------------------------------------|
-| `api_key`                       | `None`    | API key; loaded from `KRAKEN_API_KEY` when omitted.                     |
-| `api_secret`                    | `None`    | API secret; loaded from `KRAKEN_API_SECRET` when omitted.               |
-| `environment`                   | `mainnet` | Trading environment (`mainnet` or `testnet`); testnet only for Futures. |
+| `api_key`                       | `None`    | API key; loaded from environment variables (see below) when omitted.    |
+| `api_secret`                    | `None`    | API secret; loaded from environment variables (see below) when omitted. |
+| `environment`                   | `mainnet` | Trading environment (`mainnet` or `demo`); demo only for Futures.       |
 | `product_types`                 | `(SPOT,)` | Product types tuple; `SPOT` uses CASH, `FUTURES` uses MARGIN account.   |
 | `base_url_http_spot`            | `None`    | Override for Kraken Spot REST base URL.                                 |
 | `base_url_http_futures`         | `None`    | Override for Kraken Futures REST base URL.                              |
@@ -287,6 +348,7 @@ The product types for each client must be specified in the configurations.
 | `retry_delay_max_ms`            | `None`    | Maximum delay (milliseconds) between retries.                           |
 | `http_timeout_secs`             | `None`    | HTTP request timeout in seconds.                                        |
 | `ws_heartbeat_secs`             | `30`      | WebSocket heartbeat interval in seconds.                                |
+| `max_requests_per_second`       | `None`    | Override rate limit (default 5 req/s); for higher tier accounts.        |
 | `use_spot_position_reports`     | `False`   | Report wallet balances as positions (see below).                        |
 | `spot_positions_quote_currency` | `"USDT"`  | Quote currency filter for spot position reports.                        |
 

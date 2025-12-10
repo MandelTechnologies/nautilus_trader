@@ -237,6 +237,11 @@ impl NautilusKernel {
             move |event: &OrderEventAny| {
                 if let Some(engine_rc) = exec_engine_weak_clone.upgrade() {
                     engine_rc.borrow_mut().process(event);
+                } else {
+                    log::error!(
+                        "ExecEngine dropped, cannot process order event: {:?}",
+                        event.client_order_id()
+                    );
                 }
             },
         )));
@@ -497,6 +502,14 @@ impl NautilusKernel {
         // Stop the trader (it will stop all registered components)
         if let Err(e) = self.trader.stop() {
             log::error!("Error stopping trader: {e:?}");
+        }
+
+        // Wait for residual events to be processed (e.g., cancel orders on stop)
+        #[cfg(feature = "live")]
+        {
+            let delay = self.config.delay_post_stop();
+            log::info!("Awaiting residual events ({delay:?})...");
+            std::thread::sleep(delay);
         }
 
         // Stop all adapter clients

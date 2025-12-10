@@ -418,15 +418,17 @@ impl DataActor for ExecTester {
                 drop(cache);
 
                 for order in open_orders {
-                    let _ = self.cancel_order(order, client_id);
+                    if let Err(e) = self.cancel_order(order, client_id) {
+                        log::error!("Failed to cancel order: {e}");
+                    }
                 }
-            } else {
-                let _ = self.cancel_all_orders(instrument_id, None, client_id);
+            } else if let Err(e) = self.cancel_all_orders(instrument_id, None, client_id) {
+                log::error!("Failed to cancel all orders: {e}");
             }
         }
 
-        if self.config.close_positions_on_stop {
-            let _ = self.close_all_positions(
+        if self.config.close_positions_on_stop
+            && let Err(e) = self.close_all_positions(
                 instrument_id,
                 None,
                 client_id,
@@ -434,7 +436,9 @@ impl DataActor for ExecTester {
                 Some(TimeInForce::Gtc),
                 Some(self.config.reduce_only_on_stop),
                 None,
-            );
+            )
+        {
+            log::error!("Failed to close all positions: {e}");
         }
 
         if self.config.can_unsubscribe && self.instrument.is_some() {

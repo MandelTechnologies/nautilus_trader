@@ -126,6 +126,7 @@ class BinanceFuturesEventType(Enum):
     STRATEGY_UPDATE = "STRATEGY_UPDATE"
     GRID_UPDATE = "GRID_UPDATE"
     CONDITIONAL_ORDER_TRIGGER_REJECT = "CONDITIONAL_ORDER_TRIGGER_REJECT"
+    ALGO_UPDATE = "ALGO_UPDATE"
 
 
 class BinanceFuturesEnumParser(BinanceEnumParser):

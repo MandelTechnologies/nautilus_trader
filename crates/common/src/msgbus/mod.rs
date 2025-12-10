@@ -151,15 +151,11 @@ pub fn register_response_handler(correlation_id: &UUID4, handler: ShareableMessa
 
 /// Publishes the `message` to the `topic`.
 pub fn publish(topic: MStr<Topic>, message: &dyn Any) {
-    log::trace!("Publishing topic '{topic}' {message:?}");
     let matching_subs = get_message_bus()
         .borrow_mut()
         .inner_matching_subscriptions(topic);
 
-    log::trace!("Matched {} subscriptions", matching_subs.len());
-
     for sub in matching_subs {
-        log::trace!("Matched {sub:?}");
         sub.handler.0.handle(message);
     }
 }

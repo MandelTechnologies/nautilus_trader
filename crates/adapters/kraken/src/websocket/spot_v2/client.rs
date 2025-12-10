@@ -455,6 +455,7 @@ impl KrakenSpotWebSocketClient {
             None,
             None,
             self.config.http_proxy.clone(),
+            self.config.max_requests_per_second,
         )
         .map_err(|e| {
             KrakenWsError::AuthenticationError(format!("Failed to create HTTP client: {e}"))
@@ -901,6 +902,7 @@ async fn refresh_auth_token(config: &KrakenDataClientConfig) -> Result<String, K
         None,
         None,
         config.http_proxy.clone(),
+        config.max_requests_per_second,
     )
     .map_err(|e| {
         KrakenWsError::AuthenticationError(format!("Failed to create HTTP client: {e}"))

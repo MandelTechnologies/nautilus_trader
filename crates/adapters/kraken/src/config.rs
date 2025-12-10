@@ -33,6 +33,7 @@ pub struct KrakenDataClientConfig {
     pub ws_proxy: Option<String>,
     pub timeout_secs: Option<u64>,
     pub heartbeat_interval_secs: Option<u64>,
+    pub max_requests_per_second: Option<u32>,
 }
 
 impl Default for KrakenDataClientConfig {
@@ -49,6 +50,7 @@ impl Default for KrakenDataClientConfig {
             ws_proxy: None,
             timeout_secs: Some(30),
             heartbeat_interval_secs: Some(30),
+            max_requests_per_second: None,
         }
     }
 }
@@ -89,6 +91,7 @@ pub struct KrakenExecClientConfig {
     pub ws_proxy: Option<String>,
     pub timeout_secs: Option<u64>,
     pub heartbeat_interval_secs: Option<u64>,
+    pub max_requests_per_second: Option<u32>,
 }
 
 impl KrakenExecClientConfig {

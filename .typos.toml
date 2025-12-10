@@ -9,6 +9,7 @@ PnLs = "PnLs" # Plural of PnL
 # Variable naming conventions used throughout the codebase
 strat = "strat" # Common shorthand for strategy
 ACN = "ACN" # Domain-specific abbreviation
+CLEA = "CLEA" # Part of CLEARs (order book action plural)
 
 # Windows system libraries
 secur = "secur" # Part of secur32.lib Windows security library

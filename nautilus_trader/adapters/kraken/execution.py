@@ -37,6 +37,7 @@ from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import KrakenEnvironment
 from nautilus_trader.core.nautilus_pyo3 import KrakenProductType
+from nautilus_trader.execution.messages import BatchCancelOrders
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateFillReports
@@ -715,16 +716,21 @@ class KrakenExecutionClient(LiveExecutionClient):
                     post_only=order.is_post_only,
                 )
         except Exception as e:
+            error_str = str(e)
+            due_post_only = "POST_ONLY_REJECTED:" in error_str
             self.generate_order_rejected(
                 strategy_id=order.strategy_id,
                 instrument_id=order.instrument_id,
                 client_order_id=order.client_order_id,
-                reason=str(e),
+                reason=error_str,
                 ts_event=self._clock.timestamp_ns(),
+                due_post_only=due_post_only,
             )
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
-        # TODO: Submit orders individually since Kraken doesn't have a batch order API
+        self._log.warning(
+            "Kraken does not support batch order submission, submitting orders individually",
+        )
         for order in command.order_list.orders:
             await self._submit_order(
                 SubmitOrder(
@@ -818,6 +824,48 @@ class KrakenExecutionClient(LiveExecutionClient):
             self._log.debug(f"Cancelled {count} orders for {command.instrument_id}")
         except Exception as e:
             self._log.error(f"Failed to cancel all orders for {command.instrument_id}: {e}")
+
+    async def _batch_cancel_orders(self, command: BatchCancelOrders) -> None:
+        if not command.cancels:
+            return
+
+        spot_venue_ids: list[nautilus_pyo3.VenueOrderId] = []
+        futures_venue_ids: list[nautilus_pyo3.VenueOrderId] = []
+
+        for cancel in command.cancels:
+            if cancel.venue_order_id is None:
+                self._log.warning(
+                    f"Cannot batch cancel {cancel.client_order_id!r}: no venue_order_id",
+                )
+                continue
+
+            symbol = cancel.instrument_id.symbol.value
+            client = self._get_http_client_for_symbol(symbol)
+
+            if client is None:
+                self._log.warning(f"No HTTP client available for symbol {symbol}")
+                continue
+
+            pyo3_venue_order_id = nautilus_pyo3.VenueOrderId(cancel.venue_order_id.value)
+
+            if isinstance(client, nautilus_pyo3.KrakenFuturesHttpClient):
+                futures_venue_ids.append(pyo3_venue_order_id)
+            else:
+                spot_venue_ids.append(pyo3_venue_order_id)
+
+        if spot_venue_ids and self._http_client_spot is not None:
+            try:
+                count = await self._http_client_spot.cancel_orders_batch(spot_venue_ids)
+                self._log.debug(f"Batch cancelled {count} spot orders")
+            except Exception as e:
+                self._log.error(f"Failed to batch cancel spot orders: {e}")
+
+        if futures_venue_ids and self._http_client_futures is not None:
+            try:
+                count = await self._http_client_futures.cancel_orders_batch(futures_venue_ids)
+                self._log.debug(f"Batch cancelled {count} futures orders")
+            except Exception as e:
+                self._log.error(f"Failed to batch cancel futures orders: {e}")
 
     def _handle_msg(self, msg: Any) -> None:  # noqa: C901 (too complex)
         try:

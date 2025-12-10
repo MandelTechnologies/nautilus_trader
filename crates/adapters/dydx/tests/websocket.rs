@@ -353,7 +353,12 @@ async fn test_websocket_connection() {
     let mut client = DydxWebSocketClient::new_public(ws_url, Some(30));
     client.connect().await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async { *state_clone.connection_count.lock().await == 1 },
+        Duration::from_secs(5),
+    )
+    .await;
 
     let count = state.connection_count.lock().await;
     assert_eq!(*count, 1);
@@ -390,7 +395,8 @@ async fn test_websocket_close() {
     assert!(client.is_connected());
 
     client.disconnect().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    wait_until_async(|| async { !client.is_connected() }, Duration::from_secs(5)).await;
 
     assert!(!client.is_connected());
 }
@@ -409,7 +415,19 @@ async fn test_subscribe_trades() {
     let instrument_id = InstrumentId::from("BTC-USD.DYDX");
     client.subscribe_trades(instrument_id).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async {
+            state_clone
+                .subscriptions
+                .lock()
+                .await
+                .iter()
+                .any(|s| s.contains("v4_trades"))
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(subs.iter().any(|s| s.contains("v4_trades")));
@@ -431,7 +449,19 @@ async fn test_subscribe_orderbook() {
     let instrument_id = InstrumentId::from("BTC-USD.DYDX");
     client.subscribe_orderbook(instrument_id).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async {
+            state_clone
+                .subscriptions
+                .lock()
+                .await
+                .iter()
+                .any(|s| s.contains("v4_orderbook"))
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(subs.iter().any(|s| s.contains("v4_orderbook")));
@@ -456,7 +486,19 @@ async fn test_subscribe_candles() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async {
+            state_clone
+                .subscriptions
+                .lock()
+                .await
+                .iter()
+                .any(|s| s.contains("v4_candles"))
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(subs.iter().any(|s| s.contains("v4_candles")));
@@ -477,10 +519,36 @@ async fn test_unsubscribe_trades() {
 
     let instrument_id = InstrumentId::from("BTC-USD.DYDX");
     client.subscribe_trades(instrument_id).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let state_clone = state.clone();
+    wait_until_async(
+        || async {
+            state_clone
+                .subscriptions
+                .lock()
+                .await
+                .iter()
+                .any(|s| s.contains("v4_trades"))
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 
     client.unsubscribe_trades(instrument_id).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let state_clone = state.clone();
+    wait_until_async(
+        || async {
+            !state_clone
+                .subscriptions
+                .lock()
+                .await
+                .iter()
+                .any(|s| s.contains("v4_trades"))
+        },
+        Duration::from_secs(5),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(!subs.iter().any(|s| s.contains("v4_trades")));
@@ -764,12 +832,28 @@ async fn test_unsubscribe_multiple_channels() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait for all subscriptions to be registered
+    let state_clone = state.clone();
+    wait_until_async(
+        || async { state_clone.subscriptions.lock().await.len() >= 3 },
+        Duration::from_secs(10),
+    )
+    .await;
 
     client.unsubscribe_trades(instrument_id).await.unwrap();
     client.unsubscribe_orderbook(instrument_id).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Wait for unsubscriptions to complete (only candles should remain)
+    let state_clone = state.clone();
+    wait_until_async(
+        || async {
+            let subs = state_clone.subscriptions.lock().await;
+            !subs.iter().any(|s| s.contains("v4_trades"))
+                && !subs.iter().any(|s| s.contains("v4_orderbook"))
+        },
+        Duration::from_secs(10),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(
@@ -1408,7 +1492,12 @@ async fn test_mixed_subscription_types() {
     client.subscribe_orderbook(eth_id).await.unwrap();
     client.subscribe_candles(btc_id, "1MIN").await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async { state_clone.subscriptions.lock().await.len() >= 3 },
+        Duration::from_secs(10),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(
@@ -1790,7 +1879,12 @@ async fn test_subscribe_all_channels_sequence() {
     client.subscribe_orderbook(btc_id).await.unwrap();
     client.subscribe_candles(btc_id, "1MIN").await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async { state_clone.subscriptions.lock().await.len() >= 5 },
+        Duration::from_secs(10),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(subs.len() >= 5, "Should have all 5 subscription types");
@@ -1894,7 +1988,12 @@ async fn test_multiple_clones_subscribe() {
     let btc_id = InstrumentId::from("BTC-USD.DYDX");
     client.subscribe_trades(btc_id).await.unwrap();
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let state_clone = state.clone();
+    wait_until_async(
+        || async { state_clone.subscriptions.lock().await.len() >= 3 },
+        Duration::from_secs(10),
+    )
+    .await;
 
     let subs = state.subscriptions.lock().await;
     assert!(

@@ -206,6 +206,16 @@ impl KrakenSpotWebSocketClient {
                                 call_python(py, &callback, py_obj);
                             });
                         }
+                        NautilusWsMessage::OrderRejected(event) => {
+                            Python::attach(|py| match event.into_py_any(py) {
+                                Ok(py_obj) => call_python(py, &callback, py_obj),
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to convert OrderRejected to Python: {e}"
+                                    );
+                                }
+                            });
+                        }
                         NautilusWsMessage::OrderAccepted(event) => {
                             Python::attach(|py| match event.into_py_any(py) {
                                 Ok(py_obj) => call_python(py, &callback, py_obj),

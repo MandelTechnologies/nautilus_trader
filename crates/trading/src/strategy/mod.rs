@@ -21,6 +21,7 @@ pub use core::StrategyCore;
 pub use config::StrategyConfig;
 use nautilus_common::{
     actor::DataActor,
+    logging::{EVT, RECV},
     messages::execution::{
         CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrder, SubmitOrderList, TradingCommand,
     },
@@ -349,7 +350,13 @@ pub trait Strategy: DataActor {
             anyhow::bail!("Strategy not registered: OrderManager missing");
         };
 
+        let side_str = order_side.map(|s| format!(" {s}")).unwrap_or_default();
+
         if open_count > 0 {
+            log::info!(
+                "Canceling {open_count} open{side_str} {instrument_id} order{}",
+                if open_count == 1 { "" } else { "s" }
+            );
             let command = CancelAllOrders::new(
                 trader_id,
                 client_id.unwrap_or_default(),
@@ -363,6 +370,10 @@ pub trait Strategy: DataActor {
         }
 
         if emulated_count > 0 {
+            log::info!(
+                "Canceling {emulated_count} emulated{side_str} {instrument_id} order{}",
+                if emulated_count == 1 { "" } else { "s" }
+            );
             let command = CancelAllOrders::new(
                 trader_id,
                 client_id.unwrap_or_default(),
@@ -451,11 +462,18 @@ pub trait Strategy: DataActor {
             position_side,
         );
 
+        let side_str = position_side.map(|s| format!(" {s}")).unwrap_or_default();
+
         if positions_open.is_empty() {
-            let side_str = position_side.map(|s| format!(" {s}")).unwrap_or_default();
             log::info!("No {instrument_id} open{side_str} positions to close");
             return Ok(());
         }
+
+        let count = positions_open.len();
+        log::info!(
+            "Closing {count} open{side_str} position{}",
+            if count == 1 { "" } else { "s" }
+        );
 
         let positions_data: Vec<_> = positions_open
             .iter()
@@ -496,6 +514,14 @@ pub trait Strategy: DataActor {
 
     /// Handles an order event, dispatching to the appropriate handler and routing to the order manager.
     fn handle_order_event(&mut self, event: OrderEventAny) {
+        {
+            let core = self.core_mut();
+            if core.config.log_events {
+                let id = &core.actor.actor_id;
+                log::info!("{id} {RECV}{EVT} {event}");
+            }
+        }
+
         let client_order_id = event.client_order_id();
         let is_terminal = matches!(
             &event,
@@ -539,6 +565,14 @@ pub trait Strategy: DataActor {
 
     /// Handles a position event, dispatching to the appropriate handler.
     fn handle_position_event(&mut self, event: PositionEvent) {
+        {
+            let core = self.core_mut();
+            if core.config.log_events {
+                let id = &core.actor.actor_id;
+                log::info!("{id} {RECV}{EVT} {event:?}");
+            }
+        }
+
         match event {
             PositionEvent::PositionOpened(e) => self.on_position_opened(e),
             PositionEvent::PositionChanged(e) => self.on_position_changed(e),

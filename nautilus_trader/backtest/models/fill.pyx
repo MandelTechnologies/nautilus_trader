@@ -242,13 +242,13 @@ class OneTickSlippageFillModel(FillModel):
         # By not adding any orders at best_bid/best_ask, we guarantee slippage
         bid_order = BookOrder(
             side=OrderSide.BUY,
-            price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+            price=best_bid.sub(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=1,
         )
         ask_order = BookOrder(
             side=OrderSide.SELL,
-            price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+            price=best_ask.add(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=2,
         )
@@ -302,13 +302,13 @@ class TwoTierFillModel(FillModel):
         # Second tier: unlimited contracts one tick worse
         bid_order_tier2 = BookOrder(
             side=OrderSide.BUY,
-            price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+            price=best_bid.sub(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=3,
         )
         ask_order_tier2 = BookOrder(
             side=OrderSide.SELL,
-            price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+            price=best_ask.add(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=4,
         )
@@ -367,13 +367,13 @@ class ProbabilisticFillModel(FillModel):
             # 50% chance: one tick slippage
             bid_order = BookOrder(
                 side=OrderSide.BUY,
-                price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+                price=best_bid.sub(tick),
                 size=Quantity(UNLIMITED, instrument.size_precision),
                 order_id=1,
             )
             ask_order = BookOrder(
                 side=OrderSide.SELL,
-                price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+                price=best_ask.add(tick),
                 size=Quantity(UNLIMITED, instrument.size_precision),
                 order_id=2,
             )
@@ -410,7 +410,8 @@ class SizeAwareFillModel(FillModel):
             book_type=BookType.L2_MBP,
         )
 
-        if order.quantity.as_double() <= 10:
+        threshold_qty = Quantity(10, instrument.size_precision)
+        if order.quantity._mem.raw <= threshold_qty._mem.raw:
             # Small orders: good liquidity at best prices
             bid_order = BookOrder(
                 side=OrderSide.BUY,
@@ -426,33 +427,33 @@ class SizeAwareFillModel(FillModel):
             )
         else:
             # Large orders: price impact
-            remaining_qty = order.quantity.as_double() - 10
+            remaining_qty = order.quantity.sub(threshold_qty)
 
             # First level: 10 contracts at best price
             bid_order_tier1 = BookOrder(
                 side=OrderSide.BUY,
                 price=best_bid,
-                size=Quantity(10, instrument.size_precision),
+                size=threshold_qty,
                 order_id=1,
             )
             ask_order_tier1 = BookOrder(
                 side=OrderSide.SELL,
                 price=best_ask,
-                size=Quantity(10, instrument.size_precision),
+                size=threshold_qty,
                 order_id=2,
             )
 
             # Second level: remainder at worse price
             bid_order_tier2 = BookOrder(
                 side=OrderSide.BUY,
-                price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
-                size=Quantity(remaining_qty, instrument.size_precision),
+                price=best_bid.sub(tick),
+                size=remaining_qty,
                 order_id=3,
             )
             ask_order_tier2 = BookOrder(
                 side=OrderSide.SELL,
-                price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
-                size=Quantity(remaining_qty, instrument.size_precision),
+                price=best_ask.add(tick),
+                size=remaining_qty,
                 order_id=4,
             )
 
@@ -513,13 +514,13 @@ class LimitOrderPartialFillModel(FillModel):
         # Second level acts as price buffer
         bid_order_tier2 = BookOrder(
             side=OrderSide.BUY,
-            price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+            price=best_bid.sub(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=3,
         )
         ask_order_tier2 = BookOrder(
             side=OrderSide.SELL,
-            price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+            price=best_ask.add(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=4,
         )
@@ -577,27 +578,28 @@ class ThreeTierFillModel(FillModel):
         # Level 2: 30 contracts 1 tick worse
         bid_order_tier2 = BookOrder(
             side=OrderSide.BUY,
-            price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+            price=best_bid.sub(tick),
             size=Quantity(30, instrument.size_precision),
             order_id=3,
         )
         ask_order_tier2 = BookOrder(
             side=OrderSide.SELL,
-            price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+            price=best_ask.add(tick),
             size=Quantity(30, instrument.size_precision),
             order_id=4,
         )
 
         # Level 3: 20 contracts 2 ticks worse
+        two_ticks = tick.add(tick)
         bid_order_tier3 = BookOrder(
             side=OrderSide.BUY,
-            price=Price(best_bid.as_double() - (tick.as_double() * 2), instrument.price_precision),
+            price=best_bid.sub(two_ticks),
             size=Quantity(20, instrument.size_precision),
             order_id=5,
         )
         ask_order_tier3 = BookOrder(
             side=OrderSide.SELL,
-            price=Price(best_ask.as_double() + (tick.as_double() * 2), instrument.price_precision),
+            price=best_ask.add(two_ticks),
             size=Quantity(20, instrument.size_precision),
             order_id=6,
         )
@@ -668,13 +670,13 @@ class MarketHoursFillModel(FillModel):
             # During low liquidity: wider spreads (1 tick worse)
             bid_order = BookOrder(
                 side=OrderSide.BUY,
-                price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+                price=best_bid.sub(tick),
                 size=Quantity(NORMAL_VOLUME, instrument.size_precision),
                 order_id=1,
             )
             ask_order = BookOrder(
                 side=OrderSide.SELL,
-                price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+                price=best_ask.add(tick),
                 size=Quantity(NORMAL_VOLUME, instrument.size_precision),
                 order_id=2,
             )
@@ -761,13 +763,13 @@ class VolumeSensitiveFillModel(FillModel):
         # Unlimited volume one tick worse
         bid_order_tier2 = BookOrder(
             side=OrderSide.BUY,
-            price=Price(best_bid.as_double() - tick.as_double(), instrument.price_precision),
+            price=best_bid.sub(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=3,
         )
         ask_order_tier2 = BookOrder(
             side=OrderSide.SELL,
-            price=Price(best_ask.as_double() + tick.as_double(), instrument.price_precision),
+            price=best_ask.add(tick),
             size=Quantity(UNLIMITED, instrument.size_precision),
             order_id=4,
         )

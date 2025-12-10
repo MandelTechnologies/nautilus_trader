@@ -68,6 +68,9 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
         The timeout in seconds for HTTP requests.
     ws_heartbeat_secs : PositiveInt, default 30
         The WebSocket heartbeat interval in seconds.
+    max_requests_per_second : PositiveInt, optional
+        The maximum number of requests per second for rate limiting.
+        If ``None`` then will use the default of 5 requests per second.
 
     """
 
@@ -86,6 +89,7 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     retry_delay_max_ms: PositiveInt | None = None
     http_timeout_secs: PositiveInt | None = None
     ws_heartbeat_secs: PositiveInt = 30
+    max_requests_per_second: PositiveInt | None = None
 
 
 class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
@@ -138,6 +142,9 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
         The timeout in seconds for HTTP requests.
     ws_heartbeat_secs : PositiveInt, default 30
         The WebSocket heartbeat interval in seconds.
+    max_requests_per_second : PositiveInt, optional
+        The maximum number of requests per second for rate limiting.
+        If ``None`` then will use the default of 5 requests per second.
     use_spot_position_reports : bool, default False
         If True, wallet balances for SPOT instruments will be reported as positions:
         - Positive balances are reported as LONG positions.
@@ -165,5 +172,6 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
     retry_delay_max_ms: PositiveInt | None = None
     http_timeout_secs: PositiveInt | None = None
     ws_heartbeat_secs: PositiveInt = 30
+    max_requests_per_second: PositiveInt | None = None
     use_spot_position_reports: bool = False
     spot_positions_quote_currency: str = "USDT"

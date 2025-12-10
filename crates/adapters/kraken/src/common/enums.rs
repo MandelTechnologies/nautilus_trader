@@ -371,12 +371,36 @@ pub enum KrakenFuturesOrderType {
     #[serde(rename = "stop_loss")]
     #[strum(serialize = "stop_loss")]
     StopLoss,
-    #[serde(rename = "PLACE")]
-    #[strum(serialize = "PLACE")]
+}
+
+/// Event types from Kraken Futures sendorder/editorder responses.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Display,
+    AsRefStr,
+    EnumString,
+    FromRepr,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[strum(ascii_case_insensitive, serialize_all = "SCREAMING_SNAKE_CASE")]
+pub enum KrakenFuturesOrderEventType {
+    /// Order was placed.
     Place,
-    #[serde(rename = "EXECUTION")]
-    #[strum(serialize = "EXECUTION")]
+    /// Order was executed (filled).
     Execution,
+    /// Order was rejected.
+    Reject,
+    /// Order was cancelled.
+    Cancel,
+    /// Order was edited.
+    Edit,
 }
 
 #[derive(
@@ -660,8 +684,6 @@ impl From<KrakenFuturesOrderType> for OrderType {
             KrakenFuturesOrderType::Stop | KrakenFuturesOrderType::StopLower => Self::StopMarket,
             KrakenFuturesOrderType::TakeProfit => Self::MarketIfTouched,
             KrakenFuturesOrderType::StopLoss => Self::StopMarket,
-            KrakenFuturesOrderType::Place => Self::Limit,
-            KrakenFuturesOrderType::Execution => Self::Market, // Order executed
         }
     }
 }

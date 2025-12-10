@@ -148,6 +148,31 @@ impl KrakenCredential {
         Ok((STANDARD.encode(signature.as_ref()), post_data))
     }
 
+    /// Sign a JSON request for Kraken Spot API (used for CancelOrderBatch, AddOrderBatch).
+    ///
+    /// These endpoints use JSON body instead of form-encoded.
+    /// Signature: HMAC-SHA512(path + SHA256(nonce + json_body))
+    pub fn sign_spot_json(
+        &self,
+        path: &str,
+        nonce: u64,
+        json_body: &str,
+    ) -> anyhow::Result<String> {
+        let secret = STANDARD
+            .decode(&self.api_secret)
+            .map_err(|e| anyhow::anyhow!("Failed to decode API secret: {e}"))?;
+
+        let nonce_str = nonce.to_string();
+        let sha_input = format!("{nonce_str}{json_body}");
+        let hash = digest::digest(&digest::SHA256, sha_input.as_bytes());
+        let mut message = path.as_bytes().to_vec();
+        message.extend_from_slice(hash.as_ref());
+        let key = hmac::Key::new(hmac::HMAC_SHA512, &secret);
+        let signature = hmac::sign(&key, &message);
+
+        Ok(STANDARD.encode(signature.as_ref()))
+    }
+
     /// Sign a request for Kraken Futures API v3.
     ///
     /// Kraken Futures authentication steps:
@@ -157,6 +182,9 @@ impl KrakenCredential {
     /// 4. Base64 decode the API secret
     /// 5. HMAC-SHA-512 of the SHA-256 hash using decoded secret
     /// 6. Base64 encode the result
+    ///
+    /// # References
+    /// - <https://docs.kraken.com/api/docs/guides/futures-rest/>
     pub fn sign_futures(&self, path: &str, post_data: &str, nonce: u64) -> anyhow::Result<String> {
         let secret = STANDARD
             .decode(&self.api_secret)
@@ -224,7 +252,7 @@ mod tests {
         let cred = KrakenCredential::new("test_key", secret);
 
         let endpoint = "/derivatives/api/v3/sendorder";
-        let nonce = 1700000000000u64;
+        let nonce = 1234567890u64;
 
         // Create params and URL-encode them (same format as HTTP client)
         let mut params = HashMap::new();
@@ -236,14 +264,14 @@ mod tests {
 
         let post_data = serde_urlencoded::to_string(&params).unwrap();
 
-        // Sign the URL-encoded data
+        // Signature is: SHA256(postData + nonce + path) -> HMAC-SHA512 -> base64
         let signature = cred.sign_futures(endpoint, &post_data, nonce).unwrap();
 
         // Signature should be non-empty base64
         assert!(!signature.is_empty());
         assert!(STANDARD.decode(&signature).is_ok());
 
-        // Same params should produce same signature (deterministic)
+        // Same params and nonce should produce same signature (deterministic)
         let signature2 = cred.sign_futures(endpoint, &post_data, nonce).unwrap();
         assert_eq!(signature, signature2);
 
@@ -253,6 +281,10 @@ mod tests {
             .sign_futures(endpoint, different_post_data, nonce)
             .unwrap();
         assert_ne!(signature, different_sig);
+
+        // Different nonce should produce different signature
+        let different_nonce_sig = cred.sign_futures(endpoint, &post_data, nonce + 1).unwrap();
+        assert_ne!(signature, different_nonce_sig);
     }
 
     #[rstest]
@@ -260,7 +292,7 @@ mod tests {
         // Verify that /derivatives prefix is stripped before signing
         let secret = STANDARD.encode(b"test_secret_key_24bytes!");
         let cred = KrakenCredential::new("test_key", secret);
-        let nonce = 1700000000000u64;
+        let nonce = 1234567890u64;
 
         // Signing with /derivatives prefix should produce same result as without
         let with_prefix = cred

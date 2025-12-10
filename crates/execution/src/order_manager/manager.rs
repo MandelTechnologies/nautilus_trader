@@ -546,37 +546,52 @@ impl OrderManager {
 
     // Message sending methods
     pub fn send_emulator_command(&self, command: TradingCommand) {
-        log::info!("{CMD}{SEND} {command}");
-
+        log_cmd_send(&command);
         msgbus::send_any("OrderEmulator.execute".into(), &command);
     }
 
     pub fn send_algo_command(&self, command: SubmitOrder, exec_algorithm_id: ExecAlgorithmId) {
-        log::info!("{CMD}{SEND} {command}");
+        let id = command.strategy_id;
+        log::info!("{id} {CMD}{SEND} {command}");
 
         let endpoint = format!("{exec_algorithm_id}.execute");
         msgbus::send_any(endpoint.into(), &TradingCommand::SubmitOrder(command));
     }
 
     pub fn send_risk_command(&self, command: TradingCommand) {
-        log::info!("{CMD}{SEND} {command}");
+        log_cmd_send(&command);
         msgbus::send_any("RiskEngine.execute".into(), &command);
     }
 
     pub fn send_exec_command(&self, command: TradingCommand) {
-        log::info!("{CMD}{SEND} {command}");
+        log_cmd_send(&command);
         msgbus::send_any("ExecEngine.execute".into(), &command);
     }
 
     pub fn send_risk_event(&self, event: OrderEventAny) {
-        log::info!("{EVT}{SEND} {event}");
+        log_evt_send(&event);
         msgbus::send_any("RiskEngine.process".into(), &event);
     }
 
     pub fn send_exec_event(&self, event: OrderEventAny) {
-        log::info!("{EVT}{SEND} {event}");
+        log_evt_send(&event);
         msgbus::send_any("ExecEngine.process".into(), &event);
     }
+}
+
+#[inline(always)]
+fn log_cmd_send(command: &TradingCommand) {
+    if let Some(id) = command.strategy_id() {
+        log::info!("{id} {CMD}{SEND} {command}");
+    } else {
+        log::info!("{CMD}{SEND} {command}");
+    }
+}
+
+#[inline(always)]
+fn log_evt_send(event: &OrderEventAny) {
+    let id = event.strategy_id();
+    log::info!("{id} {EVT}{SEND} {event}");
 }
 
 ////////////////////////////////////////////////////////////////////////////////

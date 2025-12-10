@@ -4016,8 +4016,17 @@ cdef class OrderMatchingEngine:
             self.iterate(close.ts_init)
 
     cdef void _process_trade_ticks_from_bar(self, Bar bar):
-        cdef double size_value = max(bar.volume.as_double() / 4.0, self.instrument.size_increment.as_double())
-        cdef Quantity size = Quantity(size_value, bar._mem.volume.precision)
+        # Split bar volume into 4, adding remainder to close trade
+        cdef QuantityRaw quarter_raw = bar._mem.volume.raw // 4
+        cdef QuantityRaw remainder_raw = bar._mem.volume.raw % 4
+        cdef QuantityRaw min_size_raw = self.instrument.size_increment._mem.raw
+
+        # Ensure minimum size increment
+        if quarter_raw < min_size_raw:
+            quarter_raw = min_size_raw
+
+        cdef Quantity size = Quantity.from_raw_c(quarter_raw, bar._mem.volume.precision)
+        cdef Quantity close_size = Quantity.from_raw_c(quarter_raw + remainder_raw, bar._mem.volume.precision)
 
         # Create base tick template
         cdef TradeTick tick = self._create_base_trade_tick(bar, size)
@@ -4036,7 +4045,7 @@ cdef class OrderMatchingEngine:
             self._process_trade_bar_low(bar, tick)
             self._process_trade_bar_high(bar, tick)
 
-        self._process_trade_bar_close(bar, tick)
+        self._process_trade_bar_close(bar, tick, close_size)
 
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size):
         return TradeTick(
@@ -4082,12 +4091,14 @@ cdef class OrderMatchingEngine:
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.low.raw)
 
-    cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick):
+    cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick, Quantity close_size = None):
         if bar._mem.close.raw != self._core.last_raw:
             if is_logging_initialized():
                 self._log.debug(f"Updating with close {bar.close}")
 
             tick._mem.price = bar._mem.close
+            if close_size is not None:
+                tick._mem.size = close_size._mem
             tick._mem.aggressor_side = AggressorSide.BUYER if bar._mem.close.raw > self._core.last_raw else AggressorSide.SELLER
             tick._mem.trade_id = trade_id_new(pystr_to_cstr(self._generate_trade_id_str()))
             self._book.update_trade_tick(tick)
@@ -4101,11 +4112,23 @@ cdef class OrderMatchingEngine:
         if self._last_bid_bar.ts_init != self._last_ask_bar.ts_init:
             return  # Wait for next bar
 
-        cdef double size_increment_f64 = self.instrument.size_increment.as_double()
-        cdef double bid_size_value = max(self._last_bid_bar.volume.as_double() / 4.0, size_increment_f64)
-        cdef double ask_size_value = max(self._last_ask_bar.volume.as_double() / 4.0, size_increment_f64)
-        cdef Quantity bid_size = Quantity(bid_size_value, self._last_bid_bar._mem.volume.precision)
-        cdef Quantity ask_size = Quantity(ask_size_value, self._last_ask_bar._mem.volume.precision)
+        # Split bar volume into 4, adding remainder to close quote
+        cdef QuantityRaw min_size_raw = self.instrument.size_increment._mem.raw
+        cdef QuantityRaw bid_quarter = self._last_bid_bar._mem.volume.raw // 4
+        cdef QuantityRaw bid_remainder = self._last_bid_bar._mem.volume.raw % 4
+        cdef QuantityRaw ask_quarter = self._last_ask_bar._mem.volume.raw // 4
+        cdef QuantityRaw ask_remainder = self._last_ask_bar._mem.volume.raw % 4
+
+        # Ensure minimum size increment
+        if bid_quarter < min_size_raw:
+            bid_quarter = min_size_raw
+        if ask_quarter < min_size_raw:
+            ask_quarter = min_size_raw
+
+        cdef Quantity bid_size = Quantity.from_raw_c(bid_quarter, self._last_bid_bar._mem.volume.precision)
+        cdef Quantity ask_size = Quantity.from_raw_c(ask_quarter, self._last_ask_bar._mem.volume.precision)
+        cdef Quantity bid_close_size = Quantity.from_raw_c(bid_quarter + bid_remainder, self._last_bid_bar._mem.volume.precision)
+        cdef Quantity ask_close_size = Quantity.from_raw_c(ask_quarter + ask_remainder, self._last_ask_bar._mem.volume.precision)
 
         # Create base tick template
         cdef QuoteTick tick = self._create_base_quote_tick(bid_size, ask_size)
@@ -4124,7 +4147,7 @@ cdef class OrderMatchingEngine:
             self._process_quote_bar_low(tick)
             self._process_quote_bar_high(tick)
 
-        self._process_quote_bar_close(tick)
+        self._process_quote_bar_close(tick, bid_close_size, ask_close_size)
 
         self._last_bid_bar = None
         self._last_ask_bar = None
@@ -4156,9 +4179,13 @@ cdef class OrderMatchingEngine:
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
-    cdef void _process_quote_bar_close(self, QuoteTick tick):
+    cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size = None, Quantity ask_close_size = None):
         tick._mem.bid_price = self._last_bid_bar._mem.close
         tick._mem.ask_price = self._last_ask_bar._mem.close
+        if bid_close_size is not None:
+            tick._mem.bid_size = bid_close_size._mem
+        if ask_close_size is not None:
+            tick._mem.ask_size = ask_close_size._mem
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 

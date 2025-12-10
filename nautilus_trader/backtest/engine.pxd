@@ -410,13 +410,13 @@ cdef class OrderMatchingEngine:
     cdef void _process_trade_bar_open(self, Bar bar, TradeTick tick)
     cdef void _process_trade_bar_high(self, Bar bar, TradeTick tick)
     cdef void _process_trade_bar_low(self, Bar bar, TradeTick tick)
-    cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick)
+    cdef void _process_trade_bar_close(self, Bar bar, TradeTick tick, Quantity close_size=*)
     cdef void _process_quote_ticks_from_bar(self)
     cdef QuoteTick _create_base_quote_tick(self, Quantity bid_size, Quantity ask_size)
     cdef void _process_quote_bar_open(self, QuoteTick tick)
     cdef void _process_quote_bar_high(self, QuoteTick tick)
     cdef void _process_quote_bar_low(self, QuoteTick tick)
-    cdef void _process_quote_bar_close(self, QuoteTick tick)
+    cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size=*, Quantity ask_close_size=*)
 
 # -- TRADING COMMANDS -----------------------------------------------------------------------------
 

@@ -37,6 +37,7 @@ use nautilus_common::testing::wait_until_async;
 use nautilus_kraken::{
     common::enums::{
         KrakenApiResult, KrakenEnvironment, KrakenOrderSide, KrakenOrderStatus, KrakenOrderType,
+        KrakenSendStatus,
     },
     http::{
         KrakenFuturesRawHttpClient, KrakenSpotAddOrderParamsBuilder,
@@ -496,6 +497,7 @@ async fn test_spot_raw_get_server_time() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -530,6 +532,7 @@ async fn test_spot_raw_get_system_status() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -559,6 +562,7 @@ async fn test_spot_raw_get_asset_pairs() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -601,6 +605,7 @@ async fn test_spot_domain_request_instruments() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -630,6 +635,7 @@ async fn test_spot_raw_get_ticker() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -667,6 +673,7 @@ async fn test_spot_raw_get_book_depth() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -696,6 +703,7 @@ async fn test_spot_raw_get_trades() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -733,6 +741,7 @@ async fn test_spot_raw_get_ohlc() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -762,6 +771,7 @@ async fn test_spot_raw_get_trades_with_since() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -805,6 +815,7 @@ async fn test_spot_raw_get_ohlc_with_interval() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -840,6 +851,7 @@ async fn test_spot_raw_get_websockets_token_requires_credentials() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -881,6 +893,7 @@ async fn test_spot_raw_get_websockets_token_with_credentials() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -911,6 +924,7 @@ async fn test_spot_domain_request_trades() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -955,6 +969,7 @@ async fn test_spot_domain_request_bars() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -991,6 +1006,7 @@ async fn test_spot_raw_multiple_requests_increment_count() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1035,6 +1051,7 @@ async fn test_futures_raw_get_instruments() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1071,6 +1088,7 @@ async fn test_futures_raw_get_tickers() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1112,6 +1130,7 @@ async fn test_futures_raw_get_ohlc_trade() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1160,6 +1179,7 @@ async fn test_futures_raw_get_ohlc_mark() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1201,6 +1221,7 @@ async fn test_futures_raw_get_ohlc_spot() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1238,6 +1259,7 @@ async fn test_futures_raw_get_public_executions() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1293,6 +1315,7 @@ async fn test_spot_raw_get_open_orders() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1331,6 +1354,7 @@ async fn test_spot_raw_get_closed_orders() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1378,6 +1402,7 @@ async fn test_spot_raw_get_trades_history() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1415,6 +1440,7 @@ async fn test_futures_raw_get_open_orders() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1458,6 +1484,7 @@ async fn test_futures_raw_get_order_events() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1510,6 +1537,7 @@ async fn test_futures_raw_get_fills() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1547,6 +1575,7 @@ async fn test_futures_raw_get_open_positions() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1598,6 +1627,7 @@ async fn test_spot_raw_add_order() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1639,6 +1669,7 @@ async fn test_spot_raw_cancel_order() {
         KrakenEnvironment::Mainnet,
         Some(base_url),
         Some(10),
+        None,
         None,
         None,
         None,
@@ -1687,6 +1718,7 @@ async fn test_futures_raw_send_order() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1730,6 +1762,7 @@ async fn test_futures_raw_cancel_order() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1743,5 +1776,5 @@ async fn test_futures_raw_cancel_order() {
 
     let response = result.unwrap();
     assert_eq!(response.result, KrakenApiResult::Success);
-    assert_eq!(response.cancel_status.status, "cancelled");
+    assert_eq!(response.cancel_status.status, KrakenSendStatus::Cancelled);
 }

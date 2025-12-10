@@ -28,7 +28,7 @@ use nautilus_common::cache::quote::QuoteCache;
 use nautilus_core::{AtomicTime, UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
     data::{Data, OrderBookDeltas, QuoteTick},
-    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderUpdated},
+    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
@@ -601,7 +601,8 @@ impl SpotFeedHandler {
                         let venue_order_id = VenueOrderId::new(&exec_data.order_id);
 
                         match exec_data.exec_type {
-                            KrakenExecType::New | KrakenExecType::PendingNew => {
+                            KrakenExecType::PendingNew => {
+                                // Order received and validated - emit accepted
                                 let accepted = OrderAccepted::new(
                                     info.trader_id,
                                     info.strategy_id,
@@ -617,21 +618,53 @@ impl SpotFeedHandler {
                                 self.pending_messages
                                     .push_back(NautilusWsMessage::OrderAccepted(accepted));
                             }
+                            KrakenExecType::New => {
+                                // Order is now live - already accepted, skip
+                            }
                             KrakenExecType::Canceled => {
-                                let canceled = OrderCanceled::new(
-                                    info.trader_id,
-                                    info.strategy_id,
-                                    instrument.id(),
-                                    client_order_id,
-                                    UUID4::new(),
-                                    ts_event,
-                                    ts_init,
-                                    false,
-                                    Some(venue_order_id),
-                                    Some(account_id),
-                                );
-                                self.pending_messages
-                                    .push_back(NautilusWsMessage::OrderCanceled(canceled));
+                                // Check if this is a post-only rejection based on reason
+                                // Kraken sends reason="Post only order" for post-only rejections
+                                let is_post_only_rejection = exec_data
+                                    .reason
+                                    .as_ref()
+                                    .is_some_and(|r| r.eq_ignore_ascii_case("Post only order"));
+
+                                if is_post_only_rejection {
+                                    let reason = exec_data
+                                        .reason
+                                        .as_deref()
+                                        .unwrap_or("Post-only order would have crossed");
+                                    let rejected = OrderRejected::new(
+                                        info.trader_id,
+                                        info.strategy_id,
+                                        instrument.id(),
+                                        client_order_id,
+                                        account_id,
+                                        Ustr::from(reason),
+                                        UUID4::new(),
+                                        ts_event,
+                                        ts_init,
+                                        false,
+                                        true, // due_post_only
+                                    );
+                                    self.pending_messages
+                                        .push_back(NautilusWsMessage::OrderRejected(rejected));
+                                } else {
+                                    let canceled = OrderCanceled::new(
+                                        info.trader_id,
+                                        info.strategy_id,
+                                        instrument.id(),
+                                        client_order_id,
+                                        UUID4::new(),
+                                        ts_event,
+                                        ts_init,
+                                        false,
+                                        Some(venue_order_id),
+                                        Some(account_id),
+                                    );
+                                    self.pending_messages
+                                        .push_back(NautilusWsMessage::OrderCanceled(canceled));
+                                }
                             }
                             KrakenExecType::Expired => {
                                 let expired = OrderExpired::new(
@@ -704,6 +737,45 @@ impl SpotFeedHandler {
                                         .push_back(NautilusWsMessage::FillReport(Box::new(
                                             fill_report,
                                         )));
+                                }
+                            }
+                            KrakenExecType::IcebergRefill => {
+                                // Iceberg order refill - treat similar to order update
+                                if let Some(order_qty) = exec_data.order_qty.or(cached_order_qty) {
+                                    let updated = OrderUpdated::new(
+                                        info.trader_id,
+                                        info.strategy_id,
+                                        instrument.id(),
+                                        client_order_id,
+                                        Quantity::new(order_qty, instrument.size_precision()),
+                                        UUID4::new(),
+                                        ts_event,
+                                        ts_init,
+                                        false,
+                                        Some(venue_order_id),
+                                        Some(account_id),
+                                        None,
+                                        None,
+                                        None,
+                                    );
+                                    self.pending_messages
+                                        .push_back(NautilusWsMessage::OrderUpdated(updated));
+                                }
+                            }
+                            KrakenExecType::Status => {
+                                // Status update without state change - emit OrderStatusReport
+                                if let Ok(status_report) = parse_ws_order_status_report(
+                                    &exec_data,
+                                    &instrument,
+                                    account_id,
+                                    cached_order_qty,
+                                    ts_init,
+                                ) {
+                                    self.pending_messages.push_back(
+                                        NautilusWsMessage::OrderStatusReport(Box::new(
+                                            status_report,
+                                        )),
+                                    );
                                 }
                             }
                         }

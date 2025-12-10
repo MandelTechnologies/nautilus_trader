@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_key: None,        // Will use 'OKX_API_KEY' env var
         api_secret: None,     // Will use 'OKX_API_SECRET' env var
         api_passphrase: None, // Will use 'OKX_PASSPHRASE' env var
-        instrument_types: vec![OKXInstrumentType::Swap],
+        instrument_types: vec![OKXInstrumentType::Spot, OKXInstrumentType::Swap],
         is_demo: false,
         ..Default::default()
     };
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api_key: None,        // Will use 'OKX_API_KEY' env var
         api_secret: None,     // Will use 'OKX_API_SECRET' env var
         api_passphrase: None, // Will use 'OKX_PASSPHRASE' env var
-        instrument_types: vec![OKXInstrumentType::Swap],
+        instrument_types: vec![OKXInstrumentType::Spot, OKXInstrumentType::Swap],
         is_demo: false,
         ..Default::default()
     };
@@ -67,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut node = LiveNode::builder(node_name, trader_id, environment)?
         .add_data_client(None, Box::new(data_factory), Box::new(data_config))?
         .add_exec_client(None, Box::new(exec_factory), Box::new(exec_config))?
+        .with_delay_post_stop_secs(5)
         .build()?;
 
     let mut tester_config = ExecTesterConfig::new(
@@ -81,6 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tester_config.base.use_uuid_client_order_ids = true;
     // OKX doesn't allow hyphens in client order IDs
     tester_config.base.use_hyphens_in_client_order_ids = false;
+    // Use post-only for limit orders
+    tester_config.use_post_only = true;
 
     let tester = ExecTester::new(tester_config);
 

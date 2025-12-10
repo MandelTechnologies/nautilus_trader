@@ -146,14 +146,20 @@ pub enum KrakenExecType {
     Trade,
     /// Order has been completely filled.
     Filled,
+    /// Iceberg order refill.
+    #[serde(rename = "iceberg_refill")]
+    #[strum(serialize = "iceberg_refill")]
+    IcebergRefill,
     /// Order has been canceled.
     Canceled,
     /// Order has expired.
     Expired,
-    /// Order has been amended.
+    /// Order has been amended (user-initiated modification).
     Amended,
-    /// Order has been restated.
+    /// Order has been restated (engine-initiated adjustment).
     Restated,
+    /// Order status update without state change.
+    Status,
 }
 
 /// Order status from the Kraken WebSocket v2 executions channel.

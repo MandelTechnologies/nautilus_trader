@@ -620,20 +620,22 @@ class TestBinanceFuturesExecutionClient:
         await eventually(lambda: mock_send_request.call_args)
 
         # Assert
+        # As of 2025-12-09, conditional orders use the algo order endpoint
         request = mock_send_request.call_args
         assert request[0][0] == HttpMethod.POST
-        assert request[0][1] == "/fapi/v1/order"
+        assert request[0][1] == "/fapi/v1/algoOrder"
         assert request[1]["payload"]["symbol"] == "ETHUSDT"  # -PERP was stripped
         assert request[1]["payload"]["side"] == "SELL"
         assert request[1]["payload"]["type"] == "STOP_MARKET"
+        assert request[1]["payload"]["algoType"] == "CONDITIONAL"
         assert request[1]["payload"]["timeInForce"] == "GTC"
         assert request[1]["payload"]["quantity"] == "10"
         if _is_dual_side_position:
             assert "reduceOnly" not in request[1]["payload"]
         else:
             assert request[1]["payload"]["reduceOnly"] == "True"
-        assert request[1]["payload"]["newClientOrderId"] is not None
-        assert request[1]["payload"]["stopPrice"] == "10099.00"
+        assert request[1]["payload"]["clientAlgoId"] is not None
+        assert request[1]["payload"]["triggerPrice"] == "10099.00"
         assert request[1]["payload"]["workingType"] == "CONTRACT_PRICE"
         assert request[1]["payload"]["recvWindow"] == "5000"
         assert request[1]["payload"]["signature"] is not None
@@ -692,17 +694,19 @@ class TestBinanceFuturesExecutionClient:
         await eventually(lambda: mock_send_request.call_args)
 
         # Assert
+        # As of 2025-12-09, conditional orders use the algo order endpoint
         request = mock_send_request.call_args
         assert request[0][0] == HttpMethod.POST
-        assert request[0][1] == "/fapi/v1/order"
+        assert request[0][1] == "/fapi/v1/algoOrder"
         assert request[1]["payload"]["symbol"] == "ETHUSDT"  # -PERP was stripped
         assert request[1]["payload"]["side"] == "BUY"
         assert request[1]["payload"]["type"] == "STOP"
+        assert request[1]["payload"]["algoType"] == "CONDITIONAL"
         assert request[1]["payload"]["timeInForce"] == "GTC"
         assert request[1]["payload"]["quantity"] == "10"
         assert request[1]["payload"]["price"] == "10050.80"
-        assert request[1]["payload"]["newClientOrderId"] is not None
-        assert request[1]["payload"]["stopPrice"] == "10050.00"
+        assert request[1]["payload"]["clientAlgoId"] is not None
+        assert request[1]["payload"]["triggerPrice"] == "10050.00"
         assert request[1]["payload"]["workingType"] == "MARK_PRICE"
         assert request[1]["payload"]["recvWindow"] == "5000"
         assert request[1]["payload"]["signature"] is not None
@@ -759,16 +763,18 @@ class TestBinanceFuturesExecutionClient:
         await eventually(lambda: mock_send_request.call_args)
 
         # Assert
+        # As of 2025-12-09, conditional orders use the algo order endpoint
         request = mock_send_request.call_args
         assert request[0][0] == HttpMethod.POST
-        assert request[0][1] == "/fapi/v1/order"
+        assert request[0][1] == "/fapi/v1/algoOrder"
         assert request[1]["payload"]["symbol"] == "ETHUSDT"  # -PERP was stripped
         assert request[1]["payload"]["side"] == "SELL"
         assert request[1]["payload"]["type"] == "TAKE_PROFIT_MARKET"
+        assert request[1]["payload"]["algoType"] == "CONDITIONAL"
         assert request[1]["payload"]["timeInForce"] == "GTC"
         assert request[1]["payload"]["quantity"] == "10"
-        assert request[1]["payload"]["newClientOrderId"] is not None
-        assert request[1]["payload"]["stopPrice"] == "10099.00"
+        assert request[1]["payload"]["clientAlgoId"] is not None
+        assert request[1]["payload"]["triggerPrice"] == "10099.00"
         assert request[1]["payload"]["recvWindow"] == "5000"
         assert request[1]["payload"]["signature"] is not None
         assert request[1]["payload"]["positionSide"] == expected
@@ -825,17 +831,19 @@ class TestBinanceFuturesExecutionClient:
         await eventually(lambda: mock_send_request.call_args)
 
         # Assert
+        # As of 2025-12-09, conditional orders use the algo order endpoint
         request = mock_send_request.call_args
         assert request[0][0] == HttpMethod.POST
-        assert request[0][1] == "/fapi/v1/order"
+        assert request[0][1] == "/fapi/v1/algoOrder"
         assert request[1]["payload"]["symbol"] == "ETHUSDT"  # -PERP was stripped
         assert request[1]["payload"]["side"] == "SELL"
         assert request[1]["payload"]["type"] == "TAKE_PROFIT"
+        assert request[1]["payload"]["algoType"] == "CONDITIONAL"
         assert request[1]["payload"]["timeInForce"] == "GTC"
         assert request[1]["payload"]["quantity"] == "10"
         assert request[1]["payload"]["price"] == "10050.80"
-        assert request[1]["payload"]["newClientOrderId"] is not None
-        assert request[1]["payload"]["stopPrice"] == "10099.00"
+        assert request[1]["payload"]["clientAlgoId"] is not None
+        assert request[1]["payload"]["triggerPrice"] == "10099.00"
         assert request[1]["payload"]["workingType"] == "CONTRACT_PRICE"
         assert request[1]["payload"]["recvWindow"] == "5000"
         assert request[1]["payload"]["signature"] is not None
@@ -897,19 +905,21 @@ class TestBinanceFuturesExecutionClient:
         await eventually(lambda: mock_send_request.call_args)
 
         # Assert
+        # As of 2025-12-09, conditional orders use the algo order endpoint
         request = mock_send_request.call_args
         assert request[0][0] == HttpMethod.POST
-        assert request[0][1] == "/fapi/v1/order"
+        assert request[0][1] == "/fapi/v1/algoOrder"
         assert request[1]["payload"]["symbol"] == "ETHUSDT"  # -PERP was stripped
         assert request[1]["payload"]["side"] == "SELL"
         assert request[1]["payload"]["type"] == "TRAILING_STOP_MARKET"
+        assert request[1]["payload"]["algoType"] == "CONDITIONAL"
         assert request[1]["payload"]["timeInForce"] == "GTC"
         assert request[1]["payload"]["quantity"] == "10"
         if _is_dual_side_position:
             assert "reduceOnly" not in request[1]["payload"]
         else:
             assert request[1]["payload"]["reduceOnly"] == "True"
-        assert request[1]["payload"]["newClientOrderId"] is not None
+        assert request[1]["payload"]["clientAlgoId"] is not None
         assert request[1]["payload"]["activationPrice"] == "10000.00"
         assert request[1]["payload"]["callbackRate"] == "1.0"
         assert request[1]["payload"]["workingType"] == "MARK_PRICE"
@@ -1207,12 +1217,14 @@ class TestBinanceFuturesExecutionClient:
         await eventually(lambda: mock_send_request.call_args)
 
         # Assert: Order submitted successfully with activationPrice omitted
+        # As of 2025-12-09, conditional orders use the algo order endpoint
         request = mock_send_request.call_args
         assert request[0][0] == HttpMethod.POST
-        assert request[0][1] == "/fapi/v1/order"
+        assert request[0][1] == "/fapi/v1/algoOrder"
         payload = request[1]["payload"]
         assert payload["symbol"] == "ETHUSDT"
         assert payload["type"] == "TRAILING_STOP_MARKET"
+        assert payload["algoType"] == "CONDITIONAL"
         assert payload["side"] == "SELL"
         assert payload["quantity"] == "10"
         assert payload["callbackRate"] == "1.0"

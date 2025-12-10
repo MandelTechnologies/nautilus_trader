@@ -317,6 +317,11 @@ pub struct SpotCancelOrderResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotCancelOrderBatchResponse {
+    pub count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpotEditOrderResponse {
     pub descr: Option<AddOrderDescription>,
     pub txid: Option<String>,
