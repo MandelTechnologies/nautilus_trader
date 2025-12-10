@@ -26,6 +26,9 @@ class BotfolioConfig:
     alpaca_access_token: str | None = None
     alpaca_base_url: str | None = None
 
+    # Membership tier feature flag - PRO/ELITE users can access tick data
+    can_access_tick_data: bool = False
+
     @property
     def is_paper(self) -> bool:
         return self.trading_mode == "paper"
@@ -57,4 +60,5 @@ def get_config() -> BotfolioConfig:
         alpaca_api_secret=os.environ.get("APCA_API_SECRET_KEY"),
         alpaca_access_token=os.environ.get("APCA_API_ACCESS_TOKEN"),
         alpaca_base_url=os.environ.get("APCA_API_BASE_URL"),
+        can_access_tick_data=os.environ.get("BOTFOLIO_CAN_ACCESS_TICK_DATA", "").lower() == "true",
     )

@@ -26,12 +26,15 @@ class BotfolioDataClientConfig(LiveDataClientConfig, frozen=True):
         The Redis connection URL for subscribing to market data.
     symbols : list[str], optional
         List of symbols to subscribe to on startup.
+    can_access_tick_data : bool, default False
+        Whether the user's membership tier allows tick data access (PRO/ELITE only).
 
     """
 
     venue: Venue = BOTFOLIO_VENUE
     redis_url: str = DEFAULT_REDIS_URL
     symbols: list[str] | None = None
+    can_access_tick_data: bool = False
 
 
 class BotfolioExecClientConfig(LiveExecClientConfig, frozen=True):

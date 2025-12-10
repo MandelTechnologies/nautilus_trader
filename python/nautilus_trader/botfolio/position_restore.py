@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC
-from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from typing import Any
@@ -41,9 +39,11 @@ if TYPE_CHECKING:
 def _log(message: str, logger: Any = None) -> None:
     """
     Log a message using logger if available, otherwise print.
+
+    Docker adds timestamps, so we don't add our own.
+
     """
-    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"{ts} [PositionRestore] {message}"
+    formatted = f"[INFO] [PositionRestore] {message}"
     if logger is not None:
         try:
             logger.info(message)
@@ -56,9 +56,11 @@ def _log(message: str, logger: Any = None) -> None:
 def _log_warning(message: str, logger: Any = None) -> None:
     """
     Log a warning using logger if available, otherwise print.
+
+    Docker adds timestamps, so we don't add our own.
+
     """
-    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"{ts} [PositionRestore] WARNING: {message}"
+    formatted = f"[WARN] [PositionRestore] {message}"
     if logger is not None:
         try:
             logger.warning(message)
@@ -71,9 +73,11 @@ def _log_warning(message: str, logger: Any = None) -> None:
 def _log_error(message: str, logger: Any = None) -> None:
     """
     Log an error using logger if available, otherwise print.
+
+    Docker adds timestamps, so we don't add our own.
+
     """
-    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"{ts} [PositionRestore] ERROR: {message}"
+    formatted = f"[ERROR] [PositionRestore] {message}"
     if logger is not None:
         try:
             logger.error(message)

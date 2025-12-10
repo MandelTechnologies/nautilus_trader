@@ -92,6 +92,7 @@ class BotfolioDataClient(LiveMarketDataClient):
 
         self._config = config
         self._redis_url = config.redis_url
+        self._can_access_tick_data = config.can_access_tick_data
 
         # Redis pub/sub client
         self._redis: aioredis.Redis | None = None
@@ -273,7 +274,18 @@ class BotfolioDataClient(LiveMarketDataClient):
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         """
         Subscribe to quote ticks for an instrument.
+
+        Requires PRO or ELITE membership tier. HOBBYIST users will receive a warning and
+        the subscription will be skipped.
+
         """
+        if not self._can_access_tick_data:
+            self._log.warning(
+                "Quote tick subscription requires PRO or ELITE membership. "
+                "Upgrade your plan to access tick data.",
+            )
+            return
+
         symbol = command.instrument_id.symbol.value
         if symbol in self._subscribed_quote_symbols:
             return
@@ -287,7 +299,18 @@ class BotfolioDataClient(LiveMarketDataClient):
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
         """
         Subscribe to trade ticks for an instrument.
+
+        Requires PRO or ELITE membership tier. HOBBYIST users will receive a warning and
+        the subscription will be skipped.
+
         """
+        if not self._can_access_tick_data:
+            self._log.warning(
+                "Trade tick subscription requires PRO or ELITE membership. "
+                "Upgrade your plan to access tick data.",
+            )
+            return
+
         # Trade ticks come from the same quote channel
         symbol = command.instrument_id.symbol.value
         if symbol in self._subscribed_quote_symbols:

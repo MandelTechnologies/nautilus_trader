@@ -67,10 +67,12 @@ def _persist_logs():
 
 def log(message: str):
     """
-    Log a message with timestamp.
+    Log a message.
+
+    Docker adds timestamps, so we don't add our own.
+
     """
-    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{ts} [Trading Node] {message}")
+    print(f"[INFO] [Trading Node] {message}")
 
 
 def fetch_from_redis(r: redis.Redis, key: str, max_attempts: int = 10) -> str | None:
@@ -131,6 +133,14 @@ def setup_credentials_env(config: dict) -> None:
     # Capital settings
     os.environ["BOTFOLIO_INITIAL_CAPITAL"] = str(config.get("initialCapital", 100000))
     os.environ["BOTFOLIO_VIRTUAL_CASH"] = str(config.get("virtualCash", 100000))
+
+    # Membership tier feature flag - PRO/ELITE users can access tick data
+    can_access_tick_data = config.get("canAccessTickData", False)
+    os.environ["BOTFOLIO_CAN_ACCESS_TICK_DATA"] = "true" if can_access_tick_data else "false"
+    if can_access_tick_data:
+        log("Tick data access: enabled (PRO/ELITE membership)")
+    else:
+        log("Tick data access: disabled (HOBBYIST membership - upgrade for tick data)")
 
     # Position isolation: Store bot's positions for restoration on startup
     # This ensures each bot only sees its own positions, even when sharing an Alpaca account
