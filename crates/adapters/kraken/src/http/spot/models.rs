@@ -337,6 +337,13 @@ pub struct SpotEditOrderResponse {
     pub orders_cancelled: Option<i32>,
 }
 
+/// Response from `POST /0/private/AmendOrder`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotAmendOrderResponse {
+    /// The amend transaction ID.
+    pub amend_id: String,
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////

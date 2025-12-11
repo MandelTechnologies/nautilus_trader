@@ -15,6 +15,8 @@
 
 import asyncio
 import pkgutil
+from datetime import UTC
+from datetime import datetime
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import Mock
@@ -38,6 +40,7 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.engine import DataEngine
 from nautilus_trader.execution.engine import ExecutionEngine
+from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.currencies import USDC_POS
@@ -1552,3 +1555,33 @@ class TestPolymarketExecutionClient:
 
             order = self.cache.order(client_order_id)
             assert len(order.events) == initial_event_count, "No duplicate events from replayed message"
+
+    @pytest.mark.asyncio
+    async def test_generate_fill_reports_with_start_end_datetime(self, mocker):
+        # Arrange
+        mock_get_trades = mocker.patch.object(self.http_client, "get_trades")
+        mock_get_trades.return_value = []
+
+        start_dt = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
+        end_dt = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
+
+        command = GenerateFillReports(
+            instrument_id=None,
+            venue_order_id=None,
+            start=start_dt,
+            end=end_dt,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client.generate_fill_reports(command)
+
+        # Assert
+        mock_get_trades.assert_called_once()
+        call_kwargs = mock_get_trades.call_args.kwargs
+        params = call_kwargs["params"]
+
+        # Verify datetime was correctly converted to integer seconds
+        assert params.after == int(start_dt.timestamp())
+        assert params.before == int(end_dt.timestamp())

@@ -33,6 +33,8 @@ from nautilus_trader.model.currencies import BTC
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.events.order import OrderAccepted
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
@@ -188,6 +190,79 @@ def futures_instrument() -> CryptoPerpetual:
         ts_event=0,
         ts_init=0,
     )
+
+
+@pytest.fixture
+def exec_client_builder_dual(
+    event_loop,
+    mock_http_client_spot,
+    mock_http_client_futures,
+    msgbus,
+    cache,
+    live_clock,
+    mock_instrument_provider,
+):
+    """
+    Build a KrakenExecutionClient configured for both SPOT and FUTURES.
+    """
+
+    def builder(monkeypatch, *, config_kwargs: dict | None = None):
+        ws_spot_client = _create_exec_ws_mock_spot()
+        ws_futures_client = _create_exec_ws_mock_futures()
+
+        monkeypatch.setattr(
+            "nautilus_trader.adapters.kraken.execution.nautilus_pyo3.KrakenSpotWebSocketClient",
+            lambda *args, **kwargs: ws_spot_client,
+        )
+        monkeypatch.setattr(
+            "nautilus_trader.adapters.kraken.execution.nautilus_pyo3.KrakenFuturesWebSocketClient",
+            lambda *args, **kwargs: ws_futures_client,
+        )
+
+        # Skip account registration wait in tests
+        monkeypatch.setattr(
+            "nautilus_trader.adapters.kraken.execution.KrakenExecutionClient._await_account_registered",
+            AsyncMock(),
+        )
+
+        mock_http_client_spot.reset_mock()
+        mock_http_client_futures.reset_mock()
+        mock_instrument_provider.initialize.reset_mock()
+        mock_instrument_provider.instruments_pyo3.reset_mock()
+        mock_instrument_provider.instruments_pyo3.return_value = []
+
+        config = KrakenExecClientConfig(
+            api_key="test_api_key",
+            api_secret="test_api_secret",
+            product_types=(
+                nautilus_pyo3.KrakenProductType.SPOT,
+                nautilus_pyo3.KrakenProductType.FUTURES,
+            ),
+            **(config_kwargs or {}),
+        )
+
+        client = KrakenExecutionClient(
+            loop=event_loop,
+            http_client_spot=mock_http_client_spot,
+            http_client_futures=mock_http_client_futures,
+            msgbus=msgbus,
+            cache=cache,
+            clock=live_clock,
+            instrument_provider=mock_instrument_provider,
+            config=config,
+            name=None,
+        )
+
+        return (
+            client,
+            ws_spot_client,
+            ws_futures_client,
+            mock_http_client_spot,
+            mock_http_client_futures,
+            mock_instrument_provider,
+        )
+
+    return builder
 
 
 # ============================================================================
@@ -1509,5 +1584,706 @@ async def test_external_order_fill_report_sent_directly(
 
         # Assert - External orders should be sent as fill reports
         assert msgbus.sent_count > 0
+    finally:
+        await client._disconnect()
+
+
+# ============================================================================
+# DUAL-PRODUCT TESTS
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_connect_success_dual_product(exec_client_builder_dual, monkeypatch):
+    # Arrange
+    (
+        client,
+        ws_spot_client,
+        ws_futures_client,
+        http_client_spot,
+        http_client_futures,
+        instrument_provider,
+    ) = exec_client_builder_dual(monkeypatch)
+
+    # Act
+    await client._connect()
+
+    try:
+        # Assert - Both WebSocket clients should be connected
+        instrument_provider.initialize.assert_awaited_once()
+        http_client_spot.request_account_state.assert_awaited()
+        http_client_futures.request_account_state.assert_awaited()
+        ws_spot_client.connect.assert_awaited_once()
+        ws_futures_client.connect.assert_awaited_once()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_update_account_state_dual_product(exec_client_builder_dual, monkeypatch, msgbus):
+    # Arrange
+    (
+        client,
+        ws_spot_client,
+        ws_futures_client,
+        http_client_spot,
+        http_client_futures,
+        instrument_provider,
+    ) = exec_client_builder_dual(monkeypatch)
+
+    await client._connect()
+
+    # Reset mocks to track new calls
+    http_client_spot.request_account_state.reset_mock()
+    http_client_futures.request_account_state.reset_mock()
+    initial_sent_count = msgbus.sent_count
+
+    try:
+        # Act
+        await client._update_account_state()
+
+        # Assert - Both clients should be queried
+        http_client_spot.request_account_state.assert_awaited_once()
+        http_client_futures.request_account_state.assert_awaited_once()
+
+        # Account state should be generated (message sent)
+        assert msgbus.sent_count > initial_sent_count
+    finally:
+        await client._disconnect()
+
+
+# ============================================================================
+# BATCH CANCEL TESTS
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_looks_up_venue_order_id_from_cache(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+    cache,
+):
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+    await client._connect()
+
+    # Create and cache an order with a venue_order_id
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+    cache.add_order(order, None)
+
+    # Simulate order being accepted (sets venue_order_id)
+    order.apply(
+        OrderAccepted(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=instrument.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("KRAKEN-789"),
+            account_id=AccountId("KRAKEN-UNIFIED"),
+            event_id=TestIdStubs.uuid(),
+            ts_event=0,
+            ts_init=0,
+            reconciliation=False,
+        ),
+    )
+
+    from nautilus_trader.execution.messages import BatchCancelOrders
+    from nautilus_trader.execution.messages import CancelOrder
+
+    cancel = CancelOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    command = BatchCancelOrders(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        cancels=[cancel],
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    http_client.cancel_orders_batch = AsyncMock(return_value=1)
+
+    try:
+        # Act
+        await client._batch_cancel_orders(command)
+
+        # Assert
+        http_client.cancel_orders_batch.assert_awaited_once()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_batch_cancel_orders_warns_when_venue_order_id_not_found(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+):
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+    await client._connect()
+
+    from nautilus_trader.execution.messages import BatchCancelOrders
+    from nautilus_trader.execution.messages import CancelOrder
+
+    cancel = CancelOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-NOT-IN-CACHE"),
+        venue_order_id=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    command = BatchCancelOrders(
+        trader_id=cancel.trader_id,
+        strategy_id=cancel.strategy_id,
+        instrument_id=instrument.id,
+        cancels=[cancel],
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    http_client.cancel_orders_batch = AsyncMock(return_value=0)
+
+    try:
+        # Act
+        await client._batch_cancel_orders(command)
+
+        # Assert
+        http_client.cancel_orders_batch.assert_not_awaited()
+    finally:
+        await client._disconnect()
+
+
+# ============================================================================
+# ORDER STATUS REPORT TESTS (instrument_id=None)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_generate_order_status_report_no_instrument_id_queries_both_clients(
+    exec_client_builder_dual,
+    monkeypatch,
+):
+    # Arrange
+    (
+        client,
+        ws_spot_client,
+        ws_futures_client,
+        http_client_spot,
+        http_client_futures,
+        instrument_provider,
+    ) = exec_client_builder_dual(monkeypatch)
+
+    from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+    command = GenerateOrderStatusReport(
+        instrument_id=None,
+        client_order_id=ClientOrderId("O-123456"),
+        venue_order_id=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    try:
+        # Act
+        await client.generate_order_status_report(command)
+
+        # Assert - Both clients should be queried when instrument_id is None
+        http_client_spot.request_order_status_reports.assert_awaited_once()
+        http_client_futures.request_order_status_reports.assert_awaited_once()
+    finally:
+        pass  # No disconnect needed - not connected
+
+
+@pytest.mark.asyncio
+async def test_generate_order_status_report_with_instrument_id_queries_one_client(
+    exec_client_builder_dual,
+    monkeypatch,
+    instrument,
+):
+    # Arrange
+    (
+        client,
+        ws_spot_client,
+        ws_futures_client,
+        http_client_spot,
+        http_client_futures,
+        instrument_provider,
+    ) = exec_client_builder_dual(monkeypatch)
+
+    from nautilus_trader.execution.messages import GenerateOrderStatusReport
+
+    command = GenerateOrderStatusReport(
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-123456"),
+        venue_order_id=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    try:
+        # Act
+        await client.generate_order_status_report(command)
+
+        # Assert - Only spot client should be queried for spot instrument
+        http_client_spot.request_order_status_reports.assert_awaited_once()
+        http_client_futures.request_order_status_reports.assert_not_awaited()
+    finally:
+        pass  # No disconnect needed - not connected
+
+
+# ============================================================================
+# ORDER MODIFICATION TESTS
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_modify_order_spot_success(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+    cache,
+):
+    from nautilus_trader.execution.messages import ModifyOrder
+
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+    await client._connect()
+
+    # Create and cache an order
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+    cache.add_order(order, None)
+
+    # Simulate order being accepted (sets venue_order_id)
+    order.apply(
+        OrderAccepted(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=instrument.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("KRAKEN-789"),
+            account_id=AccountId("KRAKEN-UNIFIED"),
+            event_id=TestIdStubs.uuid(),
+            ts_event=0,
+            ts_init=0,
+            reconciliation=False,
+        ),
+    )
+
+    command = ModifyOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=order.venue_order_id,
+        quantity=Quantity.from_str("0.200"),
+        price=Price.from_str("51000.0"),
+        trigger_price=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    # Mock the HTTP client to return new venue order id
+    new_venue_order_id = MagicMock()
+    new_venue_order_id.value = "KRAKEN-NEW-789"
+    http_client.modify_order = AsyncMock(return_value=new_venue_order_id)
+
+    try:
+        # Act
+        await client._modify_order(command)
+
+        # Assert - HTTP client should be called with correct parameters
+        http_client.modify_order.assert_awaited_once()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_modify_order_futures_success(
+    exec_client_builder_futures,
+    monkeypatch,
+    futures_instrument,
+    cache,
+):
+    from nautilus_trader.execution.messages import ModifyOrder
+
+    # Arrange
+    cache.add_instrument(futures_instrument)
+
+    client, ws_client, http_client, instrument_provider = exec_client_builder_futures(
+        monkeypatch,
+    )
+    await client._connect()
+
+    # Create and cache an order
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=futures_instrument.id,
+        client_order_id=ClientOrderId("O-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("100"),
+        price=Price.from_str("50000.0"),
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+    cache.add_order(order, None)
+
+    # Simulate order being accepted
+    order.apply(
+        OrderAccepted(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=futures_instrument.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("KRAKEN-FUTURES-789"),
+            account_id=AccountId("KRAKEN-UNIFIED"),
+            event_id=TestIdStubs.uuid(),
+            ts_event=0,
+            ts_init=0,
+            reconciliation=False,
+        ),
+    )
+
+    command = ModifyOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=order.venue_order_id,
+        quantity=Quantity.from_str("200"),
+        price=Price.from_str("51000.0"),
+        trigger_price=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    # Mock the HTTP client to return new venue order id
+    new_venue_order_id = MagicMock()
+    new_venue_order_id.value = "KRAKEN-FUTURES-NEW-789"
+    http_client.modify_order = AsyncMock(return_value=new_venue_order_id)
+
+    try:
+        # Act
+        await client._modify_order(command)
+
+        # Assert
+        http_client.modify_order.assert_awaited_once()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_modify_order_not_in_cache(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+):
+    from nautilus_trader.execution.messages import ModifyOrder
+
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+    await client._connect()
+
+    http_client.modify_order = AsyncMock()
+
+    command = ModifyOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-NOT-IN-CACHE"),
+        venue_order_id=VenueOrderId("KRAKEN-789"),
+        quantity=Quantity.from_str("0.200"),
+        price=Price.from_str("51000.0"),
+        trigger_price=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    try:
+        # Act - Should handle gracefully without raising
+        await client._modify_order(command)
+
+        # Assert - HTTP client should NOT be called (order not found)
+        http_client.modify_order.assert_not_awaited()
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_modify_order_rejection(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+    cache,
+):
+    from nautilus_trader.execution.messages import ModifyOrder
+
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+    await client._connect()
+
+    # Create and cache an order
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+    cache.add_order(order, None)
+
+    # Simulate order being accepted
+    order.apply(
+        OrderAccepted(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=instrument.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("KRAKEN-789"),
+            account_id=AccountId("KRAKEN-UNIFIED"),
+            event_id=TestIdStubs.uuid(),
+            ts_event=0,
+            ts_init=0,
+            reconciliation=False,
+        ),
+    )
+
+    command = ModifyOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=order.venue_order_id,
+        quantity=Quantity.from_str("0.200"),
+        price=Price.from_str("51000.0"),
+        trigger_price=None,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        client_id=None,
+    )
+
+    # Simulate rejection
+    http_client.modify_order.side_effect = Exception("Order modification rejected")
+
+    try:
+        # Act/Assert - Should not raise, but handle gracefully
+        await client._modify_order(command)
+    finally:
+        await client._disconnect()
+
+
+# ============================================================================
+# GTD TIME-IN-FORCE TESTS
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_submit_gtd_limit_order_spot_passes_expire_time(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+):
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+
+    await client._connect()
+
+    # GTD order with expire_time_ns set
+    expire_time_ns = 1_704_067_200_000_000_000  # 2024-01-01 00:00:00 UTC
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-GTD-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        time_in_force=TimeInForce.GTD,
+        expire_time_ns=expire_time_ns,
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    command = SubmitOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        order=order,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        position_id=None,
+        client_id=None,
+    )
+
+    try:
+        # Act
+        await client._submit_order(command)
+
+        # Assert - HTTP client should be called with expire_time parameter
+        http_client.submit_order.assert_awaited_once()
+        call_kwargs = http_client.submit_order.call_args.kwargs
+        assert call_kwargs["expire_time"] == expire_time_ns
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_submit_gtd_limit_order_futures_denied(
+    exec_client_builder_futures,
+    monkeypatch,
+    futures_instrument,
+    cache,
+    msgbus,
+):
+    # Arrange
+    cache.add_instrument(futures_instrument)
+
+    client, ws_client, http_client, instrument_provider = exec_client_builder_futures(
+        monkeypatch,
+    )
+
+    await client._connect()
+
+    # GTD order for futures - should be denied
+    expire_time_ns = 1_704_067_200_000_000_000
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=futures_instrument.id,
+        client_order_id=ClientOrderId("O-GTD-FUTURES-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("100"),
+        price=Price.from_str("50000.0"),
+        time_in_force=TimeInForce.GTD,
+        expire_time_ns=expire_time_ns,
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    command = SubmitOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        order=order,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        position_id=None,
+        client_id=None,
+    )
+
+    initial_sent_count = msgbus.sent_count
+
+    try:
+        # Act
+        await client._submit_order(command)
+
+        # Assert - HTTP client should NOT be called (order denied before submission)
+        http_client.submit_order.assert_not_awaited()
+
+        # Assert - OrderDenied event should be sent
+        assert msgbus.sent_count > initial_sent_count
+    finally:
+        await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_submit_gtc_limit_order_spot_no_expire_time(
+    exec_client_builder_spot,
+    monkeypatch,
+    instrument,
+):
+    # Arrange
+    client, ws_client, http_client, instrument_provider = exec_client_builder_spot(
+        monkeypatch,
+    )
+
+    await client._connect()
+
+    # GTC order - no expire_time
+    order = LimitOrder(
+        trader_id=TestIdStubs.trader_id(),
+        strategy_id=TestIdStubs.strategy_id(),
+        instrument_id=instrument.id,
+        client_order_id=ClientOrderId("O-GTC-123456"),
+        order_side=OrderSide.BUY,
+        quantity=Quantity.from_str("0.100"),
+        price=Price.from_str("50000.0"),
+        time_in_force=TimeInForce.GTC,
+        init_id=TestIdStubs.uuid(),
+        ts_init=0,
+    )
+
+    command = SubmitOrder(
+        trader_id=order.trader_id,
+        strategy_id=order.strategy_id,
+        order=order,
+        command_id=TestIdStubs.uuid(),
+        ts_init=0,
+        position_id=None,
+        client_id=None,
+    )
+
+    try:
+        # Act
+        await client._submit_order(command)
+
+        # Assert - HTTP client should be called without expire_time
+        http_client.submit_order.assert_awaited_once()
+        call_kwargs = http_client.submit_order.call_args.kwargs
+        assert call_kwargs["expire_time"] is None
     finally:
         await client._disconnect()

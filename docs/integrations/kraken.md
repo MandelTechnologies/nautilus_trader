@@ -51,10 +51,17 @@ integration guide.
 
 Kraken supports two primary product categories:
 
-| Product Type        | Supported | Notes                                              |
-|---------------------|-----------|----------------------------------------------------|
-| Spot                | ✓         | Standard cryptocurrency pairs with margin support. |
-| Futures (Perpetual) | ✓         | Inverse and USD-margined perpetual swaps.          |
+| Product Type             | Supported | Notes                                                    |
+|--------------------------|-----------|----------------------------------------------------------|
+| Spot                     | ✓         | Standard cryptocurrency pairs with margin support.       |
+| Futures (Perpetual)      | ✓         | Inverse (`PI_`) and USD-margined (`PF_`) perpetual swaps.|
+| Futures (Dated/Flex)     | ✓         | Fixed maturity (`FI_`) and flex (`FF_`) contracts.       |
+
+:::note
+**Dual-product deployments**: When both `SPOT` and `FUTURES` product types are
+configured, the adapter queries both APIs and merges the account states. This
+ensures the execution engine has visibility into collateral across both markets.
+:::
 
 ## Symbology
 
@@ -98,73 +105,37 @@ InstrumentId.from_str("PF_XBTUSD.KRAKEN")  # Perpetual fixed-margin BTC
 
 ## Orders capability
 
-### Spot
+### Order types
 
-#### Order types
+| Order Type             | Spot | Futures | Notes                                            |
+|------------------------|------|---------|--------------------------------------------------|
+| `MARKET`               | ✓    | ✓       | Immediate execution at market price.             |
+| `LIMIT`                | ✓    | ✓       | Execution at specified price or better.          |
+| `STOP_MARKET`          | ✓    | ✓       | Conditional market order (stop-loss).            |
+| `MARKET_IF_TOUCHED`    | ✓    | ✓       | Conditional market order (take-profit).          |
+| `STOP_LIMIT`           | ✓    | ✓       | Conditional limit order (stop-loss-limit).       |
+| `LIMIT_IF_TOUCHED`     | ✓    | -       | *Futures: not yet implemented*.                  |
 
-| Order Type             | Spot | Notes                                            |
-|------------------------|------|--------------------------------------------------|
-| `MARKET`               | ✓    | Immediate execution at market price.             |
-| `LIMIT`                | ✓    | Execution at specified price or better.          |
-| `STOP_MARKET`          | ✓    | Conditional market order (stop-loss).            |
-| `MARKET_IF_TOUCHED`    | ✓    | Conditional market order (take-profit).          |
-| `STOP_LIMIT`           | ✓    | Conditional limit order (stop-loss-limit).       |
-| `LIMIT_IF_TOUCHED`     | ✓    | Conditional limit order (take-profit-limit).     |
-| `SETTLE_POSITION`      | ✓    | Market order to close entire position.           |
+### Time in force
 
-#### Time in force
-
-| Time in Force | Spot | Notes                        |
-|---------------|------|------------------------------|
-| `GTC`         | ✓    | Good Till Canceled.          |
-| `GTD`         | ✓    | Good Till Date.              |
-| `IOC`         | ✓    | Immediate or Cancel.         |
-| `FOK`         | -    | *Not currently supported*.   |
+| Time in Force | Spot | Futures | Notes                                               |
+|---------------|------|---------|-----------------------------------------------------|
+| `GTC`         | ✓    | ✓       | Good Till Canceled.                                 |
+| `GTD`         | ✓    | -       | Good Till Date (Spot only, requires `expire_time`). |
+| `IOC`         | ✓    | ✓       | Immediate or Cancel.                                |
+| `FOK`         | -    | -       | *Not supported by Kraken*.                          |
 
 :::note
-**Market orders** are inherently immediate and do not support the `timeinforce`
-parameter. The `IOC` time in force only applies to limit-type orders.
+**Market orders** are inherently immediate and do not support time-in-force.
+`IOC` only applies to limit-type orders.
 :::
 
-#### Execution instructions
+### Execution instructions
 
-| Instruction   | Spot | Notes                              |
-|---------------|------|------------------------------------|
-| `post_only`   | ✓    | Available through order flags.     |
-| `reduce_only` | -    | *Not supported for Spot markets*.  |
-
-### Futures
-
-#### Order types
-
-| Order Type             | Futures | Notes                                            |
-|------------------------|---------|--------------------------------------------------|
-| `MARKET`               | ✓       | Immediate execution at market price.             |
-| `LIMIT`                | ✓       | Execution at specified price or better.          |
-| `STOP_MARKET`          | ✓       | Conditional market order (stop).                 |
-| `MARKET_IF_TOUCHED`    | ✓       | Conditional market order (take-profit).          |
-| `STOP_LIMIT`           | ✓       | Conditional limit order (stop-loss).             |
-| `LIMIT_IF_TOUCHED`     | ✓       | Conditional limit order (take-profit-limit).     |
-
-#### Time in force
-
-| Time in Force | Futures | Notes                        |
-|---------------|---------|------------------------------|
-| `GTC`         | ✓       | Good Till Canceled.          |
-| `GTD`         | -       | *Not supported*.             |
-| `IOC`         | ✓       | Immediate or Cancel.         |
-
-:::note
-**Market orders** are inherently immediate. For Futures, the `IOC` time in force
-is encoded as a separate order type (`ioc`) and only applies to limit orders.
-:::
-
-#### Execution instructions
-
-| Instruction   | Futures | Notes                                |
-|---------------|---------|--------------------------------------|
-| `post_only`   | ✓       | Available for limit orders.          |
-| `reduce_only` | ✓       | Reduces position only, no reversals. |
+| Instruction   | Spot | Futures | Notes                                       |
+|---------------|------|---------|---------------------------------------------|
+| `post_only`   | ✓    | ✓       | Available for limit orders.                 |
+| `reduce_only` | -    | ✓       | Futures only. Reduces position, no reversal.|
 
 ### Batch operations
 
@@ -174,14 +145,23 @@ is encoded as a separate order type (`ioc`) and only applies to limit orders.
 | Batch Modify       | -    | -       | *Not yet implemented* (Futures only).        |
 | Batch Cancel       | ✓    | ✓       | Auto-chunks into batches of 50.              |
 
+:::note
+**Cancel all orders**:
+
+- Order side filtering is not supported; all orders are canceled regardless of side.
+- Spot: Cancels all open orders across all symbols.
+- Futures: Requires an `instrument_id`; cancels orders for that symbol only.
+
+:::
+
 ### Position management
 
-| Feature           | Spot | Futures | Notes                                           |
-|-------------------|------|---------|-------------------------------------------------|
-| Query positions   | -    | ✓       | Real-time position updates via REST/WebSocket.  |
-| Position mode     | -    | -       | Single position per instrument.                 |
-| Leverage control  | -    | ✓       | Configured per account tier.                    |
-| Margin mode       | -    | ✓       | Cross margin for Futures.                       |
+| Feature           | Spot | Futures | Notes                                                     |
+|-------------------|------|---------|-----------------------------------------------------------|
+| Query positions   | ✓*   | ✓       | *Spot: opt-in via `use_spot_position_reports`. See below. |
+| Position mode     | -    | -       | Single position per instrument.                           |
+| Leverage control  | -    | ✓       | Configured per account tier.                              |
+| Margin mode       | -    | ✓       | Cross margin for Futures.                                 |
 
 ### Order querying
 
@@ -318,9 +298,10 @@ The product types for each client must be specified in the configurations.
 | `product_types`                 | `(SPOT,)` | Product types tuple (e.g., `(KrakenProductType.SPOT,)`).                |
 | `base_url_http_spot`            | `None`    | Override for Kraken Spot REST base URL.                                 |
 | `base_url_http_futures`         | `None`    | Override for Kraken Futures REST base URL.                              |
-| `base_url_ws`                   | `None`    | Override for WebSocket base URL.                                        |
+| `base_url_ws_spot`              | `None`    | Override for Kraken Spot WebSocket URL.                                 |
+| `base_url_ws_futures`           | `None`    | Override for Kraken Futures WebSocket URL.                              |
 | `http_proxy_url`                | `None`    | Optional HTTP proxy URL.                                                |
-| `ws_proxy_url`                  | `None`    | Optional WebSocket proxy URL.                                           |
+| `ws_proxy_url`                  | `None`    | WebSocket proxy URL (*not yet implemented*).                            |
 | `update_instruments_interval_mins` | `60`   | Interval (minutes) to reload instruments; `None` to disable.            |
 | `max_retries`                   | `None`    | Maximum retry attempts for REST requests.                               |
 | `retry_delay_initial_ms`        | `None`    | Initial delay (milliseconds) between retries.                           |
@@ -342,7 +323,7 @@ The product types for each client must be specified in the configurations.
 | `base_url_ws_spot`              | `None`    | Override for Kraken Spot WebSocket URL.                                 |
 | `base_url_ws_futures`           | `None`    | Override for Kraken Futures WebSocket URL.                              |
 | `http_proxy_url`                | `None`    | Optional HTTP proxy URL.                                                |
-| `ws_proxy_url`                  | `None`    | Optional WebSocket proxy URL.                                           |
+| `ws_proxy_url`                  | `None`    | WebSocket proxy URL (*not yet implemented*).                            |
 | `max_retries`                   | `None`    | Maximum retry attempts for order submission/cancel calls.               |
 | `retry_delay_initial_ms`        | `None`    | Initial delay (milliseconds) between retries.                           |
 | `retry_delay_max_ms`            | `None`    | Maximum delay (milliseconds) between retries.                           |
@@ -402,18 +383,36 @@ config = TradingNodeConfig(
     ...,  # Omitted
     data_clients={
         KRAKEN: {
-            "api_key": "YOUR_KRAKEN_API_KEY",
-            "api_secret": "YOUR_KRAKEN_API_SECRET",
             "environment": KrakenEnvironment.MAINNET,
             "product_types": (KrakenProductType.SPOT,),
         },
     },
     exec_clients={
         KRAKEN: {
-            "api_key": "YOUR_KRAKEN_API_KEY",
-            "api_secret": "YOUR_KRAKEN_API_SECRET",
             "environment": KrakenEnvironment.MAINNET,
             "product_types": (KrakenProductType.SPOT,),
+        },
+    },
+)
+```
+
+### Dual-product configuration (Spot + Futures)
+
+When trading both Spot and Futures markets, include both product types:
+
+```python
+config = TradingNodeConfig(
+    ...,  # Omitted
+    data_clients={
+        KRAKEN: {
+            "environment": KrakenEnvironment.MAINNET,
+            "product_types": (KrakenProductType.SPOT, KrakenProductType.FUTURES),
+        },
+    },
+    exec_clients={
+        KRAKEN: {
+            "environment": KrakenEnvironment.MAINNET,
+            "product_types": (KrakenProductType.SPOT, KrakenProductType.FUTURES),
         },
     },
 )

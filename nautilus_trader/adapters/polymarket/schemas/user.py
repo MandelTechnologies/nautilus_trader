@@ -307,7 +307,7 @@ class PolymarketOpenOrder(msgspec.Struct, frozen=True):
         expire_time = (
             pd.Timestamp(int(self.expiration), unit="ms", tz="UTC") if self.expiration else None
         )
-        timestamp_ns = millis_to_nanos(int(self.created_at))
+        timestamp_ns = secs_to_nanos(int(self.created_at))
         return OrderStatusReport(
             account_id=account_id,
             instrument_id=instrument.id,

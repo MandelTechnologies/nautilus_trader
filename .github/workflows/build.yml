@@ -79,10 +79,9 @@ jobs:
       - name: Pull and cache Docker image from ECR Public
         if: steps.cache-docker.outputs.cache-hit != 'true'
         run: |
-          # Pull from ECR Public (unlimited anonymous pulls) and tag as Docker Hub image
           RUST_IMAGE="public.ecr.aws/docker/library/rust:1.85.0-alpine3.20"
           RUST_DIGEST="sha256:c2f212dabdc0bf8d252b0e49427705be87f5061530fd6ea5b99a28d4807a3d3f"
-          docker pull "${RUST_IMAGE}@${RUST_DIGEST}"
+          ./scripts/ci/docker-pull-retry.sh "${RUST_IMAGE}@${RUST_DIGEST}"
           docker tag "${RUST_IMAGE}@${RUST_DIGEST}" rust:1.85.0-alpine3.20
           mkdir -p /tmp/docker-cache
           docker save rust:1.85.0-alpine3.20 -o /tmp/docker-cache/rust-alpine.tar

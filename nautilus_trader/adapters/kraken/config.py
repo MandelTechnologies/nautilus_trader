@@ -49,9 +49,12 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     base_url_http_futures : str, optional
         The base URL for Kraken Futures HTTP API.
         If ``None`` then will use the default URL based on environment.
-    base_url_ws : str, optional
-        The base URL for Kraken WebSocket API.
-        If ``None`` then will use the default URL based on environment and product_type.
+    base_url_ws_spot : str, optional
+        The base URL for Kraken Spot WebSocket API.
+        If ``None`` then will use the default URL based on environment.
+    base_url_ws_futures : str, optional
+        The base URL for Kraken Futures WebSocket API.
+        If ``None`` then will use the default URL based on environment.
     http_proxy_url : str, optional
         Optional HTTP proxy URL.
     ws_proxy_url : str, optional
@@ -80,7 +83,8 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     product_types: tuple[KrakenProductType, ...] | None = None
     base_url_http_spot: str | None = None
     base_url_http_futures: str | None = None
-    base_url_ws: str | None = None
+    base_url_ws_spot: str | None = None
+    base_url_ws_futures: str | None = None
     http_proxy_url: str | None = None
     ws_proxy_url: str | None = None
     update_instruments_interval_mins: PositiveInt | None = 60

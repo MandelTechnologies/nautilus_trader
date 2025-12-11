@@ -468,6 +468,8 @@ pub use crate::identifiers::{
 
 ### Documentation standards
 
+Use third-person declarative voice for all doc comments (e.g., "Returns the account ID" not "Return the account ID").
+
 #### Module-Level documentation
 
 All modules must have module-level documentation starting with a brief description:

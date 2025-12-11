@@ -192,3 +192,20 @@ pub fn get_saved_messages<T: Clone + 'static>(handler: ShareableMessageHandler) 
         .unwrap()
         .get_messages()
 }
+
+/// Clears all messages saved by a [`MessageSavingHandler`].
+///
+/// # Panics
+///
+/// Panics if the provided `handler` is not a `MessageSavingHandler<T>`.
+pub fn clear_saved_messages<T: Clone + 'static>(handler: ShareableMessageHandler) {
+    handler
+        .0
+        .as_ref()
+        .as_any()
+        .downcast_ref::<MessageSavingHandler<T>>()
+        .unwrap()
+        .messages
+        .borrow_mut()
+        .clear();
+}

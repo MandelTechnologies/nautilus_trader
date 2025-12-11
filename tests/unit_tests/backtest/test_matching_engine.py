@@ -20,6 +20,8 @@ from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.backtest.models import MakerTakerFeeModel
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.component import TestClock
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import BookType
@@ -30,8 +32,12 @@ from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.events import OrderFilled
+from nautilus_trader.model.events import OrderModifyRejected
 from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -1213,3 +1219,73 @@ class TestOrderMatchingEngine:
         assert len(filled_events) == 2, f"Expected 2 fills, got {len(filled_events)}"
         assert filled_events[0].last_qty == self.instrument.make_qty(40.0)
         assert filled_events[1].last_qty == self.instrument.make_qty(10.0)
+
+    def test_modify_partially_filled_order_quantity_below_filled_rejected(self) -> None:
+        # Tests that modifying a partially filled order to a quantity below filled_qty is rejected
+        # Arrange - Create L2_MBP matching engine
+        matching_engine_l2 = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            trade_execution=True,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Set initial market state with partial liquidity
+        snapshot = TestDataStubs.order_book_snapshot(
+            instrument=self.instrument,
+            bid_price=1490.00,
+            ask_price=1500.00,
+            bid_size=100.0,
+            ask_size=50.0,  # Only 50 available at ask
+            bid_levels=1,
+            ask_levels=1,
+        )
+        matching_engine_l2.process_order_book_deltas(snapshot)
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        # Place BUY LIMIT order at ask (will match and partially fill)
+        order = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=OrderSide.BUY,
+            price=Price.from_str("1500.00"),
+            quantity=self.instrument.make_qty(100.0),
+        )
+        matching_engine_l2.process_order(order, self.account_id)
+
+        # Order should be partially filled (50 of 100)
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1
+        assert filled_events[0].last_qty == self.instrument.make_qty(50.0)
+        messages.clear()
+
+        # Act - Attempt to modify quantity to 40, below filled_qty of 50
+        modify_command = ModifyOrder(
+            trader_id=self.trader_id,
+            strategy_id=StrategyId("S-001"),
+            instrument_id=self.instrument.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("V-001"),
+            quantity=Quantity.from_str("40.000"),
+            price=None,
+            trigger_price=None,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+        matching_engine_l2.process_modify(modify_command, self.account_id)
+
+        # Assert - Should receive OrderModifyRejected
+        rejected_events = [m for m in messages if isinstance(m, OrderModifyRejected)]
+        assert len(rejected_events) == 1, (
+            f"Expected OrderModifyRejected, got {[type(m).__name__ for m in messages]}"
+        )
+        assert "below filled quantity" in rejected_events[0].reason

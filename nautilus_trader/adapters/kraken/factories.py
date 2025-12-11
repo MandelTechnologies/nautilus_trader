@@ -43,6 +43,7 @@ def get_cached_kraken_spot_http_client(
     retry_delay_ms: int | None = None,
     retry_delay_max_ms: int | None = None,
     proxy_url: str | None = None,
+    max_requests_per_second: int | None = None,
 ) -> nautilus_pyo3.KrakenSpotHttpClient:
     """
     Cache and return a Kraken Spot HTTP client.
@@ -74,6 +75,8 @@ def get_cached_kraken_spot_http_client(
         The maximum delay in milliseconds between retry attempts.
     proxy_url : str, optional
         The proxy URL for HTTP requests.
+    max_requests_per_second : int, optional
+        The maximum number of requests per second for rate limiting.
 
     Returns
     -------
@@ -90,6 +93,7 @@ def get_cached_kraken_spot_http_client(
         retry_delay_ms=retry_delay_ms,
         retry_delay_max_ms=retry_delay_max_ms,
         proxy_url=proxy_url,
+        max_requests_per_second=max_requests_per_second,
     )
 
 
@@ -104,6 +108,7 @@ def get_cached_kraken_futures_http_client(
     retry_delay_ms: int | None = None,
     retry_delay_max_ms: int | None = None,
     proxy_url: str | None = None,
+    max_requests_per_second: int | None = None,
 ) -> nautilus_pyo3.KrakenFuturesHttpClient:
     """
     Cache and return a Kraken Futures HTTP client.
@@ -135,6 +140,8 @@ def get_cached_kraken_futures_http_client(
         The maximum delay in milliseconds between retry attempts.
     proxy_url : str, optional
         The proxy URL for HTTP requests.
+    max_requests_per_second : int, optional
+        The maximum number of requests per second for rate limiting.
 
     Returns
     -------
@@ -151,6 +158,7 @@ def get_cached_kraken_futures_http_client(
         retry_delay_ms=retry_delay_ms,
         retry_delay_max_ms=retry_delay_max_ms,
         proxy_url=proxy_url,
+        max_requests_per_second=max_requests_per_second,
     )
 
 
@@ -246,6 +254,7 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
                 retry_delay_ms=config.retry_delay_initial_ms,
                 retry_delay_max_ms=config.retry_delay_max_ms,
                 proxy_url=config.http_proxy_url,
+                max_requests_per_second=config.max_requests_per_second,
             )
 
         if KrakenProductType.FUTURES in product_types:
@@ -259,6 +268,7 @@ class KrakenLiveDataClientFactory(LiveDataClientFactory):
                 retry_delay_ms=config.retry_delay_initial_ms,
                 retry_delay_max_ms=config.retry_delay_max_ms,
                 proxy_url=config.http_proxy_url,
+                max_requests_per_second=config.max_requests_per_second,
             )
 
         provider = get_cached_kraken_instrument_provider(
@@ -337,6 +347,7 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
                 retry_delay_ms=config.retry_delay_initial_ms,
                 retry_delay_max_ms=config.retry_delay_max_ms,
                 proxy_url=config.http_proxy_url,
+                max_requests_per_second=config.max_requests_per_second,
             )
 
         if KrakenProductType.FUTURES in product_types:
@@ -350,6 +361,7 @@ class KrakenLiveExecClientFactory(LiveExecClientFactory):
                 retry_delay_ms=config.retry_delay_initial_ms,
                 retry_delay_max_ms=config.retry_delay_max_ms,
                 proxy_url=config.http_proxy_url,
+                max_requests_per_second=config.max_requests_per_second,
             )
 
         provider = get_cached_kraken_instrument_provider(

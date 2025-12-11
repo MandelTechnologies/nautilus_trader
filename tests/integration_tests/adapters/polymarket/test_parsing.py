@@ -21,12 +21,16 @@ import pytest
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MAX_PRICE
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MIN_PRICE
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderStatus
+from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderType
 from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketBookLevel
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketBookSnapshot
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketQuotes
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTickSizeChange
 from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTrade
+from nautilus_trader.adapters.polymarket.schemas.user import PolymarketOpenOrder
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserOrder
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketUserTrade
 from nautilus_trader.backtest.engine import BacktestEngine
@@ -618,3 +622,39 @@ def test_parse_empty_book_snapshot_in_backtest_engine():
 
     # Assert - should complete without crashing
     engine.run()
+
+
+def test_parse_open_order_to_order_status_report_ts_accepted():
+    # Arrange
+    # created_at "1725842520" is in seconds (September 9, 2024)
+    open_order = PolymarketOpenOrder(
+        associate_trades=None,
+        id="0x0f76f4dc6eaf3332f4100f2e8a0b4a927351dd64646b7bb12f37df775c657a78",
+        status=PolymarketOrderStatus.LIVE,
+        market="0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        original_size="5",
+        outcome="Yes",
+        maker_address="0xa3D82Ed56F4c68d2328Fb8c29e568Ba2cAF7d7c8",
+        owner="3e2c94ca-8124-c4c1-c7ea-be1ea21b71fe",
+        price="0.513",
+        side=PolymarketOrderSide.BUY,
+        size_matched="0",
+        asset_id="21742633143463906290569050155826241533067272736897614950488156847949938836455",
+        expiration="0",
+        order_type=PolymarketOrderType.GTC,
+        created_at=1725842520,
+    )
+    instrument = TestInstrumentProvider.binary_option()
+    account_id = AccountId("POLYMARKET-001")
+
+    # Act
+    report = open_order.parse_to_order_status_report(
+        account_id=account_id,
+        instrument=instrument,
+        client_order_id=None,
+        ts_init=0,
+    )
+
+    # Assert - created_at in seconds should convert to nanoseconds
+    assert report.ts_accepted == 1725842520000000000
+    assert report.ts_last == 1725842520000000000

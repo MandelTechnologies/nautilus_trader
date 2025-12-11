@@ -1010,6 +1010,24 @@ tests/integration_tests/adapters/your_adapter/
 All adapter documentation—module-level docs, doc comments, and inline comments—should follow the [Documentation Style Guide](docs.md).
 Consistent documentation helps maintainers and users understand adapter behavior without reading implementation details.
 
+### Rust documentation requirements
+
+Every Rust module, struct, and public method must have documentation comments.
+Use third-person declarative voice (e.g., "Returns the account ID" not "Return the account ID").
+
+- **Modules**: Use `//!` doc comments at the top of each file (after the license header) to describe the module's purpose.
+- **Structs**: Use `///` doc comments above struct definitions. Keep descriptions concise—one sentence is often sufficient.
+- **Public methods**: Every `pub fn` and `pub async fn` must have a `///` doc comment describing what the method does.
+  Do not document individual parameters in a separate `# Arguments` section—the type signatures and names should be self-explanatory.
+  Parameters may be mentioned in the description when behavior is complex or non-obvious.
+
+**What NOT to document**:
+
+- Private methods and fields (unless complex logic warrants it).
+- Individual parameters/arguments (use descriptive names instead).
+- Implementation details that are obvious from the code.
+- Files in the `python/` module (PyO3 bindings)—documentation conventions are TBD (*may* use numpydoc specification).
+
 ---
 
 ## Python adapter layer

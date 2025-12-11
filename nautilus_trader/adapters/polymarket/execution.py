@@ -616,9 +616,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
             params.asset_id = asset_id
 
         if command.start is not None:
-            params.after = int(nanos_to_secs(command.start))
+            params.after = int(command.start.timestamp())
         if command.end is not None:
-            params.before = int(nanos_to_secs(command.end))
+            params.before = int(command.end.timestamp())
 
         details = []
         if command.instrument_id:

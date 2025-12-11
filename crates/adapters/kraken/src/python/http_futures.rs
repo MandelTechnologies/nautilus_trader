@@ -232,6 +232,24 @@ impl KrakenFuturesHttpClient {
         })
     }
 
+    #[pyo3(name = "request_account_state")]
+    fn py_request_account_state<'py>(
+        &self,
+        py: Python<'py>,
+        account_id: AccountId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let account_state = client
+                .request_account_state(account_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+
+            Python::attach(|py| account_state.into_pyobject(py).map(|o| o.unbind()))
+        })
+    }
+
     #[pyo3(name = "request_order_status_reports")]
     #[pyo3(signature = (account_id, instrument_id=None, start=None, end=None, open_only=false))]
     fn py_request_order_status_reports<'py>(
@@ -360,6 +378,38 @@ impl KrakenFuturesHttpClient {
         })
     }
 
+    #[pyo3(name = "modify_order")]
+    #[pyo3(signature = (instrument_id, client_order_id=None, venue_order_id=None, quantity=None, price=None, trigger_price=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn py_modify_order<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+        quantity: Option<Quantity>,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let new_venue_order_id = client
+                .modify_order(
+                    instrument_id,
+                    client_order_id,
+                    venue_order_id,
+                    quantity,
+                    price,
+                    trigger_price,
+                )
+                .await
+                .map_err(to_pyruntime_err)?;
+
+            Python::attach(|py| new_venue_order_id.into_pyobject(py).map(|o| o.unbind()))
+        })
+    }
+
     #[pyo3(name = "cancel_order")]
     #[pyo3(signature = (account_id, instrument_id, client_order_id=None, venue_order_id=None))]
     fn py_cancel_order<'py>(
@@ -401,7 +451,6 @@ impl KrakenFuturesHttpClient {
         })
     }
 
-    /// Cancel multiple orders in a single batch request.
     #[pyo3(name = "cancel_orders_batch")]
     fn py_cancel_orders_batch<'py>(
         &self,
@@ -415,24 +464,6 @@ impl KrakenFuturesHttpClient {
                 .cancel_orders_batch(venue_order_ids)
                 .await
                 .map_err(to_pyruntime_err)
-        })
-    }
-
-    #[pyo3(name = "request_account_state")]
-    fn py_request_account_state<'py>(
-        &self,
-        py: Python<'py>,
-        account_id: AccountId,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
-
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let account_state = client
-                .request_account_state(account_id)
-                .await
-                .map_err(to_pyruntime_err)?;
-
-            Python::attach(|py| account_state.into_pyobject(py).map(|o| o.unbind()))
         })
     }
 }

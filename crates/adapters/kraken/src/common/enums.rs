@@ -19,6 +19,7 @@ use nautilus_model::enums::{OrderSide, OrderStatus, OrderType};
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumString, FromRepr};
 
+/// Kraken API environment (mainnet or demo).
 #[derive(
     Clone,
     Copy,
@@ -52,6 +53,7 @@ pub enum KrakenEnvironment {
     Demo,
 }
 
+/// Kraken product type (spot or futures).
 #[derive(
     Clone,
     Copy,
@@ -85,6 +87,7 @@ pub enum KrakenProductType {
     Futures,
 }
 
+/// Kraken spot order type.
 #[derive(
     Clone,
     Copy,
@@ -125,6 +128,7 @@ pub enum KrakenOrderType {
     SettlePosition,
 }
 
+/// Kraken order side (buy or sell).
 #[derive(
     Clone,
     Copy,
@@ -150,6 +154,7 @@ pub enum KrakenOrderSide {
     Sell,
 }
 
+/// Kraken time-in-force for orders.
 #[derive(
     Clone,
     Copy,
@@ -182,6 +187,7 @@ pub enum KrakenTimeInForce {
     GoodTilDate,
 }
 
+/// Kraken order status.
 #[derive(
     Clone,
     Copy,
@@ -210,6 +216,7 @@ pub enum KrakenOrderStatus {
     Expired,
 }
 
+/// Kraken position side (long or short).
 #[derive(
     Clone,
     Copy,
@@ -235,6 +242,7 @@ pub enum KrakenPositionSide {
     Short,
 }
 
+/// Kraken trading pair status.
 #[derive(
     Clone,
     Copy,
@@ -271,6 +279,7 @@ pub enum KrakenPairStatus {
     ReduceOnly,
 }
 
+/// Kraken system status.
 #[derive(
     Clone,
     Copy,
@@ -302,6 +311,7 @@ pub enum KrakenSystemStatus {
     PostOnly,
 }
 
+/// Kraken asset class.
 #[derive(
     Clone,
     Copy,
@@ -326,6 +336,7 @@ pub enum KrakenAssetClass {
     Currency,
 }
 
+/// Kraken futures order type.
 #[derive(
     Clone,
     Copy,
@@ -403,6 +414,7 @@ pub enum KrakenFuturesOrderEventType {
     Edit,
 }
 
+/// Kraken futures order status.
 #[derive(
     Clone,
     Copy,
@@ -431,6 +443,7 @@ pub enum KrakenFuturesOrderStatus {
     Expired,
 }
 
+/// Kraken futures trigger signal type.
 #[derive(
     Clone,
     Copy,
@@ -449,11 +462,13 @@ pub enum KrakenFuturesOrderStatus {
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", eq, eq_int)
 )]
-#[serde(rename_all = "lowercase")]
 #[strum(ascii_case_insensitive, serialize_all = "lowercase")]
 pub enum KrakenTriggerSignal {
+    #[serde(rename = "last", alias = "last_price")]
     Last,
+    #[serde(rename = "mark", alias = "mark_price")]
     Mark,
+    #[serde(rename = "index", alias = "index_price")]
     Index,
 }
 
@@ -485,6 +500,7 @@ pub enum KrakenSpotTrigger {
     Index,
 }
 
+/// Kraken fill type (maker or taker).
 #[derive(
     Clone,
     Copy,
@@ -510,6 +526,7 @@ pub enum KrakenFillType {
     Taker,
 }
 
+/// Kraken API result status.
 #[derive(
     Clone,
     Copy,

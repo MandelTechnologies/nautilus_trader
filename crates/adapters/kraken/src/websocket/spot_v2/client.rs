@@ -52,6 +52,7 @@ use crate::{
 
 const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
 
+/// WebSocket client for the Kraken Spot v2 streaming API.
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
@@ -92,6 +93,7 @@ impl Clone for KrakenSpotWebSocketClient {
 }
 
 impl KrakenSpotWebSocketClient {
+    /// Creates a new client with the given configuration.
     pub fn new(config: KrakenDataClientConfig, cancellation_token: CancellationToken) -> Self {
         // Prefer private URL if explicitly set (for authenticated endpoints)
         let url = if config.ws_private_url.is_some() {
@@ -125,6 +127,7 @@ impl KrakenSpotWebSocketClient {
         *counter
     }
 
+    /// Connects to the WebSocket server.
     pub async fn connect(&mut self) -> Result<(), KrakenWsError> {
         tracing::debug!("Connecting to {}", self.url);
 
@@ -359,6 +362,7 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Disconnects from the WebSocket server.
     pub async fn disconnect(&mut self) -> Result<(), KrakenWsError> {
         tracing::debug!("Disconnecting WebSocket");
 
@@ -406,10 +410,12 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Closes the WebSocket connection.
     pub async fn close(&mut self) -> Result<(), KrakenWsError> {
         self.disconnect().await
     }
 
+    /// Waits until the connection is active or timeout.
     pub async fn wait_until_active(&self, timeout_secs: f64) -> Result<(), KrakenWsError> {
         let timeout = tokio::time::Duration::from_secs_f64(timeout_secs);
 
@@ -428,6 +434,7 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Authenticates with the Kraken API to enable private subscriptions.
     pub async fn authenticate(&self) -> Result<(), KrakenWsError> {
         if !self.config.has_api_credentials() {
             return Err(KrakenWsError::AuthenticationError(
@@ -477,6 +484,7 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Caches multiple instruments for symbol lookup.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         // Before connect() the handler isn't running; this send will fail and that's expected
         if let Ok(cmd_tx) = self.cmd_tx.try_read()
@@ -486,6 +494,7 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
+    /// Caches a single instrument for symbol lookup.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         // Before connect() the handler isn't running; this send will fail and that's expected
         if let Ok(cmd_tx) = self.cmd_tx.try_read()
@@ -507,7 +516,7 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
-    /// Cache order info for order tracking.
+    /// Caches order info for order tracking.
     ///
     /// This should be called BEFORE submitting an order via HTTP to handle the
     /// race condition where WebSocket execution messages arrive before the
@@ -531,14 +540,17 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
+    /// Cancels all pending requests.
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
 
+    /// Subscribes to a channel for the given symbols.
     pub async fn subscribe(
         &self,
         channel: KrakenWsChannel,
@@ -598,6 +610,7 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Unsubscribes from a channel for the given symbols.
     pub async fn unsubscribe(
         &self,
         channel: KrakenWsChannel,
@@ -662,6 +675,7 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Sends a ping message to keep the connection alive.
     pub async fn send_ping(&self) -> Result<(), KrakenWsError> {
         let req_id = self.get_next_req_id().await;
 
@@ -689,31 +703,37 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
+    /// Returns true if connected (not closed).
     pub fn is_connected(&self) -> bool {
         let connection_mode_arc = self.connection_mode.load();
         !ConnectionMode::from_atomic(&connection_mode_arc).is_closed()
     }
 
+    /// Returns true if the connection is active.
     pub fn is_active(&self) -> bool {
         let connection_mode_arc = self.connection_mode.load();
         ConnectionMode::from_atomic(&connection_mode_arc).is_active()
             && !self.signal.load(Ordering::Relaxed)
     }
 
+    /// Returns true if the connection is closed.
     pub fn is_closed(&self) -> bool {
         let connection_mode_arc = self.connection_mode.load();
         ConnectionMode::from_atomic(&connection_mode_arc).is_closed()
             || self.signal.load(Ordering::Relaxed)
     }
 
+    /// Returns the WebSocket URL.
     pub fn url(&self) -> &str {
         &self.url
     }
 
+    /// Returns all active subscriptions.
     pub fn get_subscriptions(&self) -> Vec<String> {
         self.subscriptions.all_topics()
     }
 
+    /// Returns a stream of WebSocket messages.
     pub fn stream(&mut self) -> impl futures_util::Stream<Item = NautilusWsMessage> + use<> {
         let rx = self
             .out_rx
@@ -727,7 +747,7 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
-    /// Subscribe to order book updates for the given instrument.
+    /// Subscribes to order book updates for the given instrument.
     pub async fn subscribe_book(
         &self,
         instrument_id: InstrumentId,
@@ -748,7 +768,7 @@ impl KrakenSpotWebSocketClient {
             .await
     }
 
-    /// Subscribe to quote updates for the given instrument.
+    /// Subscribes to quote updates for the given instrument.
     ///
     /// Uses the order book channel with depth 10 for low-latency top-of-book quotes
     /// instead of the throttled ticker feed.
@@ -765,19 +785,21 @@ impl KrakenSpotWebSocketClient {
         self.ensure_book_subscribed(symbol).await
     }
 
+    /// Subscribes to trade updates for the given instrument.
     pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol.inner();
         self.subscribe(KrakenWsChannel::Trade, vec![symbol], None)
             .await
     }
 
+    /// Subscribes to bar/OHLC updates for the given bar type.
     pub async fn subscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
         let symbol = bar_type.instrument_id().symbol.inner();
         self.subscribe(KrakenWsChannel::Ohlc, vec![symbol], None)
             .await
     }
 
-    /// Subscribe to execution updates (order and fill events).
+    /// Subscribes to execution updates (order and fill events).
     ///
     /// Requires authentication - call `authenticate()` first.
     pub async fn subscribe_executions(
@@ -819,7 +841,7 @@ impl KrakenSpotWebSocketClient {
         Ok(())
     }
 
-    /// Unsubscribe from order book updates for the given instrument.
+    /// Unsubscribes from order book updates for the given instrument.
     ///
     /// Note: Will only actually unsubscribe if quotes are not also subscribed.
     pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
@@ -835,7 +857,7 @@ impl KrakenSpotWebSocketClient {
         self.maybe_unsubscribe_book(symbol).await
     }
 
-    /// Unsubscribe from quote updates for the given instrument.
+    /// Unsubscribes from quote updates for the given instrument.
     pub async fn unsubscribe_quotes(
         &self,
         instrument_id: InstrumentId,
@@ -852,6 +874,7 @@ impl KrakenSpotWebSocketClient {
         self.maybe_unsubscribe_book(symbol).await
     }
 
+    /// Unsubscribes from trade updates for the given instrument.
     pub async fn unsubscribe_trades(
         &self,
         instrument_id: InstrumentId,
@@ -860,12 +883,13 @@ impl KrakenSpotWebSocketClient {
         self.unsubscribe(KrakenWsChannel::Trade, vec![symbol]).await
     }
 
+    /// Unsubscribes from bar/OHLC updates for the given bar type.
     pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
         let symbol = bar_type.instrument_id().symbol.inner();
         self.unsubscribe(KrakenWsChannel::Ohlc, vec![symbol]).await
     }
 
-    /// Ensure book channel is subscribed for the given symbol (used internally by quotes).
+    /// Ensures book channel is subscribed for the given symbol (used internally by quotes).
     ///
     /// Reference counting is handled by `subscribe` method.
     async fn ensure_book_subscribed(&self, symbol: Ustr) -> Result<(), KrakenWsError> {
@@ -873,7 +897,7 @@ impl KrakenSpotWebSocketClient {
             .await
     }
 
-    /// Unsubscribe from book channel if no more dependent subscriptions.
+    /// Unsubscribes from book channel if no more dependent subscriptions.
     ///
     /// Reference counting is handled by `unsubscribe` method.
     async fn maybe_unsubscribe_book(&self, symbol: Ustr) -> Result<(), KrakenWsError> {

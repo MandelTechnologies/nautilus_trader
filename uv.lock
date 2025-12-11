@@ -1664,7 +1664,7 @@ requires-dist = [
     { name = "plotly", marker = "extra == 'visualization'", specifier = ">=6.3.1,<7.0.0" },
     { name = "portion", specifier = ">=2.6.1" },
     { name = "protobuf", marker = "python_full_version < '3.14' and extra == 'dydx'", specifier = "==5.29.5" },
-    { name = "py-clob-client", marker = "extra == 'polymarket'", specifier = "==0.30.0,<1.0.0" },
+    { name = "py-clob-client", marker = "extra == 'polymarket'", specifier = "==0.31.0,<1.0.0" },
     { name = "pyarrow", specifier = ">=21.0.0" },
     { name = "pycryptodome", marker = "python_full_version < '3.14' and extra == 'dydx'", specifier = ">=3.20.0,<4.0.0" },
     { name = "pytz", specifier = ">=2025.2.0" },
@@ -2092,7 +2092,7 @@ wheels = [
 
 [[package]]
 name = "py-clob-client"
-version = "0.30.0"
+version = "0.31.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "eth-account" },
@@ -2103,9 +2103,9 @@ dependencies = [
     { name = "py-order-utils" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1f/78/d9e6ac9fac4a4bd6c418ae8e88d33c101e0483d10579918b339ab5ee18fb/py_clob_client-0.30.0.tar.gz", hash = "sha256:179463b891abe26e950fc2cebd60523ad56c71cfdd3ec300d34c4e03eb04ec0e", size = 29569, upload-time = "2025-12-05T04:26:51.348Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/e4/10a783730fcb32206b853f2e0c8702bc60688655b076000c97898c1b19a5/py_clob_client-0.31.0.tar.gz", hash = "sha256:35ddeb89ecb68b9264f22c011ce4a5db520befc8c5be04729bf878d41f8edea4", size = 36837, upload-time = "2025-12-09T21:51:25.288Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/2f/8e2219c869c2784f91db769b21417deb12db7a900ce75224c84ff86677c3/py_clob_client-0.30.0-py3-none-any.whl", hash = "sha256:3b465225846a6da6a2d75406dfc84d62913583e7519ceab97537b86e12d0da66", size = 33145, upload-time = "2025-12-05T04:26:50.085Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/70/360271b18605c871cf9d9d0400803cb24b5bf117a331c1b43d994e09da9c/py_clob_client-0.31.0-py3-none-any.whl", hash = "sha256:ec897aeabfe5da44b87c1ff7096009501098f27ee6d4166336f4f3c70662da9d", size = 42039, upload-time = "2025-12-09T21:51:24.245Z" },
 ]
 
 [[package]]

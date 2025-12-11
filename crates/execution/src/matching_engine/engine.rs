@@ -1772,7 +1772,8 @@ impl OrderMatchingEngine {
     ) {
         match self.cached_filled_qty.get(&order.client_order_id()) {
             Some(filled_qty) => {
-                let leaves_qty = order.quantity() - *filled_qty;
+                // Use saturating_sub to prevent panic if filled_qty > quantity
+                let leaves_qty = order.quantity().saturating_sub(*filled_qty);
                 let last_qty = min(last_qty, leaves_qty);
                 let new_filled_qty = *filled_qty + last_qty;
                 // update cached filled qty
@@ -2310,6 +2311,27 @@ impl OrderMatchingEngine {
         let update_contingencies = update_contingencies.unwrap_or(true);
         let quantity = quantity.unwrap_or(order.quantity());
 
+        // Use cached_filled_qty since PassiveOrderAny in core is not updated with fills
+        let filled_qty = self
+            .cached_filled_qty
+            .get(&order.client_order_id())
+            .copied()
+            .unwrap_or(order.filled_qty());
+        if quantity < filled_qty {
+            self.generate_order_modify_rejected(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                Ustr::from(&format!(
+                    "Cannot reduce order quantity {quantity} below filled quantity {filled_qty}",
+                )),
+                order.venue_order_id(),
+                order.account_id(),
+            );
+            return;
+        }
+
         match order {
             OrderAny::Limit(_) | OrderAny::MarketToLimit(_) => {
                 let price = price.unwrap_or(order.price().unwrap());
@@ -2351,6 +2373,22 @@ impl OrderMatchingEngine {
             }
         }
 
+        // If order now has zero leaves after update, cancel it
+        let new_leaves_qty = quantity.saturating_sub(filled_qty);
+        if new_leaves_qty.is_zero() {
+            if self.config.support_contingent_orders
+                && order
+                    .contingency_type()
+                    .is_some_and(|c| c != ContingencyType::NoContingency)
+                && update_contingencies
+            {
+                self.update_contingent_order(order);
+            }
+            // Pass false since we already handled contingents above
+            self.cancel_order(order, Some(false));
+            return;
+        }
+
         if self.config.support_contingent_orders
             && order
                 .contingency_type()
@@ -2368,6 +2406,13 @@ impl OrderMatchingEngine {
     fn update_contingent_order(&mut self, order: &OrderAny) {
         log::debug!("Updating OUO orders from {}", order.client_order_id());
         if let Some(linked_order_ids) = order.linked_order_ids() {
+            let parent_filled_qty = self
+                .cached_filled_qty
+                .get(&order.client_order_id())
+                .copied()
+                .unwrap_or(order.filled_qty());
+            let parent_leaves_qty = order.quantity().saturating_sub(parent_filled_qty);
+
             for client_order_id in linked_order_ids {
                 let mut child_order = match self.cache.borrow().order(client_order_id) {
                     Some(order) => order.clone(),
@@ -2378,18 +2423,30 @@ impl OrderMatchingEngine {
                     continue;
                 }
 
-                if order.leaves_qty().is_zero() {
-                    self.cancel_order(&child_order, None);
-                } else if child_order.leaves_qty() != order.leaves_qty() {
-                    let price = child_order.price();
-                    let trigger_price = child_order.trigger_price();
-                    self.update_order(
-                        &mut child_order,
-                        Some(order.leaves_qty()),
-                        price,
-                        trigger_price,
-                        Some(false),
-                    );
+                let child_filled_qty = self
+                    .cached_filled_qty
+                    .get(&child_order.client_order_id())
+                    .copied()
+                    .unwrap_or(child_order.filled_qty());
+
+                if parent_leaves_qty.is_zero() {
+                    self.cancel_order(&child_order, Some(false));
+                } else if child_filled_qty >= parent_leaves_qty {
+                    // Child already filled beyond parent's remaining qty, cancel it
+                    self.cancel_order(&child_order, Some(false));
+                } else {
+                    let child_leaves_qty = child_order.quantity().saturating_sub(child_filled_qty);
+                    if child_leaves_qty != parent_leaves_qty {
+                        let price = child_order.price();
+                        let trigger_price = child_order.trigger_price();
+                        self.update_order(
+                            &mut child_order,
+                            Some(parent_leaves_qty),
+                            price,
+                            trigger_price,
+                            Some(false),
+                        );
+                    }
                 }
             }
         }

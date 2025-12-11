@@ -5950,6 +5950,8 @@ cdef class OrderMatchingEngine:
         cdef:
             Order ro_order
             Order parent_order
+            Quantity cached_ro_filled
+            Quantity cached_parent_filled
             Quantity target_qty
         for ro_order in self.cache.orders_for_position(position.id):
             if (
@@ -5958,33 +5960,36 @@ cdef class OrderMatchingEngine:
                 and ro_order.is_open_c()
                 and ro_order.is_passive_c()
             ):
+                # Skip the order being filled - it's already being processed
+                if ro_order.client_order_id == order.client_order_id:
+                    continue
+
                 if position.quantity._mem.raw == 0:
                     self.cancel_order(ro_order)
                     continue
 
-                # Determine target quantity for this reduce-only order
-                parent_order = None
+                # Order object may not be updated yet with fills
+                cached_ro_filled = self._cached_filled_qty.get(ro_order.client_order_id, ro_order.filled_qty)
 
+                # Use Quantity objects for comparisons to handle precision correctly
+                parent_order = None
                 if ro_order.parent_order_id is not None:
                     parent_order = self.cache.order(ro_order.parent_order_id)
 
-                # Start with position quantity as default
                 target_qty = position.quantity
 
                 if parent_order is not None:
-                    # Use the minimum of parent's filled quantity and position quantity
-                    # This ensures bracket independence while respecting position reductions
-                    if parent_order.filled_qty._mem.raw < position.quantity._mem.raw:
-                        target_qty = parent_order.filled_qty
-                    else:
-                        target_qty = position.quantity
+                    cached_parent_filled = self._cached_filled_qty.get(parent_order.client_order_id, parent_order.filled_qty)
+
+                    # Use minimum of parent's filled qty and position qty
+                    if cached_parent_filled < position.quantity:
+                        target_qty = cached_parent_filled
 
                 # Safety clamp: never update total below what's already filled
-                # This avoids invalid updates or modify-rejects
-                if ro_order.filled_qty._mem.raw > target_qty._mem.raw:
-                    target_qty = ro_order.filled_qty
+                if cached_ro_filled > target_qty:
+                    target_qty = cached_ro_filled
 
-                if ro_order.quantity._mem.raw != target_qty._mem.raw:
+                if ro_order.quantity != target_qty:
                     self.update_order(
                         ro_order,
                         target_qty,
@@ -6114,6 +6119,20 @@ cdef class OrderMatchingEngine:
         if qty is None:
             qty = order.quantity
 
+        # Use _cached_filled_qty since order object may not have updated filled_qty
+        cdef Quantity filled_qty = self._cached_filled_qty.get(order.client_order_id, order.filled_qty)
+        if qty < filled_qty:
+            self._generate_order_modify_rejected(
+                trader_id=order.trader_id,
+                strategy_id=order.strategy_id,
+                account_id=order.account_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                reason=f"Cannot reduce order quantity {qty} below filled quantity {filled_qty}",
+            )
+            return
+
         if order.order_type == OrderType.LIMIT or order.order_type == OrderType.MARKET_TO_LIMIT:
             if price is None:
                 price = order.price
@@ -6162,6 +6181,15 @@ cdef class OrderMatchingEngine:
             raise ValueError(
                 f"invalid `OrderType` was {order.order_type}")  # pragma: no cover (design-time error)
 
+        # If order now has zero leaves after update, cancel it
+        cdef uint64_t new_leaves_raw = qty._mem.raw - filled_qty._mem.raw if qty._mem.raw > filled_qty._mem.raw else 0
+        if new_leaves_raw == 0:
+            if self._support_contingent_orders and order.contingency_type != ContingencyType.NO_CONTINGENCY and update_contingencies:
+                self._update_contingent_orders(order)
+            # Pass False since we already handled contingents above
+            self.cancel_order(order, cancel_contingencies=False)
+            return
+
         if self._support_contingent_orders and order.contingency_type != ContingencyType.NO_CONTINGENCY and update_contingencies:
             self._update_contingent_orders(order)
 
@@ -6208,8 +6236,14 @@ cdef class OrderMatchingEngine:
 
     cdef void _update_contingent_orders(self, Order order):
         self._log.debug(f"Updating OUO orders from {order.client_order_id}", LogColor.MAGENTA)
+
+        cdef Quantity parent_filled_qty = self._cached_filled_qty.get(order.client_order_id, order.filled_qty)
+        cdef uint64_t parent_leaves_raw = order.quantity._mem.raw - parent_filled_qty._mem.raw if order.quantity._mem.raw > parent_filled_qty._mem.raw else 0
+
         cdef ClientOrderId client_order_id
         cdef Order ouo_order
+        cdef Quantity child_filled_qty
+        cdef uint64_t child_leaves_raw
         for client_order_id in order.linked_order_ids or []:
             ouo_order = self.cache.order(client_order_id)
             assert ouo_order is not None, "OUO order not found"
@@ -6220,16 +6254,23 @@ cdef class OrderMatchingEngine:
             if ouo_order.order_type == OrderType.MARKET or ouo_order.is_closed_c():
                 continue
 
-            if order.leaves_qty._mem.raw == 0:
-                self.cancel_order(ouo_order)
-            elif ouo_order.leaves_qty._mem.raw != order.leaves_qty._mem.raw:
-                self.update_order(
-                    ouo_order,
-                    order.leaves_qty,
-                    price=ouo_order.price if ouo_order.has_price_c() else None,
-                    trigger_price=ouo_order.trigger_price if ouo_order.has_trigger_price_c() else None,
-                    update_contingencies=False,
-                )
+            child_filled_qty = self._cached_filled_qty.get(ouo_order.client_order_id, ouo_order.filled_qty)
+
+            if parent_leaves_raw == 0:
+                self.cancel_order(ouo_order, cancel_contingencies=False)
+            elif child_filled_qty._mem.raw >= parent_leaves_raw:
+                # Child already filled beyond parent's remaining qty, cancel it
+                self.cancel_order(ouo_order, cancel_contingencies=False)
+            else:
+                child_leaves_raw = ouo_order.quantity._mem.raw - child_filled_qty._mem.raw if ouo_order.quantity._mem.raw > child_filled_qty._mem.raw else 0
+                if child_leaves_raw != parent_leaves_raw:
+                    self.update_order(
+                        ouo_order,
+                        Quantity.from_raw_c(parent_leaves_raw, order.quantity._mem.precision),
+                        price=ouo_order.price if ouo_order.has_price_c() else None,
+                        trigger_price=ouo_order.trigger_price if ouo_order.has_trigger_price_c() else None,
+                        update_contingencies=False,
+                    )
 
     cdef void _cancel_contingent_orders(self, Order order):
         # Iterate all contingent orders and cancel if active

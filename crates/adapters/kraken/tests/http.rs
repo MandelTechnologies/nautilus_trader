@@ -54,11 +54,23 @@ use nautilus_network::http::HttpClient;
 use rstest::rstest;
 use serde_json::Value;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct TestServerState {
-    request_count: Arc<AtomicUsize>,
+    open_orders_count: Arc<AtomicUsize>,
+    rate_limit_after: Arc<AtomicUsize>,
     last_trades_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
     last_ohlc_query: Arc<tokio::sync::Mutex<Option<HashMap<String, String>>>>,
+}
+
+impl Default for TestServerState {
+    fn default() -> Self {
+        Self {
+            open_orders_count: Arc::new(AtomicUsize::new(0)),
+            rate_limit_after: Arc::new(AtomicUsize::new(usize::MAX)), // No rate limit
+            last_trades_query: Arc::new(tokio::sync::Mutex::new(None)),
+            last_ohlc_query: Arc::new(tokio::sync::Mutex::new(None)),
+        }
+    }
 }
 
 /// Wait for the test server to be ready by polling a health endpoint.
@@ -280,7 +292,14 @@ async fn mock_futures_candles(req: Request) -> Response {
     }
 }
 
-async fn mock_open_orders() -> Response {
+async fn mock_open_orders(state: Arc<TestServerState>) -> Response {
+    let count = state.open_orders_count.fetch_add(1, Ordering::SeqCst) + 1;
+    let limit = state.rate_limit_after.load(Ordering::SeqCst);
+
+    if count > limit {
+        return mock_rate_limit_error().await;
+    }
+
     let data = load_test_data("http_open_orders.json");
     Response::builder()
         .status(StatusCode::OK)
@@ -391,8 +410,6 @@ async fn mock_futures_public_executions() -> Response {
 }
 
 async fn mock_handler(req: Request, state: Arc<TestServerState>) -> Response {
-    state.request_count.fetch_add(1, Ordering::Relaxed);
-
     let path = req.uri().path();
 
     if path.starts_with("/derivatives/api/v3/") {
@@ -448,7 +465,7 @@ async fn mock_handler(req: Request, state: Arc<TestServerState>) -> Response {
             mock_trades(query, state.clone()).await
         }
         "/0/private/GetWebSocketsToken" => mock_websockets_token(req.headers().clone()).await,
-        "/0/private/OpenOrders" => mock_open_orders().await,
+        "/0/private/OpenOrders" => mock_open_orders(state.clone()).await,
         "/0/private/ClosedOrders" => mock_closed_orders().await,
         "/0/private/TradesHistory" => mock_trades_history().await,
         "/0/private/AddOrder" => mock_add_order_spot().await,
@@ -985,43 +1002,6 @@ async fn test_spot_domain_request_bars() {
 
     let bars = result.unwrap();
     assert!(!bars.is_empty());
-}
-
-#[rstest]
-#[tokio::test]
-async fn test_spot_raw_multiple_requests_increment_count() {
-    let state = Arc::new(TestServerState::default());
-    let app = create_router(state.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    wait_for_server(addr, "/0/public/Time").await;
-
-    let client = KrakenSpotRawHttpClient::new(
-        KrakenEnvironment::Mainnet,
-        Some(base_url),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-
-    let initial_count = state.request_count.load(Ordering::Relaxed);
-
-    client.get_server_time().await.unwrap();
-    client.get_system_status().await.unwrap();
-    client.get_asset_pairs(None).await.unwrap();
-
-    let final_count = state.request_count.load(Ordering::Relaxed);
-    assert_eq!(final_count - initial_count, 3);
 }
 
 // =============================================================================
@@ -1777,4 +1757,99 @@ async fn test_futures_raw_cancel_order() {
     let response = result.unwrap();
     assert_eq!(response.result, KrakenApiResult::Success);
     assert_eq!(response.cancel_status.status, KrakenSendStatus::Cancelled);
+}
+
+// =============================================================================
+// HTTP Error Handling Tests
+// =============================================================================
+
+#[rstest]
+#[tokio::test]
+async fn test_spot_raw_rate_limit_error() {
+    let state = Arc::new(TestServerState::default());
+    state.rate_limit_after.store(3, Ordering::SeqCst);
+
+    let app = create_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    wait_for_server(addr, "/0/public/Time").await;
+
+    // API secret must be base64-encoded
+    let api_secret = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "secret");
+    let client = KrakenSpotRawHttpClient::with_credentials(
+        "test_key".to_string(),
+        api_secret,
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let mut last_error = None;
+    for _ in 0..10 {
+        match client.get_open_orders(None, None).await {
+            Ok(_) => continue,
+            Err(e) => {
+                last_error = Some(e);
+                break;
+            }
+        }
+    }
+
+    assert!(last_error.is_some(), "Expected rate limit error");
+    let error = last_error.unwrap();
+    assert!(
+        error.to_string().contains("Rate limit")
+            || error.to_string().contains("429")
+            || error.to_string().contains("TOO_MANY"),
+        "Expected rate limit error message, got: {error}"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_spot_raw_api_error_response() {
+    let state = Arc::new(TestServerState::default());
+    let app = create_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base_url = format!("http://{addr}");
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    wait_for_server(addr, "/0/public/Time").await;
+
+    let client = KrakenSpotRawHttpClient::new(
+        KrakenEnvironment::Mainnet,
+        Some(base_url),
+        Some(10),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let result = client.get_websockets_token().await;
+    assert!(result.is_err());
+
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("credentials") || error.to_string().contains("Missing"),
+        "Expected credentials error, got: {error}"
+    );
 }

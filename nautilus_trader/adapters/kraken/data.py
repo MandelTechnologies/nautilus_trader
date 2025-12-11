@@ -117,7 +117,8 @@ class KrakenDataClient(LiveMarketDataClient):
         self._log.info(f"product_types={self._product_types}", LogColor.BLUE)
         self._log.info(f"{config.base_url_http_spot=}", LogColor.BLUE)
         self._log.info(f"{config.base_url_http_futures=}", LogColor.BLUE)
-        self._log.info(f"{config.base_url_ws=}", LogColor.BLUE)
+        self._log.info(f"{config.base_url_ws_spot=}", LogColor.BLUE)
+        self._log.info(f"{config.base_url_ws_futures=}", LogColor.BLUE)
         self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
         self._log.info(f"{config.ws_heartbeat_secs=}", LogColor.BLUE)
 
@@ -142,7 +143,7 @@ class KrakenDataClient(LiveMarketDataClient):
         if KrakenProductType.SPOT in self._product_types:
             self._ws_client_spot = nautilus_pyo3.KrakenSpotWebSocketClient(
                 environment=environment,
-                base_url=config.base_url_ws,
+                base_url=config.base_url_ws_spot,
                 heartbeat_secs=config.ws_heartbeat_secs,
             )
             self._log.info(f"Spot WebSocket URL {self._ws_client_spot.url}", LogColor.BLUE)
@@ -153,6 +154,7 @@ class KrakenDataClient(LiveMarketDataClient):
         if KrakenProductType.FUTURES in self._product_types:
             self._ws_client_futures = nautilus_pyo3.KrakenFuturesWebSocketClient(
                 environment=environment,
+                base_url=config.base_url_ws_futures,
                 heartbeat_secs=config.ws_heartbeat_secs,
             )
             self._log.info(f"Futures WebSocket URL {self._ws_client_futures.url}", LogColor.BLUE)

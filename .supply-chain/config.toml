@@ -129,7 +129,7 @@ version = "1.1.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.alloy-chains]]
-version = "0.2.22"
+version = "0.2.23"
 criteria = "safe-to-deploy"
 
 [[exemptions.alloy-consensus]]
@@ -805,7 +805,7 @@ version = "2.9.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.databento]]
-version = "0.36.0"
+version = "0.37.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion]]
@@ -933,11 +933,11 @@ version = "51.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.dbn]]
-version = "0.44.0"
+version = "0.45.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.dbn-macros]]
-version = "0.44.0"
+version = "0.45.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.der]]
@@ -1237,19 +1237,19 @@ version = "0.1.19"
 criteria = "safe-to-deploy"
 
 [[exemptions.hypersync-client]]
-version = "0.22.0"
+version = "0.23.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.hypersync-format]]
-version = "0.6.0"
+version = "0.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.hypersync-net-types]]
-version = "0.12.2"
+version = "0.12.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.hypersync-schema]]
-version = "0.3.1"
+version = "0.4.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.iai]]
@@ -1273,11 +1273,11 @@ version = "2.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.icu_properties]]
-version = "2.1.1"
+version = "2.1.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.icu_properties_data]]
-version = "2.1.1"
+version = "2.1.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.icu_provider]]
@@ -1417,7 +1417,7 @@ version = "0.30.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.libz-rs-sys]]
-version = "0.5.3"
+version = "0.5.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.linux-raw-sys]]
@@ -2961,7 +2961,7 @@ version = "0.11.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.zlib-rs]]
-version = "0.5.3"
+version = "0.5.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.zstd]]

@@ -261,7 +261,9 @@ pub struct KrakenFuturesOpenOrder {
     pub last_update_time: i64,
     pub qty: f64,
     pub filled: f64,
-    pub limit_price: f64,
+    /// Limit price. Optional for stop/trigger orders which only have stop_price.
+    #[serde(default)]
+    pub limit_price: Option<f64>,
     #[serde(default)]
     pub stop_price: Option<f64>,
     #[serde(rename = "type")]
@@ -489,7 +491,7 @@ mod tests {
         assert!(!delta.is_cancel);
         assert_eq!(delta.order.instrument, Ustr::from("PI_XBTUSD"));
         assert_eq!(delta.order.qty, 304.0);
-        assert_eq!(delta.order.limit_price, 10640.0);
+        assert_eq!(delta.order.limit_price, Some(10640.0));
     }
 
     #[rstest]
