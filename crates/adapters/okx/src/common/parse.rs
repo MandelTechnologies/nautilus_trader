@@ -19,7 +19,7 @@ use std::str::FromStr;
 
 use nautilus_core::{
     UUID4,
-    datetime::{NANOSECONDS_IN_MILLISECOND, millis_to_nanos},
+    datetime::{NANOSECONDS_IN_MILLISECOND, millis_to_nanos_unchecked},
     nanos::UnixNanos,
 };
 use nautilus_model::{
@@ -1722,8 +1722,8 @@ pub fn parse_futures_instrument(
     let expiry_time = definition
         .exp_time
         .ok_or_else(|| anyhow::anyhow!("`exp_time` is required for {}", definition.inst_id))?;
-    let activation_ns = UnixNanos::from(millis_to_nanos(listing_time as f64));
-    let expiration_ns = UnixNanos::from(millis_to_nanos(expiry_time as f64));
+    let activation_ns = UnixNanos::from(millis_to_nanos_unchecked(listing_time as f64));
+    let expiration_ns = UnixNanos::from(millis_to_nanos_unchecked(expiry_time as f64));
 
     if definition.tick_sz.is_empty() {
         anyhow::bail!("`tick_sz` is empty for {}", definition.inst_id);
@@ -1816,8 +1816,8 @@ pub fn parse_option_instrument(
     let expiry_time = definition
         .exp_time
         .ok_or_else(|| anyhow::anyhow!("`exp_time` is required for {}", definition.inst_id))?;
-    let activation_ns = UnixNanos::from(millis_to_nanos(listing_time as f64));
-    let expiration_ns = UnixNanos::from(millis_to_nanos(expiry_time as f64));
+    let activation_ns = UnixNanos::from(millis_to_nanos_unchecked(listing_time as f64));
+    let expiration_ns = UnixNanos::from(millis_to_nanos_unchecked(expiry_time as f64));
 
     if definition.tick_sz.is_empty() {
         anyhow::bail!("`tick_sz` is empty for {}", definition.inst_id);
@@ -1987,7 +1987,7 @@ pub fn parse_account_state(
     let account_type = AccountType::Margin;
     let is_reported = true;
     let event_id = UUID4::new();
-    let ts_event = UnixNanos::from(millis_to_nanos(okx_account.u_time as f64));
+    let ts_event = UnixNanos::from(millis_to_nanos_unchecked(okx_account.u_time as f64));
 
     Ok(AccountState::new(
         account_id,

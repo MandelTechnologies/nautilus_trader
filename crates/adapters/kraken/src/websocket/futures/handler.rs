@@ -47,16 +47,17 @@ use nautilus_network::{
     websocket::{SubscriptionState, WebSocketClient},
 };
 use serde::Deserialize;
+use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
 use super::messages::{
     KrakenFuturesBookDelta, KrakenFuturesBookSnapshot, KrakenFuturesChallengeRequest,
-    KrakenFuturesEvent, KrakenFuturesFeed, KrakenFuturesFill, KrakenFuturesFillsDelta,
-    KrakenFuturesFillsSnapshot, KrakenFuturesOpenOrder, KrakenFuturesOpenOrdersCancel,
-    KrakenFuturesOpenOrdersDelta, KrakenFuturesOpenOrdersSnapshot,
+    KrakenFuturesChannel, KrakenFuturesEvent, KrakenFuturesFeed, KrakenFuturesFill,
+    KrakenFuturesFillsDelta, KrakenFuturesMessageType, KrakenFuturesOpenOrder,
+    KrakenFuturesOpenOrdersCancel, KrakenFuturesOpenOrdersDelta,
     KrakenFuturesPrivateSubscribeRequest, KrakenFuturesTickerData, KrakenFuturesTradeData,
-    KrakenFuturesTradeSnapshot, KrakenFuturesWsMessage,
+    KrakenFuturesTradeSnapshot, KrakenFuturesWsMessage, classify_futures_message,
 };
 use crate::common::enums::KrakenOrderSide;
 
@@ -211,8 +212,9 @@ impl FuturesFeedHandler {
         self.signal.load(Ordering::Relaxed)
     }
 
-    fn is_subscribed(&self, topic: &str) -> bool {
-        self.subscriptions.all_topics().iter().any(|t| t == topic)
+    fn is_subscribed(&self, channel: KrakenFuturesChannel, symbol: &Ustr) -> bool {
+        let channel_ustr = Ustr::from(channel.as_ref());
+        self.subscriptions.is_subscribed(&channel_ustr, symbol)
     }
 
     fn get_instrument(&self, symbol: &Ustr) -> Option<&InstrumentAny> {
@@ -329,14 +331,8 @@ impl FuturesFeedHandler {
                         return None;
                     }
 
-                    let text = match msg {
-                        Message::Text(text) => text.to_string(),
-                        Message::Binary(data) => {
-                            match std::str::from_utf8(&data) {
-                                Ok(s) => s.to_string(),
-                                Err(_) => continue,
-                            }
-                        }
+                    // Handle control frames first (borrow msg to avoid moving)
+                    match &msg {
                         Message::Ping(data) => {
                             let len = data.len();
                             tracing::trace!("Received ping frame with {len} bytes");
@@ -359,6 +355,17 @@ impl FuturesFeedHandler {
                             tracing::trace!("Received raw frame");
                             continue;
                         }
+                        _ => {}
+                    }
+
+                    // Extract text without allocation (Utf8Bytes derefs to &str)
+                    let text: &str = match &msg {
+                        Message::Text(text) => text,
+                        Message::Binary(data) => match std::str::from_utf8(data) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
                     };
 
                     if text == RECONNECTED {
@@ -368,7 +375,7 @@ impl FuturesFeedHandler {
                     }
 
                     let ts_init = self.clock.get_time_ns();
-                    self.parse_message(&text, ts_init);
+                    self.parse_message(text, ts_init);
 
                     // Return first pending message if any were produced
                     if let Some(msg) = self.pending_messages.pop_front() {
@@ -478,63 +485,87 @@ impl FuturesFeedHandler {
     }
 
     fn parse_message(&mut self, text: &str, ts_init: UnixNanos) {
-        // Private feeds (execution)
-        // Skip execution snapshots - REST reconciliation handles initial order/position state
-        if text.contains("\"feed\":\"open_orders_snapshot\"") {
-            tracing::debug!(
-                "Skipping open_orders_snapshot (REST reconciliation handles initial state)"
-            );
-        } else if text.contains("\"feed\":\"open_orders\"") && text.contains("\"is_cancel\":true") {
-            // Check cancel first - cancel messages have "order_id" which contains "order" substring
-            self.handle_open_orders_cancel(text, ts_init);
-        } else if text.contains("\"feed\":\"open_orders\"") && text.contains("\"order\":") {
-            self.handle_open_orders_delta(text, ts_init);
-        } else if text.contains("\"feed\":\"fills_snapshot\"") {
-            tracing::debug!("Skipping fills_snapshot (REST reconciliation handles initial state)");
-        } else if text.contains("\"feed\":\"fills\"") && text.contains("\"fill_id\"") {
-            self.handle_fills_delta(text, ts_init);
-        }
-        // Public feeds (market data)
-        else if text.contains("\"feed\":\"ticker\"") && text.contains("\"product_id\"") {
-            self.handle_ticker_message(text, ts_init);
-        } else if text.contains("\"feed\":\"trade_snapshot\"") {
-            self.handle_trade_snapshot(text, ts_init);
-        } else if text.contains("\"feed\":\"trade\"") && text.contains("\"product_id\"") {
-            self.handle_trade_message(text, ts_init);
-        } else if text.contains("\"feed\":\"book_snapshot\"") {
-            self.handle_book_snapshot(text, ts_init);
-        } else if text.contains("\"feed\":\"book\"") && text.contains("\"side\"") {
-            self.handle_book_delta(text, ts_init);
-        } else if text.contains("\"event\":\"info\"") {
-            tracing::debug!("Received info message: {text}");
-        } else if text.contains("\"event\":\"pong\"") {
-            tracing::trace!("Received pong response");
-        } else if text.contains("\"event\":\"subscribed\"") {
-            tracing::debug!("Subscription confirmed: {text}");
-        } else if text.contains("\"event\":\"unsubscribed\"") {
-            tracing::debug!("Unsubscription confirmed: {text}");
-        } else if text.contains("\"event\":\"challenge\"") {
-            self.handle_challenge_response(text);
-        } else if text.contains("\"feed\":\"heartbeat\"") {
-            tracing::trace!("Heartbeat received");
-        } else {
-            tracing::debug!("Unhandled message: {text}");
+        let value: Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!("Failed to parse message as JSON: {e}");
+                return;
+            }
+        };
+
+        match classify_futures_message(&value) {
+            // Private feeds (execution)
+            KrakenFuturesMessageType::OpenOrdersSnapshot => {
+                tracing::debug!(
+                    "Skipping open_orders_snapshot (REST reconciliation handles initial state)"
+                );
+            }
+            KrakenFuturesMessageType::OpenOrdersCancel => {
+                self.handle_open_orders_cancel_value(value, ts_init);
+            }
+            KrakenFuturesMessageType::OpenOrdersDelta => {
+                self.handle_open_orders_delta_value(value, ts_init);
+            }
+            KrakenFuturesMessageType::FillsSnapshot => {
+                tracing::debug!(
+                    "Skipping fills_snapshot (REST reconciliation handles initial state)"
+                );
+            }
+            KrakenFuturesMessageType::FillsDelta => {
+                self.handle_fills_delta_value(value, ts_init);
+            }
+            // Public feeds (market data)
+            KrakenFuturesMessageType::Ticker => {
+                self.handle_ticker_message_value(value, ts_init);
+            }
+            KrakenFuturesMessageType::TradeSnapshot => {
+                self.handle_trade_snapshot_value(value, ts_init);
+            }
+            KrakenFuturesMessageType::Trade => {
+                self.handle_trade_message_value(value, ts_init);
+            }
+            KrakenFuturesMessageType::BookSnapshot => {
+                self.handle_book_snapshot_value(value, ts_init);
+            }
+            KrakenFuturesMessageType::BookDelta => {
+                self.handle_book_delta_value(value, ts_init);
+            }
+            // Control messages
+            KrakenFuturesMessageType::Info => {
+                tracing::debug!("Received info message: {text}");
+            }
+            KrakenFuturesMessageType::Pong => {
+                tracing::trace!("Received pong response");
+            }
+            KrakenFuturesMessageType::Subscribed => {
+                tracing::debug!("Subscription confirmed: {text}");
+            }
+            KrakenFuturesMessageType::Unsubscribed => {
+                tracing::debug!("Unsubscription confirmed: {text}");
+            }
+            KrakenFuturesMessageType::Challenge => {
+                self.handle_challenge_response_value(value);
+            }
+            KrakenFuturesMessageType::Heartbeat => {
+                tracing::trace!("Heartbeat received");
+            }
+            KrakenFuturesMessageType::Unknown => {
+                tracing::debug!("Unhandled message: {text}");
+            }
         }
     }
 
-    fn handle_challenge_response(&mut self, text: &str) {
-        // Parse the challenge response: {"event":"challenge","message":"CHALLENGE_STRING"}
+    fn handle_challenge_response_value(&mut self, value: Value) {
         #[derive(Deserialize)]
         struct ChallengeResponse {
             message: String,
         }
 
-        match serde_json::from_str::<ChallengeResponse>(text) {
+        match serde_json::from_value::<ChallengeResponse>(value) {
             Ok(response) => {
                 let len = response.message.len();
                 tracing::debug!("Challenge received, length: {len}");
 
-                // Send challenge back to client via oneshot channel
                 if let Some(tx) = self.pending_challenge_tx.take() {
                     if tx.send(response.message).is_err() {
                         tracing::warn!("Failed to send challenge response - receiver dropped");
@@ -549,455 +580,6 @@ impl FuturesFeedHandler {
         }
     }
 
-    fn handle_ticker_message(&mut self, text: &str, ts_init: UnixNanos) {
-        let ticker = match serde_json::from_str::<KrakenFuturesTickerData>(text) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::debug!("Failed to parse ticker: {e}");
-                return;
-            }
-        };
-
-        let (instrument_id, price_precision) = {
-            let Some(instrument) = self.get_instrument(&Ustr::from(ticker.product_id.as_str()))
-            else {
-                let product_id = &ticker.product_id;
-                tracing::debug!("Instrument not found for product_id: {product_id}");
-                return;
-            };
-            (instrument.id(), instrument.price_precision())
-        };
-
-        let ts_event = ticker
-            .time
-            .map(|t| UnixNanos::from((t as u64) * 1_000_000))
-            .unwrap_or(ts_init);
-
-        let product_id = &ticker.product_id;
-        let mark_key = format!("mark:{product_id}");
-        let index_key = format!("index:{product_id}");
-        let has_mark = self.is_subscribed(&mark_key);
-        let has_index = self.is_subscribed(&index_key);
-
-        // Enqueue mark price if present and subscribed
-        if let Some(mark_price) = ticker.mark_price
-            && has_mark
-        {
-            let update = MarkPriceUpdate::new(
-                instrument_id,
-                Price::new(mark_price, price_precision),
-                ts_event,
-                ts_init,
-            );
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::MarkPrice(update));
-        }
-
-        // Enqueue index price if present and subscribed
-        if let Some(index_price) = ticker.index
-            && has_index
-        {
-            let update = IndexPriceUpdate::new(
-                instrument_id,
-                Price::new(index_price, price_precision),
-                ts_event,
-                ts_init,
-            );
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::IndexPrice(update));
-        }
-    }
-
-    fn handle_trade_message(&mut self, text: &str, ts_init: UnixNanos) {
-        let trade = match serde_json::from_str::<KrakenFuturesTradeData>(text) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::trace!("Failed to parse trade: {e}");
-                return;
-            }
-        };
-
-        // Check if subscribed to trades for this product
-        let product_id = &trade.product_id;
-        if !self.is_subscribed(&format!("trades:{product_id}")) {
-            return;
-        }
-
-        // Extract instrument info upfront to avoid borrow conflicts
-        let (instrument_id, price_precision, size_precision) = {
-            let Some(instrument) = self.get_instrument(&Ustr::from(trade.product_id.as_str()))
-            else {
-                return;
-            };
-            (
-                instrument.id(),
-                instrument.price_precision(),
-                instrument.size_precision(),
-            )
-        };
-
-        // Check after rounding to precision (small values may round to zero)
-        let size = Quantity::new(trade.qty, size_precision);
-        if size.is_zero() {
-            let product_id = trade.product_id;
-            let raw_qty = trade.qty;
-            tracing::warn!("Skipping zero quantity trade for {product_id} (raw qty: {raw_qty})");
-            return;
-        }
-
-        let ts_event = UnixNanos::from((trade.time as u64) * 1_000_000);
-
-        let aggressor_side = match trade.side {
-            KrakenOrderSide::Buy => AggressorSide::Buyer,
-            KrakenOrderSide::Sell => AggressorSide::Seller,
-        };
-
-        let trade_id = trade.uid.unwrap_or_else(|| trade.seq.to_string());
-
-        let trade_tick = TradeTick::new(
-            instrument_id,
-            Price::new(trade.price, price_precision),
-            size,
-            aggressor_side,
-            TradeId::new(&trade_id),
-            ts_event,
-            ts_init,
-        );
-
-        self.pending_messages
-            .push_back(KrakenFuturesWsMessage::Trade(trade_tick));
-    }
-
-    fn handle_trade_snapshot(&mut self, text: &str, ts_init: UnixNanos) {
-        let snapshot = match serde_json::from_str::<KrakenFuturesTradeSnapshot>(text) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::trace!("Failed to parse trade snapshot: {e}");
-                return;
-            }
-        };
-
-        // Check if subscribed to trades for this product
-        let product_id = &snapshot.product_id;
-        if !self.is_subscribed(&format!("trades:{product_id}")) {
-            return;
-        }
-
-        // Extract instrument info upfront
-        let (instrument_id, price_precision, size_precision) = {
-            let Some(instrument) = self.get_instrument(&Ustr::from(product_id.as_str())) else {
-                return;
-            };
-            (
-                instrument.id(),
-                instrument.price_precision(),
-                instrument.size_precision(),
-            )
-        };
-
-        for trade in snapshot.trades {
-            // Check after rounding to precision (small values may round to zero)
-            let size = Quantity::new(trade.qty, size_precision);
-            if size.is_zero() {
-                let product_id = snapshot.product_id;
-                let raw_qty = trade.qty;
-                tracing::warn!(
-                    "Skipping zero quantity trade in snapshot for {product_id} (raw qty: {raw_qty})"
-                );
-                continue;
-            }
-
-            let ts_event = UnixNanos::from((trade.time as u64) * 1_000_000);
-
-            let aggressor_side = match trade.side {
-                KrakenOrderSide::Buy => AggressorSide::Buyer,
-                KrakenOrderSide::Sell => AggressorSide::Seller,
-            };
-
-            let trade_id = trade.uid.unwrap_or_else(|| trade.seq.to_string());
-
-            let trade_tick = TradeTick::new(
-                instrument_id,
-                Price::new(trade.price, price_precision),
-                size,
-                aggressor_side,
-                TradeId::new(&trade_id),
-                ts_event,
-                ts_init,
-            );
-
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::Trade(trade_tick));
-        }
-    }
-
-    fn handle_book_snapshot(&mut self, text: &str, ts_init: UnixNanos) {
-        let snapshot = match serde_json::from_str::<KrakenFuturesBookSnapshot>(text) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::trace!("Failed to parse book snapshot: {e}");
-                return;
-            }
-        };
-
-        let product_id = &snapshot.product_id;
-
-        // Check subscriptions
-        let has_book = self.is_subscribed(&format!("book:{product_id}"));
-        let has_quotes = self.is_subscribed(&format!("quotes:{product_id}"));
-
-        if !has_book && !has_quotes {
-            return;
-        }
-
-        // Extract instrument info upfront to avoid borrow conflicts
-        let (instrument_id, price_precision, size_precision) = {
-            let Some(instrument) = self.get_instrument(&Ustr::from(snapshot.product_id.as_str()))
-            else {
-                return;
-            };
-            (
-                instrument.id(),
-                instrument.price_precision(),
-                instrument.size_precision(),
-            )
-        };
-
-        let ts_event = UnixNanos::from((snapshot.timestamp as u64) * 1_000_000);
-
-        let best_bid = snapshot
-            .bids
-            .iter()
-            .filter(|l| l.qty > 0.0)
-            .max_by(|a, b| a.price.total_cmp(&b.price));
-        let best_ask = snapshot
-            .asks
-            .iter()
-            .filter(|l| l.qty > 0.0)
-            .min_by(|a, b| a.price.total_cmp(&b.price));
-
-        // Emit quote if subscribed, using QuoteCache for handling partial updates
-        if has_quotes {
-            let bid_price = best_bid.map(|b| Price::new(b.price, price_precision));
-            let ask_price = best_ask.map(|a| Price::new(a.price, price_precision));
-            let bid_size = best_bid.map(|b| Quantity::new(b.qty, size_precision));
-            let ask_size = best_ask.map(|a| Quantity::new(a.qty, size_precision));
-
-            match self.quote_cache.process(
-                instrument_id,
-                bid_price,
-                ask_price,
-                bid_size,
-                ask_size,
-                ts_event,
-                ts_init,
-            ) {
-                Ok(quote) => {
-                    self.pending_messages
-                        .push_back(KrakenFuturesWsMessage::Quote(quote));
-                }
-                Err(e) => {
-                    tracing::trace!("Quote cache miss for {instrument_id}: {e}");
-                }
-            }
-        }
-
-        // Emit book deltas if subscribed
-        if has_book {
-            let mut deltas = Vec::new();
-
-            // Clear action first
-            deltas.push(OrderBookDelta::clear(
-                instrument_id,
-                snapshot.seq as u64,
-                ts_event,
-                ts_init,
-            ));
-
-            for level in &snapshot.bids {
-                let size = Quantity::new(level.qty, size_precision);
-                if size.is_zero() {
-                    continue;
-                }
-                let order = BookOrder::new(
-                    OrderSide::Buy,
-                    Price::new(level.price, price_precision),
-                    size,
-                    0,
-                );
-                deltas.push(OrderBookDelta::new(
-                    instrument_id,
-                    BookAction::Add,
-                    order,
-                    0,
-                    snapshot.seq as u64,
-                    ts_event,
-                    ts_init,
-                ));
-            }
-
-            for level in &snapshot.asks {
-                let size = Quantity::new(level.qty, size_precision);
-                if size.is_zero() {
-                    continue;
-                }
-                let order = BookOrder::new(
-                    OrderSide::Sell,
-                    Price::new(level.price, price_precision),
-                    size,
-                    0,
-                );
-                deltas.push(OrderBookDelta::new(
-                    instrument_id,
-                    BookAction::Add,
-                    order,
-                    0,
-                    snapshot.seq as u64,
-                    ts_event,
-                    ts_init,
-                ));
-            }
-
-            let book_deltas = OrderBookDeltas::new(instrument_id, deltas);
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::BookDeltas(book_deltas));
-        }
-    }
-
-    fn handle_book_delta(&mut self, text: &str, ts_init: UnixNanos) {
-        let delta = match serde_json::from_str::<KrakenFuturesBookDelta>(text) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::trace!("Failed to parse book delta: {e}");
-                return;
-            }
-        };
-
-        let product_id = &delta.product_id;
-
-        // Check subscriptions - quotes also uses book feed
-        let has_book = self.is_subscribed(&format!("book:{product_id}"));
-        let has_quotes = self.is_subscribed(&format!("quotes:{product_id}"));
-
-        // Need at least one subscription to process
-        if !has_book && !has_quotes {
-            return;
-        }
-
-        let Some(instrument) = self.get_instrument(&Ustr::from(delta.product_id.as_str())) else {
-            return;
-        };
-
-        let ts_event = UnixNanos::from((delta.timestamp as u64) * 1_000_000);
-        let instrument_id = instrument.id();
-        let price_precision = instrument.price_precision();
-        let size_precision = instrument.size_precision();
-
-        let side: OrderSide = delta.side.into();
-
-        // Emit quote update if subscribed (QuoteCache handles partial updates)
-        // Note: This assumes the delta represents top-of-book, which is an approximation.
-        // For accurate BBO tracking, would need to maintain full local order book.
-        if has_quotes && delta.qty > 0.0 {
-            let price = Price::new(delta.price, price_precision);
-            let size = Quantity::new(delta.qty, size_precision);
-
-            let (bid_price, ask_price, bid_size, ask_size) = match side {
-                OrderSide::Buy => (Some(price), None, Some(size), None),
-                OrderSide::Sell => (None, Some(price), None, Some(size)),
-                _ => (None, None, None, None),
-            };
-
-            if let Ok(quote) = self.quote_cache.process(
-                instrument_id,
-                bid_price,
-                ask_price,
-                bid_size,
-                ask_size,
-                ts_event,
-                ts_init,
-            ) {
-                self.pending_messages
-                    .push_back(KrakenFuturesWsMessage::Quote(quote));
-            }
-        }
-
-        // Emit book delta if subscribed
-        if has_book {
-            // Create quantity first, then determine action based on whether it rounds to zero
-            let size = Quantity::new(delta.qty, size_precision);
-            let action = if size.is_zero() {
-                BookAction::Delete
-            } else {
-                BookAction::Update
-            };
-
-            let order = BookOrder::new(side, Price::new(delta.price, price_precision), size, 0);
-
-            let book_delta = OrderBookDelta::new(
-                instrument_id,
-                action,
-                order,
-                0,
-                delta.seq as u64,
-                ts_event,
-                ts_init,
-            );
-
-            let book_deltas = OrderBookDeltas::new(instrument_id, vec![book_delta]);
-            self.pending_messages
-                .push_back(KrakenFuturesWsMessage::BookDeltas(book_deltas));
-        }
-    }
-
-    #[allow(dead_code)]
-    fn handle_open_orders_snapshot(&mut self, text: &str, ts_init: UnixNanos) {
-        let snapshot = match serde_json::from_str::<KrakenFuturesOpenOrdersSnapshot>(text) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to parse open_orders_snapshot: {e}");
-                return;
-            }
-        };
-
-        let order_count = snapshot.orders.len();
-        tracing::debug!("Received open_orders_snapshot with {order_count} orders");
-
-        for order in snapshot.orders {
-            if let Some(report) = self.parse_order_to_status_report(&order, ts_init, false) {
-                self.pending_messages
-                    .push_back(KrakenFuturesWsMessage::OrderStatusReport(Box::new(report)));
-            }
-        }
-    }
-
-    fn handle_open_orders_delta(&mut self, text: &str, ts_init: UnixNanos) {
-        let delta = match serde_json::from_str::<KrakenFuturesOpenOrdersDelta>(text) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("Failed to parse open_orders delta: {e}");
-                return;
-            }
-        };
-
-        tracing::debug!(
-            order_id = %delta.order.order_id,
-            is_cancel = delta.is_cancel,
-            reason = ?delta.reason,
-            "Received open_orders delta"
-        );
-
-        if let Some(event) = self.parse_order_event(
-            &delta.order,
-            ts_init,
-            delta.is_cancel,
-            delta.reason.as_deref(),
-        ) {
-            self.emit_order_event(event);
-        }
-    }
-
-    /// Emits the appropriate WebSocket message for a parsed order event.
     fn emit_order_event(&mut self, event: ParsedOrderEvent) {
         match event {
             ParsedOrderEvent::Accepted(accepted) => {
@@ -1023,11 +605,401 @@ impl FuturesFeedHandler {
         }
     }
 
-    fn handle_open_orders_cancel(&mut self, text: &str, ts_init: UnixNanos) {
-        // Skip fill-related messages since the fills feed handles order completions,
-        // we only process actual cancellations here.
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(text)
-            && let Some(reason) = value.get("reason").and_then(|r| r.as_str())
+    fn handle_ticker_message_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let ticker = match serde_json::from_value::<KrakenFuturesTickerData>(value) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::debug!("Failed to parse ticker: {e}");
+                return;
+            }
+        };
+
+        let (instrument_id, price_precision) = {
+            let Some(instrument) = self.get_instrument(&ticker.product_id) else {
+                let product_id = &ticker.product_id;
+                tracing::debug!("Instrument not found for product_id: {product_id}");
+                return;
+            };
+            (instrument.id(), instrument.price_precision())
+        };
+
+        let ts_event = ticker
+            .time
+            .map(|t| UnixNanos::from((t as u64) * 1_000_000))
+            .unwrap_or(ts_init);
+
+        let has_mark = self.is_subscribed(KrakenFuturesChannel::Mark, &ticker.product_id);
+        let has_index = self.is_subscribed(KrakenFuturesChannel::Index, &ticker.product_id);
+
+        if let Some(mark_price) = ticker.mark_price
+            && has_mark
+        {
+            let update = MarkPriceUpdate::new(
+                instrument_id,
+                Price::new(mark_price, price_precision),
+                ts_event,
+                ts_init,
+            );
+            self.pending_messages
+                .push_back(KrakenFuturesWsMessage::MarkPrice(update));
+        }
+
+        if let Some(index_price) = ticker.index
+            && has_index
+        {
+            let update = IndexPriceUpdate::new(
+                instrument_id,
+                Price::new(index_price, price_precision),
+                ts_event,
+                ts_init,
+            );
+            self.pending_messages
+                .push_back(KrakenFuturesWsMessage::IndexPrice(update));
+        }
+    }
+
+    fn handle_trade_message_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let trade = match serde_json::from_value::<KrakenFuturesTradeData>(value) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::trace!("Failed to parse trade: {e}");
+                return;
+            }
+        };
+
+        if !self.is_subscribed(KrakenFuturesChannel::Trades, &trade.product_id) {
+            return;
+        }
+
+        let (instrument_id, price_precision, size_precision) = {
+            let Some(instrument) = self.get_instrument(&trade.product_id) else {
+                return;
+            };
+            (
+                instrument.id(),
+                instrument.price_precision(),
+                instrument.size_precision(),
+            )
+        };
+
+        let size = Quantity::new(trade.qty, size_precision);
+        if size.is_zero() {
+            let product_id = trade.product_id;
+            let raw_qty = trade.qty;
+            tracing::warn!("Skipping zero quantity trade for {product_id} (raw qty: {raw_qty})");
+            return;
+        }
+
+        let ts_event = UnixNanos::from((trade.time as u64) * 1_000_000);
+        let aggressor_side = match trade.side {
+            KrakenOrderSide::Buy => AggressorSide::Buyer,
+            KrakenOrderSide::Sell => AggressorSide::Seller,
+        };
+        let trade_id = trade.uid.unwrap_or_else(|| trade.seq.to_string());
+
+        let trade_tick = TradeTick::new(
+            instrument_id,
+            Price::new(trade.price, price_precision),
+            size,
+            aggressor_side,
+            TradeId::new(&trade_id),
+            ts_event,
+            ts_init,
+        );
+
+        self.pending_messages
+            .push_back(KrakenFuturesWsMessage::Trade(trade_tick));
+    }
+
+    fn handle_trade_snapshot_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let snapshot = match serde_json::from_value::<KrakenFuturesTradeSnapshot>(value) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::trace!("Failed to parse trade snapshot: {e}");
+                return;
+            }
+        };
+
+        if !self.is_subscribed(KrakenFuturesChannel::Trades, &snapshot.product_id) {
+            return;
+        }
+
+        let (instrument_id, price_precision, size_precision) = {
+            let Some(instrument) = self.get_instrument(&snapshot.product_id) else {
+                return;
+            };
+            (
+                instrument.id(),
+                instrument.price_precision(),
+                instrument.size_precision(),
+            )
+        };
+
+        for trade in snapshot.trades {
+            let size = Quantity::new(trade.qty, size_precision);
+            if size.is_zero() {
+                let product_id = snapshot.product_id;
+                let raw_qty = trade.qty;
+                tracing::warn!(
+                    "Skipping zero quantity trade in snapshot for {product_id} (raw qty: {raw_qty})"
+                );
+                continue;
+            }
+
+            let ts_event = UnixNanos::from((trade.time as u64) * 1_000_000);
+            let aggressor_side = match trade.side {
+                KrakenOrderSide::Buy => AggressorSide::Buyer,
+                KrakenOrderSide::Sell => AggressorSide::Seller,
+            };
+            let trade_id = trade.uid.unwrap_or_else(|| trade.seq.to_string());
+
+            let trade_tick = TradeTick::new(
+                instrument_id,
+                Price::new(trade.price, price_precision),
+                size,
+                aggressor_side,
+                TradeId::new(&trade_id),
+                ts_event,
+                ts_init,
+            );
+
+            self.pending_messages
+                .push_back(KrakenFuturesWsMessage::Trade(trade_tick));
+        }
+    }
+
+    fn handle_book_snapshot_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let snapshot = match serde_json::from_value::<KrakenFuturesBookSnapshot>(value) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::trace!("Failed to parse book snapshot: {e}");
+                return;
+            }
+        };
+
+        let has_book = self.is_subscribed(KrakenFuturesChannel::Book, &snapshot.product_id);
+        let has_quotes = self.is_subscribed(KrakenFuturesChannel::Quotes, &snapshot.product_id);
+
+        if !has_book && !has_quotes {
+            return;
+        }
+
+        let (instrument_id, price_precision, size_precision) = {
+            let Some(instrument) = self.get_instrument(&snapshot.product_id) else {
+                return;
+            };
+            (
+                instrument.id(),
+                instrument.price_precision(),
+                instrument.size_precision(),
+            )
+        };
+
+        let ts_event = UnixNanos::from((snapshot.timestamp as u64) * 1_000_000);
+
+        let best_bid = snapshot
+            .bids
+            .iter()
+            .filter(|l| l.qty > 0.0)
+            .max_by(|a, b| a.price.total_cmp(&b.price));
+        let best_ask = snapshot
+            .asks
+            .iter()
+            .filter(|l| l.qty > 0.0)
+            .min_by(|a, b| a.price.total_cmp(&b.price));
+
+        if has_quotes {
+            let bid_price = best_bid.map(|b| Price::new(b.price, price_precision));
+            let ask_price = best_ask.map(|a| Price::new(a.price, price_precision));
+            let bid_size = best_bid.map(|b| Quantity::new(b.qty, size_precision));
+            let ask_size = best_ask.map(|a| Quantity::new(a.qty, size_precision));
+
+            match self.quote_cache.process(
+                instrument_id,
+                bid_price,
+                ask_price,
+                bid_size,
+                ask_size,
+                ts_event,
+                ts_init,
+            ) {
+                Ok(quote) => {
+                    self.pending_messages
+                        .push_back(KrakenFuturesWsMessage::Quote(quote));
+                }
+                Err(e) => {
+                    tracing::trace!("Quote cache process error: {e}");
+                }
+            }
+        }
+
+        if has_book {
+            let mut deltas = Vec::with_capacity(snapshot.bids.len() + snapshot.asks.len() + 1);
+
+            deltas.push(OrderBookDelta::clear(
+                instrument_id,
+                snapshot.seq as u64,
+                ts_event,
+                ts_init,
+            ));
+
+            for bid in &snapshot.bids {
+                let size = Quantity::new(bid.qty, size_precision);
+                if size.is_zero() {
+                    continue;
+                }
+                let order = BookOrder::new(
+                    OrderSide::Buy,
+                    Price::new(bid.price, price_precision),
+                    size,
+                    0,
+                );
+                deltas.push(OrderBookDelta::new(
+                    instrument_id,
+                    BookAction::Add,
+                    order,
+                    0,
+                    snapshot.seq as u64,
+                    ts_event,
+                    ts_init,
+                ));
+            }
+
+            for ask in &snapshot.asks {
+                let size = Quantity::new(ask.qty, size_precision);
+                if size.is_zero() {
+                    continue;
+                }
+                let order = BookOrder::new(
+                    OrderSide::Sell,
+                    Price::new(ask.price, price_precision),
+                    size,
+                    0,
+                );
+                deltas.push(OrderBookDelta::new(
+                    instrument_id,
+                    BookAction::Add,
+                    order,
+                    0,
+                    snapshot.seq as u64,
+                    ts_event,
+                    ts_init,
+                ));
+            }
+
+            let book_deltas = OrderBookDeltas::new(instrument_id, deltas);
+            self.pending_messages
+                .push_back(KrakenFuturesWsMessage::BookDeltas(book_deltas));
+        }
+    }
+
+    fn handle_book_delta_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let delta = match serde_json::from_value::<KrakenFuturesBookDelta>(value) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::trace!("Failed to parse book delta: {e}");
+                return;
+            }
+        };
+
+        let has_book = self.is_subscribed(KrakenFuturesChannel::Book, &delta.product_id);
+        let has_quotes = self.is_subscribed(KrakenFuturesChannel::Quotes, &delta.product_id);
+
+        if !has_book && !has_quotes {
+            return;
+        }
+
+        let Some(instrument) = self.get_instrument(&delta.product_id) else {
+            return;
+        };
+
+        let ts_event = UnixNanos::from((delta.timestamp as u64) * 1_000_000);
+        let instrument_id = instrument.id();
+        let price_precision = instrument.price_precision();
+        let size_precision = instrument.size_precision();
+
+        let side: OrderSide = delta.side.into();
+
+        if has_quotes && delta.qty > 0.0 {
+            let price = Price::new(delta.price, price_precision);
+            let size = Quantity::new(delta.qty, size_precision);
+
+            let (bid_price, ask_price, bid_size, ask_size) = match side {
+                OrderSide::Buy => (Some(price), None, Some(size), None),
+                OrderSide::Sell => (None, Some(price), None, Some(size)),
+                _ => (None, None, None, None),
+            };
+
+            if let Ok(quote) = self.quote_cache.process(
+                instrument_id,
+                bid_price,
+                ask_price,
+                bid_size,
+                ask_size,
+                ts_event,
+                ts_init,
+            ) {
+                self.pending_messages
+                    .push_back(KrakenFuturesWsMessage::Quote(quote));
+            }
+        }
+
+        if has_book {
+            let size = Quantity::new(delta.qty, size_precision);
+            let action = if size.is_zero() {
+                BookAction::Delete
+            } else {
+                BookAction::Update
+            };
+
+            let order = BookOrder::new(side, Price::new(delta.price, price_precision), size, 0);
+
+            let book_delta = OrderBookDelta::new(
+                instrument_id,
+                action,
+                order,
+                0,
+                delta.seq as u64,
+                ts_event,
+                ts_init,
+            );
+
+            let book_deltas = OrderBookDeltas::new(instrument_id, vec![book_delta]);
+            self.pending_messages
+                .push_back(KrakenFuturesWsMessage::BookDeltas(book_deltas));
+        }
+    }
+
+    fn handle_open_orders_delta_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let delta = match serde_json::from_value::<KrakenFuturesOpenOrdersDelta>(value) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!("Failed to parse open_orders delta: {e}");
+                return;
+            }
+        };
+
+        tracing::debug!(
+            order_id = %delta.order.order_id,
+            is_cancel = delta.is_cancel,
+            reason = ?delta.reason,
+            "Received open_orders delta"
+        );
+
+        if let Some(event) = self.parse_order_event(
+            &delta.order,
+            ts_init,
+            delta.is_cancel,
+            delta.reason.as_deref(),
+        ) {
+            self.emit_order_event(event);
+        }
+    }
+
+    fn handle_open_orders_cancel_value(&mut self, value: Value, ts_init: UnixNanos) {
+        // Already classified - we know it's a cancel with is_cancel=true and no "order" field
+        // Check if this is a fill-related cancel (skip those - fills feed handles them)
+        if let Some(reason) = value.get("reason").and_then(|r| r.as_str())
             && (reason == "full_fill" || reason == "partial_fill")
         {
             tracing::debug!(
@@ -1037,11 +1009,10 @@ impl FuturesFeedHandler {
             return;
         }
 
-        let cancel = match serde_json::from_str::<KrakenFuturesOpenOrdersCancel>(text) {
+        let cancel = match serde_json::from_value::<KrakenFuturesOpenOrdersCancel>(value) {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to parse open_orders cancel: {e}");
-                tracing::debug!("Raw message: {text}");
                 return;
             }
         };
@@ -1058,13 +1029,10 @@ impl FuturesFeedHandler {
             return;
         };
 
-        // Try to find order info - first by cli_ord_id, then by venue_order_id
         let (client_order_id, info) = if let Some(cli_ord_id) = cancel.cli_ord_id.as_ref() {
-            // Try lookup by client order ID
             if let Some(info) = self.client_order_cache.get(cli_ord_id) {
                 (ClientOrderId::new(cli_ord_id), info.clone())
             } else if let Some(mapped_cli_ord_id) = self.venue_order_cache.get(&cancel.order_id) {
-                // Fallback: lookup by venue_order_id -> client_order_id mapping
                 if let Some(info) = self.client_order_cache.get(mapped_cli_ord_id) {
                     (ClientOrderId::new(mapped_cli_ord_id), info.clone())
                 } else {
@@ -1084,7 +1052,6 @@ impl FuturesFeedHandler {
                 return;
             }
         } else if let Some(mapped_cli_ord_id) = self.venue_order_cache.get(&cancel.order_id) {
-            // No cli_ord_id from Kraken, but we have a venue_order_id mapping (reconciled order)
             if let Some(info) = self.client_order_cache.get(mapped_cli_ord_id) {
                 (ClientOrderId::new(mapped_cli_ord_id), info.clone())
             } else {
@@ -1121,32 +1088,11 @@ impl FuturesFeedHandler {
             .push_back(KrakenFuturesWsMessage::OrderCanceled(canceled));
     }
 
-    #[allow(dead_code)]
-    fn handle_fills_snapshot(&mut self, text: &str, ts_init: UnixNanos) {
-        let snapshot = match serde_json::from_str::<KrakenFuturesFillsSnapshot>(text) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to parse fills_snapshot: {e}");
-                return;
-            }
-        };
-
-        let fill_count = snapshot.fills.len();
-        tracing::debug!("Received fills_snapshot with {fill_count} fills");
-
-        for fill in snapshot.fills {
-            if let Some(report) = self.parse_fill_to_report(&fill, ts_init) {
-                self.pending_messages
-                    .push_back(KrakenFuturesWsMessage::FillReport(Box::new(report)));
-            }
-        }
-    }
-
-    fn handle_fills_delta(&mut self, text: &str, ts_init: UnixNanos) {
-        let delta = match serde_json::from_str::<KrakenFuturesFillsDelta>(text) {
+    fn handle_fills_delta_value(&mut self, value: Value, ts_init: UnixNanos) {
+        let delta = match serde_json::from_value::<KrakenFuturesFillsDelta>(value) {
             Ok(d) => d,
             Err(e) => {
-                tracing::error!("Failed to parse fills delta: {e}\nMessage: {text}");
+                tracing::error!("Failed to parse fills delta: {e}");
                 return;
             }
         };
@@ -1453,5 +1399,158 @@ impl FuturesFeedHandler {
             ts_init,
             Some(UUID4::new()),
         ))
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod tests {
+    use nautilus_model::{
+        instruments::{CryptoFuture, InstrumentAny},
+        types::Currency,
+    };
+    use rstest::rstest;
+
+    use super::*;
+
+    fn create_test_handler() -> FuturesFeedHandler {
+        let signal = Arc::new(AtomicBool::new(false));
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscriptions = SubscriptionState::new(':');
+
+        FuturesFeedHandler::new(signal, cmd_rx, raw_rx, subscriptions)
+    }
+
+    fn create_test_instrument() -> InstrumentAny {
+        InstrumentAny::CryptoFuture(CryptoFuture::new(
+            InstrumentId::from("PI_XBTUSD.KRAKEN"),
+            Symbol::from("PI_XBTUSD"),
+            Currency::BTC(),
+            Currency::USD(),
+            Currency::USD(),
+            false,
+            UnixNanos::default(),
+            UnixNanos::default(),
+            1, // price_precision
+            0, // size_precision
+            Price::from("0.5"),
+            Quantity::from(1),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UnixNanos::default(),
+            UnixNanos::default(),
+        ))
+    }
+
+    #[rstest]
+    fn test_book_snapshot_filters_zero_quantity_bids() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument();
+        handler
+            .instruments_cache
+            .insert(Ustr::from("PI_XBTUSD"), instrument);
+
+        handler.subscriptions.mark_subscribe("book:PI_XBTUSD");
+        handler.subscriptions.confirm_subscribe("book:PI_XBTUSD");
+
+        let json = include_str!("../../../test_data/ws_futures_book_snapshot_with_zero_qty.json");
+        let ts_init = UnixNanos::from(1_000_000_000);
+
+        handler.parse_message(json, ts_init);
+
+        assert_eq!(handler.pending_messages.len(), 1);
+
+        let msg = handler.pending_messages.pop_front().unwrap();
+        let KrakenFuturesWsMessage::BookDeltas(deltas) = msg else {
+            panic!("Expected BookDeltas message");
+        };
+
+        // Fixture has 3 bids (1 zero qty) + 2 asks (1 zero qty) = 3 valid + 1 clear = 4
+        assert_eq!(deltas.deltas.len(), 4);
+        assert_eq!(deltas.deltas[0].action, BookAction::Clear);
+
+        for delta in &deltas.deltas[1..] {
+            assert!(
+                !delta.order.size.is_zero(),
+                "Found zero-quantity delta that should have been filtered: {:?}",
+                delta
+            );
+        }
+    }
+
+    #[rstest]
+    fn test_book_snapshot_filters_zero_quantity_asks() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument();
+        handler
+            .instruments_cache
+            .insert(Ustr::from("PI_XBTUSD"), instrument);
+
+        handler.subscriptions.mark_subscribe("book:PI_XBTUSD");
+        handler.subscriptions.confirm_subscribe("book:PI_XBTUSD");
+
+        let json = include_str!("../../../test_data/ws_futures_book_snapshot_with_zero_qty.json");
+        let ts_init = UnixNanos::from(1_000_000_000);
+
+        handler.parse_message(json, ts_init);
+
+        let msg = handler.pending_messages.pop_front().unwrap();
+        let KrakenFuturesWsMessage::BookDeltas(deltas) = msg else {
+            panic!("Expected BookDeltas message");
+        };
+
+        // Only 1 ask should remain (the one with qty 2300, not the zero qty one)
+        let sell_deltas: Vec<_> = deltas
+            .deltas
+            .iter()
+            .filter(|d| d.order.side == OrderSide::Sell)
+            .collect();
+
+        assert_eq!(sell_deltas.len(), 1);
+        assert_eq!(sell_deltas[0].order.price.as_f64(), 34912.0);
+    }
+
+    #[rstest]
+    fn test_trade_filters_zero_quantity() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument();
+        handler
+            .instruments_cache
+            .insert(Ustr::from("PI_XBTUSD"), instrument);
+
+        handler.subscriptions.mark_subscribe("trades:PI_XBTUSD");
+        handler.subscriptions.confirm_subscribe("trades:PI_XBTUSD");
+
+        let json = r#"{
+            "feed": "trade",
+            "product_id": "PI_XBTUSD",
+            "time": 1612269825817,
+            "side": "buy",
+            "qty": 0.0,
+            "price": 34900.0,
+            "seq": 12345
+        }"#;
+        let ts_init = UnixNanos::from(1_000_000_000);
+
+        handler.parse_message(json, ts_init);
+
+        assert!(
+            handler.pending_messages.is_empty(),
+            "Zero quantity trade should be filtered out"
+        );
     }
 }

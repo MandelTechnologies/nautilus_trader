@@ -99,7 +99,7 @@ pub unsafe fn cstr_to_bytes<'a>(ptr: *const c_char) -> &'a [u8] {
 ///
 /// # Panics
 ///
-/// Panics if `ptr` is null.
+/// Panics if `ptr` is not null but not a valid UTF-8 C string.
 #[must_use]
 pub unsafe fn optional_cstr_to_ustr(ptr: *const c_char) -> Option<Ustr> {
     if ptr.is_null() {

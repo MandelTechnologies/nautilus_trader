@@ -58,6 +58,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Added `osv-scanner` for Python dependency vulnerability scanning in pre-commit
 - Added `cargo-vet` for Rust supply chain security auditing
 - Hardened unsafe code with runtime checks and `#![deny(unsafe_op_in_unsafe_fn)]` lint
+- Hardened datetime conversions with overflow protection
 - Hardened CI workflows by pinning Docker images to SHA digests
 - Improved actor/component registry safety with `ActorRef` guards and runtime borrow tracking
 - Fixed code scanning security alerts
@@ -208,6 +209,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Improved execution concept guide with overfills explanation
 - Improved backtesting concept guide to clarify bar execution behavior
 - Improved documentation for uv-installed Python environments, thanks to @faysou for investigating and reporting
+- Improved notebook path handling and fix quickstart data loading, thanks for reporting @semihtekten
 - Documented fee rate sign convention in instruments concept guide
 
 ### Deprecations

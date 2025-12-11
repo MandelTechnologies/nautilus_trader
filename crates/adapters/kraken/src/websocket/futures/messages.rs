@@ -21,6 +21,7 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use strum::{AsRefStr, EnumString};
 use ustr::Ustr;
 
@@ -60,6 +61,17 @@ pub enum KrakenFuturesFeed {
     FillsSnapshot,
 }
 
+/// Kraken Futures WebSocket subscription channel types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AsRefStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum KrakenFuturesChannel {
+    Book,
+    Trades,
+    Quotes,
+    Mark,
+    Index,
+}
+
 /// Kraken Futures WebSocket event types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +84,75 @@ pub enum KrakenFuturesEvent {
     Error,
     Alert,
     Challenge,
+}
+
+/// Message type classification for efficient routing.
+/// Used to classify incoming WebSocket messages without full deserialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KrakenFuturesMessageType {
+    // Private feeds (execution)
+    OpenOrdersSnapshot,
+    OpenOrdersCancel,
+    OpenOrdersDelta,
+    FillsSnapshot,
+    FillsDelta,
+    // Public feeds (market data)
+    Ticker,
+    TradeSnapshot,
+    Trade,
+    BookSnapshot,
+    BookDelta,
+    // Control messages
+    Info,
+    Pong,
+    Subscribed,
+    Unsubscribed,
+    Challenge,
+    Heartbeat,
+    Unknown,
+}
+
+#[must_use]
+pub fn classify_futures_message(value: &Value) -> KrakenFuturesMessageType {
+    if let Some(event) = value.get("event").and_then(|v| v.as_str()) {
+        return match event {
+            "info" => KrakenFuturesMessageType::Info,
+            "pong" => KrakenFuturesMessageType::Pong,
+            "subscribed" => KrakenFuturesMessageType::Subscribed,
+            "unsubscribed" => KrakenFuturesMessageType::Unsubscribed,
+            "challenge" => KrakenFuturesMessageType::Challenge,
+            _ => KrakenFuturesMessageType::Unknown,
+        };
+    }
+
+    if let Some(feed) = value.get("feed").and_then(|v| v.as_str()) {
+        return match feed {
+            "heartbeat" => KrakenFuturesMessageType::Heartbeat,
+            "open_orders_snapshot" => KrakenFuturesMessageType::OpenOrdersSnapshot,
+            "open_orders" => {
+                // Cancel messages have is_cancel=true but no "order" object
+                if value.get("is_cancel").and_then(|v| v.as_bool()) == Some(true) {
+                    if value.get("order").is_some() {
+                        KrakenFuturesMessageType::OpenOrdersDelta
+                    } else {
+                        KrakenFuturesMessageType::OpenOrdersCancel
+                    }
+                } else {
+                    KrakenFuturesMessageType::OpenOrdersDelta
+                }
+            }
+            "fills_snapshot" => KrakenFuturesMessageType::FillsSnapshot,
+            "fills" => KrakenFuturesMessageType::FillsDelta,
+            "ticker" => KrakenFuturesMessageType::Ticker,
+            "trade_snapshot" => KrakenFuturesMessageType::TradeSnapshot,
+            "trade" => KrakenFuturesMessageType::Trade,
+            "book_snapshot" => KrakenFuturesMessageType::BookSnapshot,
+            "book" => KrakenFuturesMessageType::BookDelta,
+            _ => KrakenFuturesMessageType::Unknown,
+        };
+    }
+
+    KrakenFuturesMessageType::Unknown
 }
 
 /// Subscribe/unsubscribe request for Kraken Futures WebSocket.
@@ -519,5 +600,105 @@ mod tests {
         );
         assert!(snapshot.fills[0].buy);
         assert_eq!(snapshot.fills[0].fill_type, "maker");
+    }
+
+    #[rstest]
+    fn test_classify_ticker_message() {
+        let json = include_str!("../../../test_data/ws_futures_ticker.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Ticker
+        );
+    }
+
+    #[rstest]
+    fn test_classify_trade_message() {
+        let json = include_str!("../../../test_data/ws_futures_trade.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Trade
+        );
+    }
+
+    #[rstest]
+    fn test_classify_trade_snapshot_message() {
+        let json = include_str!("../../../test_data/ws_futures_trade_snapshot.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::TradeSnapshot
+        );
+    }
+
+    #[rstest]
+    fn test_classify_book_snapshot_message() {
+        let json = include_str!("../../../test_data/ws_futures_book_snapshot.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::BookSnapshot
+        );
+    }
+
+    #[rstest]
+    fn test_classify_book_delta_message() {
+        let json = include_str!("../../../test_data/ws_futures_book_delta.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::BookDelta
+        );
+    }
+
+    #[rstest]
+    fn test_classify_open_orders_delta_message() {
+        let json = include_str!("../../../test_data/ws_futures_open_orders_delta.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::OpenOrdersDelta
+        );
+    }
+
+    #[rstest]
+    fn test_classify_open_orders_cancel_message() {
+        let json = include_str!("../../../test_data/ws_futures_open_orders_cancel.json");
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::OpenOrdersCancel
+        );
+    }
+
+    #[rstest]
+    fn test_classify_heartbeat_message() {
+        let json = r#"{"feed":"heartbeat","time":1700000000000}"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Heartbeat
+        );
+    }
+
+    #[rstest]
+    fn test_classify_info_event() {
+        let json = r#"{"event":"info","version":1}"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Info
+        );
+    }
+
+    #[rstest]
+    fn test_classify_subscribed_event() {
+        let json = r#"{"event":"subscribed","feed":"ticker","product_ids":["PI_XBTUSD"]}"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Subscribed
+        );
     }
 }

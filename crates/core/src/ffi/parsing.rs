@@ -45,7 +45,8 @@ use crate::{
 ///
 /// # Panics
 ///
-/// Panics if `ptr` is null, contains invalid UTF-8, or is invalid JSON.
+/// Panics if `ptr` is null, contains invalid UTF-8/JSON, or the JSON value
+/// is not an array of strings.
 #[must_use]
 pub unsafe fn bytes_to_string_vec(ptr: *const c_char) -> Vec<String> {
     assert!(!ptr.is_null(), "`ptr` was NULL");
@@ -58,16 +59,18 @@ pub unsafe fn bytes_to_string_vec(ptr: *const c_char) -> Vec<String> {
     let value: serde_json::Value =
         serde_json::from_str(json_string).expect("C string contains invalid JSON");
 
-    match value {
-        serde_json::Value::Array(arr) => arr
-            .into_iter()
-            .filter_map(|value| match value {
-                serde_json::Value::String(string_value) => Some(string_value),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+    let arr = value
+        .as_array()
+        .expect("C string JSON must be an array of strings");
+
+    arr.iter()
+        .map(|value| {
+            value
+                .as_str()
+                .expect("C string JSON array must contain only strings")
+                .to_owned()
+        })
+        .collect()
 }
 
 /// Convert a slice of `String` into a C string pointer (JSON encoded).
@@ -265,17 +268,11 @@ mod tests {
     }
 
     #[rstest]
+    #[should_panic(expected = "array must contain only strings")]
     fn test_bytes_to_string_vec_invalid() {
         let json_str = CString::new(r#"["value1", 42, "value3"]"#).unwrap();
         let ptr = json_str.as_ptr().cast::<c_char>();
-        let result = unsafe { bytes_to_string_vec(ptr) };
-
-        let expected_vec = vec!["value1", "value3"]
-            .into_iter()
-            .map(String::from)
-            .collect::<Vec<String>>();
-
-        assert_eq!(result, expected_vec);
+        let _ = unsafe { bytes_to_string_vec(ptr) };
     }
 
     #[rstest]

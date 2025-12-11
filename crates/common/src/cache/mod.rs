@@ -43,7 +43,7 @@ use nautilus_core::{
         check_key_not_in_map, check_predicate_false, check_slice_not_empty,
         check_valid_string_ascii,
     },
-    datetime::secs_to_nanos,
+    datetime::secs_to_nanos_unchecked,
 };
 use nautilus_model::{
     accounts::{Account, AccountAny},
@@ -896,7 +896,7 @@ impl Cache {
             }
         );
 
-        let buffer_ns = secs_to_nanos(buffer_secs as f64);
+        let buffer_ns = secs_to_nanos_unchecked(buffer_secs as f64);
 
         'outer: for client_order_id in self.index.orders_closed.clone() {
             if let Some(order) = self.orders.get(&client_order_id)
@@ -932,7 +932,7 @@ impl Cache {
             }
         );
 
-        let buffer_ns = secs_to_nanos(buffer_secs as f64);
+        let buffer_ns = secs_to_nanos_unchecked(buffer_secs as f64);
 
         for position_id in self.index.positions_closed.clone() {
             if let Some(position) = self.positions.get(&position_id)

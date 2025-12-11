@@ -63,6 +63,64 @@ configured, the adapter queries both APIs and merges the account states. This
 ensures the execution engine has visibility into collateral across both markets.
 :::
 
+## Bar streaming
+
+### Supported intervals
+
+The Kraken adapter supports real-time bar (OHLC) streaming for Spot markets via
+WebSocket. The following intervals are available:
+
+| Interval   | BarType specification |
+|------------|----------------------|
+| 1 minute   | `1-MINUTE-LAST`      |
+| 5 minutes  | `5-MINUTE-LAST`      |
+| 15 minutes | `15-MINUTE-LAST`     |
+| 30 minutes | `30-MINUTE-LAST`     |
+| 1 hour     | `1-HOUR-LAST`        |
+| 4 hours    | `4-HOUR-LAST`        |
+| 1 day      | `1-DAY-LAST`         |
+| 1 week     | `1-WEEK-LAST`        |
+| 15 days    | `15-DAY-LAST`        |
+
+:::note
+**Futures limitation**: Kraken Futures does not support bar streaming via
+WebSocket. Use `request_bars()` for historical bar data instead.
+:::
+
+### Bar emission latency
+
+Kraken's WebSocket OHLC channel pushes updates for the *current* (incomplete)
+bar on every trade. Unlike some exchanges (e.g., Binance), Kraken does not
+provide an "is_closed" indicator to signal when a bar is complete.
+
+To avoid emitting partial/incomplete bars, the adapter buffers the current bar
+and only emits it when the next bar period begins (i.e., when a message with a
+new `interval_begin` timestamp arrives). This means:
+
+- Bars are emitted with a delay of up to one bar period.
+- For 1-minute bars, the maximum delay is ~1 minute.
+- The emitted bar data is complete and final.
+
+We chose this approach over timer-based emission because:
+
+- Timer-based emission could miss the final update before the bar closes.
+- Kraken's updates are not guaranteed to arrive at exact interval boundaries.
+- Buffering ensures data integrity at the cost of latency.
+
+:::warning
+If bar latency is critical for your strategy, consider using trade tick data
+and aggregating bars locally with `BarAggregator`.
+:::
+
+:::tip
+For most use cases, we recommend using `INTERNAL` bar aggregation (subscribing to
+trades and aggregating bars locally) rather than `EXTERNAL` exchange-provided bars:
+
+- Bars are emitted immediately when complete, with no buffering delay.
+- Consistent behavior across all exchanges, simplifying multi-venue strategies.
+
+:::
+
 ## Symbology
 
 ### Spot markets

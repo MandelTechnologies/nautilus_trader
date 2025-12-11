@@ -49,7 +49,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_factory = OKXDataClientFactory::new();
     let client_id = ClientId::new("OKX");
 
-    let mut node = LiveNode::builder(node_name, trader_id, environment)?
+    let mut node = LiveNode::builder(trader_id, environment)?
+        .with_name(node_name)
         .add_data_client(None, Box::new(client_factory), Box::new(okx_config))?
         .build()?;
 

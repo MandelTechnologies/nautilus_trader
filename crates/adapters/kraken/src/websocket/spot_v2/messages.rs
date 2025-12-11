@@ -15,6 +15,7 @@
 
 //! Data models for Kraken WebSocket v2 API messages.
 
+use chrono::{DateTime, Utc};
 use nautilus_model::{
     data::{Data, OrderBookDeltas},
     events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
@@ -63,6 +64,8 @@ pub struct KrakenWsParams {
     pub snapshot: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +128,8 @@ pub struct KrakenWsMessage {
     pub data: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<Ustr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,7 +180,7 @@ pub struct KrakenWsBookLevel {
 pub struct KrakenWsOhlcData {
     pub symbol: Ustr,
     pub interval: u32,
-    pub timestamp: String,
+    pub interval_begin: DateTime<Utc>,
     pub open: f64,
     pub high: f64,
     pub low: f64,

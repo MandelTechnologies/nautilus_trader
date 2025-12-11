@@ -32,6 +32,15 @@ pub const NANOSECONDS_IN_MILLISECOND: u64 = 1_000_000;
 /// Number of nanoseconds in one microsecond.
 pub const NANOSECONDS_IN_MICROSECOND: u64 = 1_000;
 
+// Maximum finite seconds input that can be converted to nanoseconds without overflowing `u64`.
+const MAX_SECS_FOR_NANOS: f64 = u64::MAX as f64 / NANOSECONDS_IN_SECOND as f64;
+// Maximum finite seconds input that can be converted to milliseconds without overflowing `u64`.
+const MAX_SECS_FOR_MILLIS: f64 = u64::MAX as f64 / MILLISECONDS_IN_SECOND as f64;
+// Maximum finite milliseconds input that can be converted to nanoseconds without overflowing `u64`.
+const MAX_MILLIS_FOR_NANOS: f64 = u64::MAX as f64 / NANOSECONDS_IN_MILLISECOND as f64;
+// Maximum finite microseconds input that can be converted to nanoseconds without overflowing `u64`.
+const MAX_MICROS_FOR_NANOS: f64 = u64::MAX as f64 / NANOSECONDS_IN_MICROSECOND as f64;
+
 // Compile-time checks for time constants to prevent accidental modification
 #[cfg(test)]
 mod compile_time_checks {
@@ -77,10 +86,17 @@ pub const WEEKDAYS: [Weekday; 5] = [
     clippy::cast_sign_loss,
     reason = "Intentional for unit conversion, may lose precision after clamping"
 )]
-#[must_use]
-pub fn secs_to_nanos(secs: f64) -> u64 {
+pub fn secs_to_nanos(secs: f64) -> anyhow::Result<u64> {
+    anyhow::ensure!(secs.is_finite(), "seconds must be finite, was {secs}");
+    if secs <= 0.0 {
+        return Ok(0);
+    }
+    anyhow::ensure!(
+        secs <= MAX_SECS_FOR_NANOS,
+        "seconds {secs} exceeds maximum representable value {MAX_SECS_FOR_NANOS}"
+    );
     let nanos = secs * NANOSECONDS_IN_SECOND as f64;
-    nanos.max(0.0).trunc() as u64
+    Ok(nanos.trunc() as u64)
 }
 
 /// Converts seconds to milliseconds (ms).
@@ -90,10 +106,26 @@ pub fn secs_to_nanos(secs: f64) -> u64 {
     clippy::cast_sign_loss,
     reason = "Intentional for unit conversion, may lose precision after clamping"
 )]
-#[must_use]
-pub fn secs_to_millis(secs: f64) -> u64 {
+pub fn secs_to_millis(secs: f64) -> anyhow::Result<u64> {
+    anyhow::ensure!(secs.is_finite(), "seconds must be finite, was {secs}");
+    if secs <= 0.0 {
+        return Ok(0);
+    }
+    anyhow::ensure!(
+        secs <= MAX_SECS_FOR_MILLIS,
+        "seconds {secs} exceeds maximum representable value {MAX_SECS_FOR_MILLIS}"
+    );
     let millis = secs * MILLISECONDS_IN_SECOND as f64;
-    millis.max(0.0).trunc() as u64
+    Ok(millis.trunc() as u64)
+}
+
+/// Converts seconds to nanoseconds (ns), panicking on invalid input.
+///
+/// This is a convenience wrapper around [`secs_to_nanos`] when the caller expects
+/// the input to be trusted and in-range.
+#[must_use]
+pub fn secs_to_nanos_unchecked(secs: f64) -> u64 {
+    secs_to_nanos(secs).expect("secs_to_nanos_unchecked: invalid or overflowing input")
 }
 
 /// Converts milliseconds (ms) to nanoseconds (ns).
@@ -105,10 +137,26 @@ pub fn secs_to_millis(secs: f64) -> u64 {
     clippy::cast_sign_loss,
     reason = "Intentional for unit conversion, may lose precision after clamping"
 )]
-#[must_use]
-pub fn millis_to_nanos(millis: f64) -> u64 {
+pub fn millis_to_nanos(millis: f64) -> anyhow::Result<u64> {
+    anyhow::ensure!(
+        millis.is_finite(),
+        "milliseconds must be finite, was {millis}"
+    );
+    if millis <= 0.0 {
+        return Ok(0);
+    }
+    anyhow::ensure!(
+        millis <= MAX_MILLIS_FOR_NANOS,
+        "milliseconds {millis} exceeds maximum representable value {MAX_MILLIS_FOR_NANOS}"
+    );
     let nanos = millis * NANOSECONDS_IN_MILLISECOND as f64;
-    nanos.max(0.0).trunc() as u64
+    Ok(nanos.trunc() as u64)
+}
+
+/// Converts milliseconds (ms) to nanoseconds (ns), panicking on invalid input.
+#[must_use]
+pub fn millis_to_nanos_unchecked(millis: f64) -> u64 {
+    millis_to_nanos(millis).expect("millis_to_nanos_unchecked: invalid or overflowing input")
 }
 
 /// Converts microseconds (μs) to nanoseconds (ns).
@@ -120,10 +168,26 @@ pub fn millis_to_nanos(millis: f64) -> u64 {
     clippy::cast_sign_loss,
     reason = "Intentional for unit conversion, may lose precision after clamping"
 )]
-#[must_use]
-pub fn micros_to_nanos(micros: f64) -> u64 {
+pub fn micros_to_nanos(micros: f64) -> anyhow::Result<u64> {
+    anyhow::ensure!(
+        micros.is_finite(),
+        "microseconds must be finite, was {micros}"
+    );
+    if micros <= 0.0 {
+        return Ok(0);
+    }
+    anyhow::ensure!(
+        micros <= MAX_MICROS_FOR_NANOS,
+        "microseconds {micros} exceeds maximum representable value {MAX_MICROS_FOR_NANOS}"
+    );
     let nanos = micros * NANOSECONDS_IN_MICROSECOND as f64;
-    nanos.max(0.0).trunc() as u64
+    Ok(nanos.trunc() as u64)
+}
+
+/// Converts microseconds (μs) to nanoseconds (ns), panicking on invalid input.
+#[must_use]
+pub fn micros_to_nanos_unchecked(micros: f64) -> u64 {
+    micros_to_nanos(micros).expect("micros_to_nanos_unchecked: invalid or overflowing input")
 }
 
 /// Converts nanoseconds (ns) to seconds.
@@ -450,7 +514,7 @@ mod tests {
     #[case(0.000_000_001, 1)]
     #[case(9.999_999_999, 9_999_999_999)]
     fn test_secs_to_nanos(#[case] value: f64, #[case] expected: u64) {
-        let result = secs_to_nanos(value);
+        let result = secs_to_nanos(value).unwrap();
         assert_eq!(result, expected);
     }
 
@@ -462,8 +526,62 @@ mod tests {
     #[case(0.012_34, 12)]
     #[case(0.001, 1)]
     fn test_secs_to_millis(#[case] value: f64, #[case] expected: u64) {
-        let result = secs_to_millis(value);
+        let result = secs_to_millis(value).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn test_secs_to_nanos_unchecked_matches_checked() {
+        assert_eq!(secs_to_nanos_unchecked(1.1), secs_to_nanos(1.1).unwrap());
+    }
+
+    #[rstest]
+    fn test_secs_to_nanos_non_finite_errors() {
+        let err = secs_to_nanos(f64::NAN).unwrap_err();
+        assert!(err.to_string().contains("finite"));
+    }
+
+    #[rstest]
+    fn test_secs_to_nanos_overflow_errors() {
+        let err = secs_to_nanos(MAX_SECS_FOR_NANOS + 1.0).unwrap_err();
+        assert!(err.to_string().contains("exceeds"));
+    }
+
+    #[rstest]
+    fn test_secs_to_millis_non_finite_errors() {
+        let err = secs_to_millis(f64::INFINITY).unwrap_err();
+        assert!(err.to_string().contains("finite"));
+    }
+
+    #[rstest]
+    fn test_millis_to_nanos_overflow_errors() {
+        let err = millis_to_nanos(MAX_MILLIS_FOR_NANOS + 1.0).unwrap_err();
+        assert!(err.to_string().contains("exceeds"));
+    }
+
+    #[rstest]
+    fn test_millis_to_nanos_non_finite_errors() {
+        let err = millis_to_nanos(f64::NEG_INFINITY).unwrap_err();
+        assert!(err.to_string().contains("finite"));
+    }
+
+    #[rstest]
+    fn test_micros_to_nanos_non_finite_errors() {
+        let err = micros_to_nanos(f64::NAN).unwrap_err();
+        assert!(err.to_string().contains("finite"));
+    }
+
+    #[rstest]
+    fn test_micros_to_nanos_overflow_errors() {
+        // Use * 2.0 because + 1.0 doesn't change MAX_MICROS_FOR_NANOS due to f64 precision
+        let err = micros_to_nanos(MAX_MICROS_FOR_NANOS * 2.0).unwrap_err();
+        assert!(err.to_string().contains("exceeds"));
+    }
+
+    #[rstest]
+    fn test_secs_to_nanos_negative_infinity_errors() {
+        let result = secs_to_nanos(f64::NEG_INFINITY);
+        assert!(result.is_err());
     }
 
     #[rstest]
@@ -482,8 +600,16 @@ mod tests {
     #[case(0.000_001, 1)]
     #[case(9.999_999, 9_999_999)]
     fn test_millis_to_nanos(#[case] value: f64, #[case] expected: u64) {
-        let result = millis_to_nanos(value);
+        let result = millis_to_nanos(value).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn test_millis_to_nanos_unchecked_matches_checked() {
+        assert_eq!(
+            millis_to_nanos_unchecked(1.1),
+            millis_to_nanos(1.1).unwrap()
+        );
     }
 
     #[rstest]
@@ -496,8 +622,16 @@ mod tests {
     #[case(0.001, 1)]
     #[case(9.999, 9_999)]
     fn test_micros_to_nanos(#[case] value: f64, #[case] expected: u64) {
-        let result = micros_to_nanos(value);
+        let result = micros_to_nanos(value).unwrap();
         assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn test_micros_to_nanos_unchecked_matches_checked() {
+        assert_eq!(
+            micros_to_nanos_unchecked(1.1),
+            micros_to_nanos(1.1).unwrap()
+        );
     }
 
     #[rstest]

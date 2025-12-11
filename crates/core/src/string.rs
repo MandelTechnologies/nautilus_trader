@@ -29,12 +29,18 @@
 /// ```
 #[must_use]
 pub fn mask_api_key(key: &str) -> String {
-    let len = key.len();
+    // Work with Unicode scalars to avoid panicking on multibyte characters.
+    let chars: Vec<char> = key.chars().collect();
+    let len = chars.len();
+
     if len <= 8 {
-        "*".repeat(len)
-    } else {
-        format!("{}...{}", &key[..4], &key[len - 4..])
+        return "*".repeat(len);
     }
+
+    let first: String = chars[..4].iter().collect();
+    let last: String = chars[len - 4..].iter().collect();
+
+    format!("{first}...{last}")
 }
 
 ////////////////////////////////////////////////////////////////////////////////

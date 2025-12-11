@@ -924,7 +924,6 @@ fn dispatch_ws_message(
             }
         }
         NautilusWsMessage::OrderAccepted(event) => {
-            tracing::info!("OrderAccepted client_order_id={}", event.client_order_id);
             dispatch_order_event(OrderEventAny::Accepted(event), sender);
         }
         NautilusWsMessage::OrderCanceled(event) => {

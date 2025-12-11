@@ -23,6 +23,7 @@ from nautilus_trader.adapters.binance.futures.schemas.user import BinanceFutures
 from nautilus_trader.adapters.binance.spot.schemas.user import BinanceSpotOrderUpdateWrapper
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -315,9 +316,6 @@ class TestBinanceSpotExecutionHandlers:
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
         exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
 
-        # Mock order type to be LIMIT
-        from nautilus_trader.model.enums import OrderType
-
         mock_order.order_type = OrderType.LIMIT
 
         # Act
@@ -356,9 +354,6 @@ class TestBinanceSpotExecutionHandlers:
         exec_client._cache.order.return_value = mock_order
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
         exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
-
-        # Mock order type to be STOP_LIMIT
-        from nautilus_trader.model.enums import OrderType
 
         mock_order.order_type = OrderType.STOP_LIMIT
 
@@ -402,9 +397,6 @@ class TestBinanceSpotExecutionHandlers:
         exec_client._cache.order.return_value = mock_order
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
         exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
-
-        # Mock order type to be LIMIT_IF_TOUCHED
-        from nautilus_trader.model.enums import OrderType
 
         mock_order.order_type = OrderType.LIMIT_IF_TOUCHED
 
@@ -690,6 +682,7 @@ class TestBinanceFuturesExecutionHandlers:
         mock_order.quantity = Quantity.from_str("1.000")
         mock_order.has_price = True  # LIMIT orders have prices
         mock_order.has_trigger_price = False  # LIMIT orders don't have trigger prices
+        mock_order.venue_order_id = VenueOrderId("8765432100")
 
         # Create mocked exec_client
         exec_client = mocker.MagicMock()
@@ -697,9 +690,6 @@ class TestBinanceFuturesExecutionHandlers:
         exec_client._cache.order.return_value = mock_order
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
         exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
-
-        # Mock order type to be LIMIT
-        from nautilus_trader.model.enums import OrderType
 
         mock_order.order_type = OrderType.LIMIT
 
@@ -732,6 +722,7 @@ class TestBinanceFuturesExecutionHandlers:
         mock_order.quantity = Quantity.from_str("1.000")
         mock_order.has_price = True  # STOP_LIMIT orders have prices
         mock_order.has_trigger_price = True  # STOP_LIMIT orders have trigger prices
+        mock_order.venue_order_id = VenueOrderId("8765432101")
 
         # Create mocked exec_client
         exec_client = mocker.MagicMock()
@@ -739,9 +730,6 @@ class TestBinanceFuturesExecutionHandlers:
         exec_client._cache.order.return_value = mock_order
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
         exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
-
-        # Mock order type to be STOP_LIMIT
-        from nautilus_trader.model.enums import OrderType
 
         mock_order.order_type = OrderType.STOP_LIMIT
 
@@ -774,6 +762,7 @@ class TestBinanceFuturesExecutionHandlers:
         mock_order.quantity = Quantity.from_str("1.000")
         mock_order.has_price = True  # LIMIT_IF_TOUCHED orders have prices
         mock_order.has_trigger_price = True  # LIMIT_IF_TOUCHED orders have trigger prices
+        mock_order.venue_order_id = VenueOrderId("8765432102")
 
         # Create mocked exec_client
         exec_client = mocker.MagicMock()
@@ -781,9 +770,6 @@ class TestBinanceFuturesExecutionHandlers:
         exec_client._cache.order.return_value = mock_order
         exec_client._get_cached_instrument_id.return_value = ETHUSDT_BINANCE.id
         exec_client._instrument_provider.find.return_value = ETHUSDT_BINANCE
-
-        # Mock order type to be LIMIT_IF_TOUCHED
-        from nautilus_trader.model.enums import OrderType
 
         mock_order.order_type = OrderType.LIMIT_IF_TOUCHED
 

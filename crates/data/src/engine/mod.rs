@@ -67,7 +67,7 @@ use nautilus_core::{
     correctness::{
         FAILED, check_key_in_map, check_key_not_in_map, check_predicate_false, check_predicate_true,
     },
-    datetime::millis_to_nanos,
+    datetime::millis_to_nanos_unchecked,
 };
 #[cfg(feature = "defi")]
 use nautilus_model::defi::DefiData;
@@ -964,7 +964,7 @@ impl DataEngine {
 
         if first_for_interval {
             // Initialize snapshotter and schedule its timer
-            let interval_ns = millis_to_nanos(cmd.interval_ms.get() as f64);
+            let interval_ns = millis_to_nanos_unchecked(cmd.interval_ms.get() as f64);
             let topic = switchboard::get_book_snapshots_topic(cmd.instrument_id, cmd.interval_ms);
 
             let snap_info = BookSnapshotInfo {

@@ -19,7 +19,7 @@
 //! in this file.
 
 use ahash::AHashMap;
-use nautilus_core::{UnixNanos, datetime::secs_to_nanos};
+use nautilus_core::{UnixNanos, datetime::secs_to_nanos_unchecked};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
 
@@ -196,7 +196,7 @@ impl BaseAccount {
     ///
     /// Panics if the purging implementation is changed and all events are purged.
     pub fn base_purge_account_events(&mut self, ts_now: UnixNanos, lookback_secs: u64) {
-        let lookback_ns = UnixNanos::from(secs_to_nanos(lookback_secs as f64));
+        let lookback_ns = UnixNanos::from(secs_to_nanos_unchecked(lookback_secs as f64));
 
         let mut retained_events = Vec::new();
 

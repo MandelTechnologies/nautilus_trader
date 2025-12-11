@@ -13,15 +13,9 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-// Under development
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fmt::Debug,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -33,7 +27,8 @@ use nautilus_common::{
     actor::{Actor, DataActor},
     component::Component,
     enums::Environment,
-    live::clock::LiveClock,
+    messages::{DataEvent, ExecutionEvent, data::DataCommand, execution::TradingCommand},
+    timer::TimeEventHandlerV2,
 };
 use nautilus_core::UUID4;
 use nautilus_data::client::DataClientAdapter;
@@ -44,10 +39,11 @@ use nautilus_system::{
     kernel::NautilusKernel,
 };
 use nautilus_trading::strategy::Strategy;
-#[cfg(feature = "python")]
-use pyo3::{Py, PyAny};
 
-use crate::{config::LiveNodeConfig, runner::AsyncRunner};
+use crate::{
+    config::LiveNodeConfig,
+    runner::{AsyncRunner, AsyncRunnerChannels},
+};
 
 /// A thread-safe handle to control a `LiveNode` from other threads.
 /// This allows starting, stopping, and querying the node's state
@@ -113,16 +109,14 @@ impl LiveNodeHandle {
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", unsendable)
 )]
 pub struct LiveNode {
-    clock: Rc<RefCell<LiveClock>>,
     kernel: NautilusKernel,
-    runner: AsyncRunner,
+    runner: Option<AsyncRunner>,
     config: LiveNodeConfig,
     is_running: bool,
-    /// Handle for thread-safe control of this node.
     handle: LiveNodeHandle,
     #[cfg(feature = "python")]
-    #[allow(dead_code)]
-    python_actors: Vec<Py<PyAny>>,
+    #[allow(dead_code)] // TODO: Under development
+    python_actors: Vec<pyo3::Py<pyo3::PyAny>>,
 }
 
 impl LiveNode {
@@ -131,17 +125,17 @@ impl LiveNode {
     pub fn handle(&self) -> LiveNodeHandle {
         self.handle.clone()
     }
+
     /// Creates a new [`LiveNodeBuilder`] for fluent configuration.
     ///
     /// # Errors
     ///
     /// Returns an error if the environment is invalid for live trading.
     pub fn builder(
-        name: String,
         trader_id: TraderId,
         environment: Environment,
     ) -> anyhow::Result<LiveNodeBuilder> {
-        LiveNodeBuilder::new(name, trader_id, environment)
+        LiveNodeBuilder::new(trader_id, environment)
     }
 
     /// Creates a new [`LiveNode`] directly from a kernel name and optional configuration.
@@ -157,7 +151,6 @@ impl LiveNode {
         let mut config = config.unwrap_or_default();
         config.environment = Environment::Live;
 
-        // Validate environment for live trading
         match config.environment() {
             Environment::Sandbox | Environment::Live => {}
             Environment::Backtest => {
@@ -166,15 +159,13 @@ impl LiveNode {
         }
 
         let runner = AsyncRunner::new();
-        let clock = Rc::new(RefCell::new(LiveClock::default()));
         let kernel = NautilusKernel::new(name, config.clone())?;
 
         log::info!("LiveNode built successfully with kernel config");
 
         Ok(Self {
-            clock,
             kernel,
-            runner,
+            runner: Some(runner),
             config,
             is_running: false,
             handle: LiveNodeHandle::new(),
@@ -259,51 +250,133 @@ impl LiveNode {
 
     /// Run the live node with automatic shutdown handling.
     ///
-    /// This method will start the node, run indefinitely, and handle
-    /// graceful shutdown on interrupt signals.
+    /// This method starts the node, runs indefinitely, and handles graceful shutdown
+    /// on interrupt signals.
+    ///
+    /// # Thread Safety
+    ///
+    /// The event loop runs directly on the current thread (not spawned) because the
+    /// msgbus uses thread-local storage. Endpoints registered by the kernel are only
+    /// accessible from the same thread.
+    ///
+    /// # Shutdown Sequence
+    ///
+    /// 1. Signal received (SIGINT or handle stop).
+    /// 2. Kernel shutdown begins.
+    /// 3. Remaining events are drained from channels.
     ///
     /// # Errors
     ///
     /// Returns an error if the node fails to start or encounters a runtime error.
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        if self.runner.is_none() {
+            anyhow::bail!("Runner already consumed - run() called twice");
+        }
+
         self.start().await?;
 
-        tokio::select! {
-            // Run on main thread
-            () = self.runner.run() => {
-                log::info!("AsyncRunner finished");
-            }
-            // Handle stop signal from handle (for Python integration)
-            () = async {
-                while !self.handle.should_stop() {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // SAFETY: We checked is_none() above and start() doesn't consume the runner
+        let Some(runner) = self.runner.take() else {
+            unreachable!("Runner was verified to exist before start()")
+        };
+
+        let AsyncRunnerChannels {
+            mut time_evt_rx,
+            mut data_evt_rx,
+            mut data_cmd_rx,
+            mut exec_evt_rx,
+            mut exec_cmd_rx,
+        } = runner.take_channels();
+
+        log::info!("Event loop starting");
+
+        loop {
+            tokio::select! {
+                result = tokio::signal::ctrl_c() => {
+                    match result {
+                        Ok(()) => log::info!("Received SIGINT, shutting down"),
+                        Err(e) => log::error!("Failed to listen for SIGINT: {e}"),
+                    }
+                    break;
                 }
-                log::info!("Received stop signal from handle");
-            } => {
-                self.runner.stop();
-                // Give the AsyncRunner a moment to process the shutdown signal
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-            // Handle SIGINT signal (fallback for direct Rust usage)
-            result = tokio::signal::ctrl_c() => {
-                match result {
-                    Ok(()) => {
-                        log::info!("Received SIGINT, shutting down");
-                        self.runner.stop();
-                        // Give the AsyncRunner a moment to process the shutdown signal
+                Some(handler) = time_evt_rx.recv() => {
+                    AsyncRunner::handle_time_event(handler);
+                }
+                Some(cmd) = data_cmd_rx.recv() => {
+                    AsyncRunner::handle_data_command(cmd);
+                }
+                Some(evt) = data_evt_rx.recv() => {
+                    AsyncRunner::handle_data_event(evt);
+                }
+                Some(cmd) = exec_cmd_rx.recv() => {
+                    AsyncRunner::handle_exec_command(cmd);
+                }
+                Some(evt) = exec_evt_rx.recv() => {
+                    AsyncRunner::handle_exec_event(evt);
+                }
+                () = async {
+                    loop {
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        if self.handle.should_stop() {
+                            log::info!("Received stop signal from handle");
+                            return;
+                        }
                     }
-                    Err(e) => {
-                        log::error!("Failed to listen for SIGINT: {e}");
-                    }
+                } => {
+                    break;
                 }
             }
         }
 
-        log::debug!("AsyncRunner and signal handling finished");
-
         self.stop().await?;
+
+        self.drain_channels(
+            &mut time_evt_rx,
+            &mut data_evt_rx,
+            &mut data_cmd_rx,
+            &mut exec_evt_rx,
+            &mut exec_cmd_rx,
+        );
+
+        log::info!("Event loop stopped");
+
         Ok(())
+    }
+
+    fn drain_channels(
+        &self,
+        time_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TimeEventHandlerV2>,
+        data_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataEvent>,
+        data_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<DataCommand>,
+        exec_evt_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ExecutionEvent>,
+        exec_cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<TradingCommand>,
+    ) {
+        let mut drained = 0;
+
+        while let Ok(handler) = time_evt_rx.try_recv() {
+            AsyncRunner::handle_time_event(handler);
+            drained += 1;
+        }
+        while let Ok(cmd) = data_cmd_rx.try_recv() {
+            AsyncRunner::handle_data_command(cmd);
+            drained += 1;
+        }
+        while let Ok(evt) = data_evt_rx.try_recv() {
+            AsyncRunner::handle_data_event(evt);
+            drained += 1;
+        }
+        while let Ok(cmd) = exec_cmd_rx.try_recv() {
+            AsyncRunner::handle_exec_command(cmd);
+            drained += 1;
+        }
+        while let Ok(evt) = exec_evt_rx.try_recv() {
+            AsyncRunner::handle_exec_event(evt);
+            drained += 1;
+        }
+
+        if drained > 0 {
+            log::info!("Drained {drained} remaining events during shutdown");
+        }
     }
 
     /// Gets the node's environment.
@@ -367,19 +440,6 @@ impl LiveNode {
         self.kernel.trader.add_actor(actor)
     }
 
-    pub(crate) fn add_registered_actor<T>(&mut self, actor: T) -> anyhow::Result<()>
-    where
-        T: DataActor + Component + Actor + 'static,
-    {
-        if self.is_running {
-            anyhow::bail!(
-                "Cannot add actor while node is running. Add actors before calling start()."
-            );
-        }
-
-        self.kernel.trader.add_registered_actor(actor)
-    }
-
     /// Adds an actor to the live node using a factory function.
     ///
     /// The factory function is called at registration time to create the actor,
@@ -439,6 +499,7 @@ impl LiveNode {
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", unsendable)
 )]
 pub struct LiveNodeBuilder {
+    name: String,
     config: LiveNodeConfig,
     data_client_factories: HashMap<String, Box<dyn DataClientFactory>>,
     exec_client_factories: HashMap<String, Box<dyn ExecutionClientFactory>>,
@@ -452,11 +513,7 @@ impl LiveNodeBuilder {
     /// # Errors
     ///
     /// Returns an error if `environment` is invalid (BACKTEST).
-    pub fn new(
-        name: String,
-        trader_id: TraderId,
-        environment: Environment,
-    ) -> anyhow::Result<Self> {
+    pub fn new(trader_id: TraderId, environment: Environment) -> anyhow::Result<Self> {
         match environment {
             Environment::Sandbox | Environment::Live => {}
             Environment::Backtest => {
@@ -471,12 +528,26 @@ impl LiveNodeBuilder {
         };
 
         Ok(Self {
+            name: "LiveNode".to_string(),
             config,
             data_client_factories: HashMap::new(),
             exec_client_factories: HashMap::new(),
             data_client_configs: HashMap::new(),
             exec_client_configs: HashMap::new(),
         })
+    }
+
+    /// Returns the name for the node.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Set the name for the node.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
     }
 
     /// Set the instance ID for the node.
@@ -603,9 +674,9 @@ impl LiveNodeBuilder {
             self.exec_client_factories.len()
         );
 
+        // Create runner first to set up global event channels
         let runner = AsyncRunner::new();
-        let clock = Rc::new(RefCell::new(LiveClock::default()));
-        let kernel = NautilusKernel::new("LiveNode".to_string(), self.config.clone())?;
+        let kernel = NautilusKernel::new(self.name.clone(), self.config.clone())?;
 
         // Create and register data clients
         for (name, factory) in self.data_client_factories {
@@ -654,9 +725,8 @@ impl LiveNodeBuilder {
         log::info!("Built successfully");
 
         Ok(LiveNode {
-            clock,
             kernel,
-            runner,
+            runner: Some(runner),
             config: self.config,
             is_running: false,
             handle: LiveNodeHandle::new(),
@@ -679,22 +749,14 @@ mod tests {
 
     #[rstest]
     fn test_trading_node_builder_creation() {
-        let result = LiveNode::builder(
-            "TestNode".to_string(),
-            TraderId::from("TRADER-001"),
-            Environment::Sandbox,
-        );
+        let result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Sandbox);
 
         assert!(result.is_ok());
     }
 
     #[rstest]
     fn test_trading_node_builder_rejects_backtest() {
-        let result = LiveNode::builder(
-            "TestNode".to_string(),
-            TraderId::from("TRADER-001"),
-            Environment::Backtest,
-        );
+        let result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Backtest);
 
         assert!(result.is_err());
         assert!(
@@ -707,15 +769,12 @@ mod tests {
 
     #[rstest]
     fn test_trading_node_builder_fluent_api() {
-        let result = LiveNode::builder(
-            "TestNode".to_string(),
-            TraderId::from("TRADER-001"),
-            Environment::Live,
-        );
+        let result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Live);
 
         assert!(result.is_ok());
         let _builder = result
             .unwrap()
+            .with_name("TestNode")
             .with_timeout_connection(30)
             .with_load_state(false);
 
@@ -725,14 +784,10 @@ mod tests {
     #[cfg(feature = "python")]
     #[rstest]
     fn test_trading_node_build() {
-        let builder_result = LiveNode::builder(
-            "TestNode".to_string(),
-            TraderId::from("TRADER-001"),
-            Environment::Sandbox,
-        );
+        let builder_result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Sandbox);
 
         assert!(builder_result.is_ok());
-        let build_result = builder_result.unwrap().build();
+        let build_result = builder_result.unwrap().with_name("TestNode").build();
 
         assert!(build_result.is_ok());
         let node = build_result.unwrap();
@@ -742,11 +797,7 @@ mod tests {
 
     #[rstest]
     fn test_builder_rejects_backtest_environment() {
-        let result = LiveNode::builder(
-            "TestNode".to_string(),
-            TraderId::from("TRADER-001"),
-            Environment::Backtest,
-        );
+        let result = LiveNode::builder(TraderId::from("TRADER-001"), Environment::Backtest);
 
         assert!(result.is_err());
         assert!(

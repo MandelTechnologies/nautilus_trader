@@ -891,8 +891,8 @@ impl OKXWsFeedHandler {
             tracing::debug!("Order operation successful: id={id:?} op={op} code={code}");
 
             if op == OKXWsOperation::BatchCancelOrders {
-                tracing::debug!(
-                    "Batch cancel operation successful: id={id:?} cancelled_count={}",
+                tracing::info!(
+                    "Batch cancel operation successful: id={id:?} cancel_count={}",
                     data.len()
                 );
 

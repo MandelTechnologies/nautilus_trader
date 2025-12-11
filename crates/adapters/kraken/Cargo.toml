@@ -101,3 +101,8 @@ path = "bin/http_spot_public.rs"
 [[bin]]
 name = "kraken-ws-spot-data"
 path = "bin/ws_spot_data.rs"
+
+# Run with `cargo bench -p nautilus-kraken --bench websocket`
+[[bench]]
+name = "websocket"
+harness = false

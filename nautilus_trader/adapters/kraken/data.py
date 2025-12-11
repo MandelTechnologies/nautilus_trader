@@ -360,11 +360,35 @@ class KrakenDataClient(LiveMarketDataClient):
         await ws_client.subscribe_trades(pyo3_instrument_id)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
-        self._log.error(
-            f"Cannot subscribe to {command.bar_type} bars: "
-            f"WebSocket bar streaming not yet implemented. "
-            f"Use request_bars for historical bar data instead.",
-        )
+        if not command.bar_type.is_externally_aggregated():
+            self._log.warning(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"only EXTERNAL bars are supported, use INTERNAL aggregation instead",
+            )
+            return
+
+        if not command.bar_type.spec.is_time_aggregated():
+            self._log.warning(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"only time-based bars are aggregated by Kraken",
+            )
+            return
+
+        symbol = command.bar_type.instrument_id.symbol.value
+        if symbol.startswith(("PI_", "PF_", "PV_", "FI_", "FF_")):
+            self._log.warning(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"Kraken Futures does not support EXTERNAL bar streaming, "
+                f"use INTERNAL aggregation instead",
+            )
+            return
+
+        if self._ws_client_spot is None:
+            self._log.error(f"No spot WebSocket client configured for {command.bar_type}")
+            return
+
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
+        await self._ws_client_spot.subscribe_bars(pyo3_bar_type)
 
     async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         if self._config.update_instruments_interval_mins:
@@ -427,8 +451,16 @@ class KrakenDataClient(LiveMarketDataClient):
         await ws_client.unsubscribe_trades(pyo3_instrument_id)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
-        # Bar subscriptions are not supported, nothing to unsubscribe
-        pass
+        symbol = command.bar_type.instrument_id.symbol.value
+        if symbol.startswith(("PI_", "PF_", "PV_", "FI_", "FF_")):
+            # Futures bars were never subscribed
+            return
+
+        if self._ws_client_spot is None:
+            return
+
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
+        await self._ws_client_spot.unsubscribe_bars(pyo3_bar_type)
 
     async def _unsubscribe_instruments(self, command: UnsubscribeInstruments) -> None:
         # Instruments are updated via polling task, no WebSocket unsubscribe needed

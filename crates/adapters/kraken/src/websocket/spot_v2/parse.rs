@@ -18,10 +18,10 @@
 use anyhow::Context;
 use nautilus_core::{UUID4, nanos::UnixNanos};
 use nautilus_model::{
-    data::{BookOrder, OrderBookDelta, QuoteTick, TradeTick},
+    data::{Bar, BarSpecification, BarType, BookOrder, OrderBookDelta, QuoteTick, TradeTick},
     enums::{
-        AggressorSide, BookAction, LiquiditySide, OrderSide, OrderStatus, OrderType, TimeInForce,
-        TriggerType,
+        AggregationSource, AggressorSide, BarAggregation, BookAction, LiquiditySide, OrderSide,
+        OrderStatus, OrderType, PriceType, TimeInForce, TriggerType,
     },
     identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, VenueOrderId},
     instruments::{Instrument, any::InstrumentAny},
@@ -32,8 +32,8 @@ use nautilus_model::{
 use super::{
     enums::{KrakenExecType, KrakenLiquidityInd, KrakenWsOrderStatus},
     messages::{
-        KrakenWsBookData, KrakenWsBookLevel, KrakenWsExecutionData, KrakenWsTickerData,
-        KrakenWsTradeData,
+        KrakenWsBookData, KrakenWsBookLevel, KrakenWsExecutionData, KrakenWsOhlcData,
+        KrakenWsTickerData, KrakenWsTradeData,
     },
 };
 use crate::common::enums::{KrakenOrderSide, KrakenOrderType, KrakenTimeInForce};
@@ -230,6 +230,59 @@ fn parse_rfc3339_timestamp(value: &str, field: &str) -> anyhow::Result<UnixNanos
     value
         .parse::<UnixNanos>()
         .map_err(|e| anyhow::anyhow!("Failed to parse {field}='{value}': {e}"))
+}
+
+/// Parses Kraken WebSocket OHLC data into a Nautilus bar.
+///
+/// The bar's `ts_event` is computed as `interval_begin` + `interval` minutes.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Price or quantity values cannot be parsed.
+/// - The interval cannot be converted to a valid bar specification.
+pub fn parse_ws_bar(
+    ohlc: &KrakenWsOhlcData,
+    instrument: &InstrumentAny,
+    ts_init: UnixNanos,
+) -> anyhow::Result<Bar> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+
+    let open = Price::new_checked(ohlc.open, price_precision)?;
+    let high = Price::new_checked(ohlc.high, price_precision)?;
+    let low = Price::new_checked(ohlc.low, price_precision)?;
+    let close = Price::new_checked(ohlc.close, price_precision)?;
+    let volume = Quantity::new_checked(ohlc.volume, size_precision)?;
+
+    let bar_spec = interval_to_bar_spec(ohlc.interval)?;
+    let bar_type = BarType::new(instrument_id, bar_spec, AggregationSource::External);
+
+    // Compute bar close time: interval_begin + interval minutes
+    let interval_secs = i64::from(ohlc.interval) * 60;
+    let close_time = ohlc.interval_begin + chrono::Duration::seconds(interval_secs);
+    let ts_event = UnixNanos::from(close_time.timestamp_nanos_opt().unwrap_or(0) as u64);
+
+    Bar::new_checked(bar_type, open, high, low, close, volume, ts_event, ts_init)
+}
+
+/// Converts a Kraken OHLC interval (minutes) to a Nautilus bar specification.
+fn interval_to_bar_spec(interval: u32) -> anyhow::Result<BarSpecification> {
+    let (step, aggregation) = match interval {
+        1 => (1, BarAggregation::Minute),
+        5 => (5, BarAggregation::Minute),
+        15 => (15, BarAggregation::Minute),
+        30 => (30, BarAggregation::Minute),
+        60 => (1, BarAggregation::Hour),
+        240 => (4, BarAggregation::Hour),
+        1440 => (1, BarAggregation::Day),
+        10080 => (1, BarAggregation::Week),
+        21600 => (15, BarAggregation::Day), // 21600 min = 360 hours = 15 days
+        _ => anyhow::bail!("Unsupported Kraken OHLC interval: {interval}"),
+    };
+
+    Ok(BarSpecification::new(step, aggregation, PriceType::Last))
 }
 
 /// Parses Kraken execution type and order status to Nautilus order status.
@@ -654,5 +707,69 @@ mod tests {
         let timestamp = "2023-10-06T17:35:55.440295Z";
         let result = parse_rfc3339_timestamp(timestamp, "test").unwrap();
         assert!(result.as_u64() > 0);
+    }
+
+    #[rstest]
+    fn test_parse_ws_bar() {
+        let json = load_test_json("ws_ohlc_update.json");
+        let message: KrakenWsMessage = serde_json::from_str(&json).unwrap();
+        let ohlc: KrakenWsOhlcData = serde_json::from_value(message.data[0].clone()).unwrap();
+
+        let instrument = create_mock_instrument();
+        let bar = parse_ws_bar(&ohlc, &instrument, TS).unwrap();
+
+        assert_eq!(bar.bar_type.instrument_id(), instrument.id());
+        assert!(bar.open.as_f64() > 0.0);
+        assert!(bar.high.as_f64() > 0.0);
+        assert!(bar.low.as_f64() > 0.0);
+        assert!(bar.close.as_f64() > 0.0);
+        assert!(bar.volume.as_f64() > 0.0);
+
+        let spec = bar.bar_type.spec();
+        assert_eq!(spec.step.get(), 1);
+        assert_eq!(spec.aggregation, BarAggregation::Minute);
+        assert_eq!(spec.price_type, PriceType::Last);
+
+        // Verify ts_event is computed as interval_begin + interval (close time)
+        // interval_begin is 2023-10-04T16:25:00Z, interval is 1 minute, so close is 16:26:00Z
+        let expected_close = ohlc.interval_begin + chrono::Duration::minutes(1);
+        let expected_ts_event =
+            UnixNanos::from(expected_close.timestamp_nanos_opt().unwrap() as u64);
+        assert_eq!(bar.ts_event, expected_ts_event);
+    }
+
+    #[rstest]
+    fn test_interval_to_bar_spec() {
+        let test_cases = [
+            (1, 1, BarAggregation::Minute),
+            (5, 5, BarAggregation::Minute),
+            (15, 15, BarAggregation::Minute),
+            (30, 30, BarAggregation::Minute),
+            (60, 1, BarAggregation::Hour),
+            (240, 4, BarAggregation::Hour),
+            (1440, 1, BarAggregation::Day),
+            (10080, 1, BarAggregation::Week),
+            (21600, 15, BarAggregation::Day), // 21600 min = 15 days
+        ];
+
+        for (interval, expected_step, expected_aggregation) in test_cases {
+            let spec = interval_to_bar_spec(interval).unwrap();
+            assert_eq!(
+                spec.step.get(),
+                expected_step,
+                "Failed for interval {interval}"
+            );
+            assert_eq!(
+                spec.aggregation, expected_aggregation,
+                "Failed for interval {interval}"
+            );
+            assert_eq!(spec.price_type, PriceType::Last);
+        }
+    }
+
+    #[rstest]
+    fn test_interval_to_bar_spec_invalid() {
+        let result = interval_to_bar_spec(999);
+        assert!(result.is_err());
     }
 }

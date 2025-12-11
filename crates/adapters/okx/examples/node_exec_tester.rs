@@ -64,7 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_factory = OKXDataClientFactory::new();
     let exec_factory = OKXExecutionClientFactory::new();
 
-    let mut node = LiveNode::builder(node_name, trader_id, environment)?
+    let mut node = LiveNode::builder(trader_id, environment)?
+        .with_name(node_name)
         .add_data_client(None, Box::new(data_factory), Box::new(data_config))?
         .add_exec_client(None, Box::new(exec_factory), Box::new(exec_config))?
         .with_delay_post_stop_secs(5)

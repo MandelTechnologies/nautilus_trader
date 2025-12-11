@@ -24,6 +24,7 @@ use arc_swap::ArcSwap;
 use nautilus_common::live::runtime::get_runtime;
 use nautilus_model::{
     data::BarType,
+    enums::BarAggregation,
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     instruments::InstrumentAny,
 };
@@ -235,61 +236,8 @@ impl KrakenSpotWebSocketClient {
                             for topic in &topics {
                                 let auth_token = auth_token_for_reconnect.read().await.clone();
 
-                                if let Some((channel_str, symbol_str)) = topic.split_once(':') {
-                                    let channel = match channel_str {
-                                        "Book" => Some(KrakenWsChannel::Book),
-                                        "Trade" => Some(KrakenWsChannel::Trade),
-                                        "Ticker" => Some(KrakenWsChannel::Ticker),
-                                        "Ohlc" => Some(KrakenWsChannel::Ohlc),
-                                        "book" => Some(KrakenWsChannel::Book),
-                                        "quotes" => {
-                                            // Quotes use Book channel with depth 10
-                                            Some(KrakenWsChannel::Book)
-                                        }
-                                        _ => None,
-                                    };
-
-                                    if let Some(channel) = channel {
-                                        let mut counter =
-                                            req_id_counter_for_reconnect.write().await;
-                                        *counter += 1;
-                                        let req_id = *counter;
-
-                                        let depth = if channel_str == "quotes" {
-                                            Some(10)
-                                        } else {
-                                            None
-                                        };
-
-                                        let request = KrakenWsRequest {
-                                            method: KrakenWsMethod::Subscribe,
-                                            params: Some(KrakenWsParams {
-                                                channel,
-                                                symbol: Some(vec![Ustr::from(symbol_str)]),
-                                                snapshot: None,
-                                                depth,
-                                                token: None,
-                                                snap_orders: None,
-                                                snap_trades: None,
-                                            }),
-                                            req_id: Some(req_id),
-                                        };
-
-                                        if let Ok(payload) = serde_json::to_string(&request)
-                                            && let Err(e) = cmd_tx_for_reconnect
-                                                .send(SpotHandlerCommand::SendText { payload })
-                                        {
-                                            tracing::error!(
-                                                error = %e,
-                                                topic,
-                                                "Failed to send resubscribe command"
-                                            );
-                                        }
-
-                                        subscriptions.mark_subscribe(topic);
-                                    }
-                                } else if topic == "executions" {
-                                    // Private executions channel
+                                // Handle special "executions" topic first
+                                if topic == "executions" {
                                     if let Some(ref token) = auth_token {
                                         let mut counter =
                                             req_id_counter_for_reconnect.write().await;
@@ -303,6 +251,7 @@ impl KrakenSpotWebSocketClient {
                                                 symbol: None,
                                                 snapshot: None,
                                                 depth: None,
+                                                interval: None,
                                                 token: Some(token.clone()),
                                                 snap_orders: Some(true),
                                                 snap_trades: Some(true),
@@ -326,7 +275,78 @@ impl KrakenSpotWebSocketClient {
                                             "Cannot resubscribe to executions: no auth token"
                                         );
                                     }
+                                    continue;
                                 }
+
+                                // Parse topic format: "Channel:symbol" or "Channel:symbol:interval"
+                                let parts: Vec<&str> = topic.splitn(3, ':').collect();
+                                if parts.len() < 2 {
+                                    tracing::warn!(topic, "Invalid topic format for resubscribe");
+                                    continue;
+                                }
+
+                                let channel_str = parts[0];
+                                let channel = match channel_str {
+                                    "Book" => Some(KrakenWsChannel::Book),
+                                    "Trade" => Some(KrakenWsChannel::Trade),
+                                    "Ticker" => Some(KrakenWsChannel::Ticker),
+                                    "Ohlc" => Some(KrakenWsChannel::Ohlc),
+                                    "book" => Some(KrakenWsChannel::Book),
+                                    "quotes" => Some(KrakenWsChannel::Book),
+                                    _ => None,
+                                };
+
+                                let Some(channel) = channel else {
+                                    tracing::warn!(topic, "Unknown channel for resubscribe");
+                                    continue;
+                                };
+
+                                let mut counter = req_id_counter_for_reconnect.write().await;
+                                *counter += 1;
+                                let req_id = *counter;
+
+                                let depth = if channel_str == "quotes" {
+                                    Some(10)
+                                } else {
+                                    None
+                                };
+
+                                // Extract symbol and optional interval
+                                let (symbol_str, interval) = if parts.len() == 3 {
+                                    // Format: "Ohlc:BTC/USD:1" -> symbol="BTC/USD", interval=1
+                                    (parts[1], parts[2].parse::<u32>().ok())
+                                } else {
+                                    // Format: "Book:BTC/USD" -> symbol="BTC/USD", interval=None
+                                    (parts[1], None)
+                                };
+
+                                let request = KrakenWsRequest {
+                                    method: KrakenWsMethod::Subscribe,
+                                    params: Some(KrakenWsParams {
+                                        channel,
+                                        symbol: Some(vec![Ustr::from(symbol_str)]),
+                                        snapshot: None,
+                                        depth,
+                                        interval,
+                                        token: None,
+                                        snap_orders: None,
+                                        snap_trades: None,
+                                    }),
+                                    req_id: Some(req_id),
+                                };
+
+                                if let Ok(payload) = serde_json::to_string(&request)
+                                    && let Err(e) = cmd_tx_for_reconnect
+                                        .send(SpotHandlerCommand::SendText { payload })
+                                {
+                                    tracing::error!(
+                                        error = %e,
+                                        topic,
+                                        "Failed to send resubscribe command"
+                                    );
+                                }
+
+                                subscriptions.mark_subscribe(topic);
                             }
                         }
 
@@ -593,6 +613,7 @@ impl KrakenSpotWebSocketClient {
                 symbol: Some(symbols_to_subscribe.clone()),
                 snapshot: None,
                 depth,
+                interval: None,
                 token,
                 snap_orders: None,
                 snap_trades: None,
@@ -605,6 +626,98 @@ impl KrakenSpotWebSocketClient {
         for symbol in &symbols_to_subscribe {
             let key = format!("{:?}:{}", channel, symbol);
             self.subscriptions.confirm_subscribe(&key);
+        }
+
+        Ok(())
+    }
+
+    /// Subscribes to a channel with a specific interval (for OHLC).
+    async fn subscribe_with_interval(
+        &self,
+        channel: KrakenWsChannel,
+        symbols: Vec<Ustr>,
+        interval: u32,
+    ) -> Result<(), KrakenWsError> {
+        let mut symbols_to_subscribe = Vec::new();
+        for symbol in &symbols {
+            let key = format!("{channel:?}:{symbol}:{interval}");
+            if self.subscriptions.add_reference(&key) {
+                self.subscriptions.mark_subscribe(&key);
+                symbols_to_subscribe.push(*symbol);
+            }
+        }
+
+        if symbols_to_subscribe.is_empty() {
+            return Ok(());
+        }
+
+        let req_id = self.get_next_req_id().await;
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Subscribe,
+            params: Some(KrakenWsParams {
+                channel,
+                symbol: Some(symbols_to_subscribe.clone()),
+                snapshot: None,
+                depth: None,
+                interval: Some(interval),
+                token: None,
+                snap_orders: None,
+                snap_trades: None,
+            }),
+            req_id: Some(req_id),
+        };
+
+        self.send_request(&request).await?;
+
+        for symbol in &symbols_to_subscribe {
+            let key = format!("{channel:?}:{symbol}:{interval}");
+            self.subscriptions.confirm_subscribe(&key);
+        }
+
+        Ok(())
+    }
+
+    /// Unsubscribes from a channel with a specific interval (for OHLC).
+    async fn unsubscribe_with_interval(
+        &self,
+        channel: KrakenWsChannel,
+        symbols: Vec<Ustr>,
+        interval: u32,
+    ) -> Result<(), KrakenWsError> {
+        let mut symbols_to_unsubscribe = Vec::new();
+        for symbol in &symbols {
+            let key = format!("{channel:?}:{symbol}:{interval}");
+            if self.subscriptions.remove_reference(&key) {
+                self.subscriptions.mark_unsubscribe(&key);
+                symbols_to_unsubscribe.push(*symbol);
+            }
+        }
+
+        if symbols_to_unsubscribe.is_empty() {
+            return Ok(());
+        }
+
+        let req_id = self.get_next_req_id().await;
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Unsubscribe,
+            params: Some(KrakenWsParams {
+                channel,
+                symbol: Some(symbols_to_unsubscribe.clone()),
+                snapshot: None,
+                depth: None,
+                interval: Some(interval),
+                token: None,
+                snap_orders: None,
+                snap_trades: None,
+            }),
+            req_id: Some(req_id),
+        };
+
+        self.send_request(&request).await?;
+
+        for symbol in &symbols_to_unsubscribe {
+            let key = format!("{channel:?}:{symbol}:{interval}");
+            self.subscriptions.confirm_unsubscribe(&key);
         }
 
         Ok(())
@@ -658,6 +771,7 @@ impl KrakenSpotWebSocketClient {
                 symbol: Some(symbols_to_unsubscribe.clone()),
                 snapshot: None,
                 depth: None,
+                interval: None,
                 token,
                 snap_orders: None,
                 snap_trades: None,
@@ -793,9 +907,14 @@ impl KrakenSpotWebSocketClient {
     }
 
     /// Subscribes to bar/OHLC updates for the given bar type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bar aggregation is not supported by Kraken.
     pub async fn subscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
         let symbol = bar_type.instrument_id().symbol.inner();
-        self.subscribe(KrakenWsChannel::Ohlc, vec![symbol], None)
+        let interval = bar_type_to_ws_interval(bar_type)?;
+        self.subscribe_with_interval(KrakenWsChannel::Ohlc, vec![symbol], interval)
             .await
     }
 
@@ -823,6 +942,7 @@ impl KrakenSpotWebSocketClient {
                 symbol: None,
                 snapshot: None,
                 depth: None,
+                interval: None,
                 token: Some(token),
                 snap_orders: Some(snap_orders),
                 snap_trades: Some(snap_trades),
@@ -884,9 +1004,15 @@ impl KrakenSpotWebSocketClient {
     }
 
     /// Unsubscribes from bar/OHLC updates for the given bar type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bar aggregation is not supported by Kraken.
     pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
         let symbol = bar_type.instrument_id().symbol.inner();
-        self.unsubscribe(KrakenWsChannel::Ohlc, vec![symbol]).await
+        let interval = bar_type_to_ws_interval(bar_type)?;
+        self.unsubscribe_with_interval(KrakenWsChannel::Ohlc, vec![symbol], interval)
+            .await
     }
 
     /// Ensures book channel is subscribed for the given symbol (used internally by quotes).
@@ -943,4 +1069,37 @@ async fn refresh_auth_token(config: &KrakenDataClientConfig) -> Result<String, K
     );
 
     Ok(ws_token.token)
+}
+
+/// Converts a Nautilus BarType to Kraken WebSocket OHLC interval (in minutes).
+///
+/// Supported intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
+/// (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 2w).
+fn bar_type_to_ws_interval(bar_type: BarType) -> Result<u32, KrakenWsError> {
+    let spec = bar_type.spec();
+    let step = spec.step.get() as u32;
+
+    let base_minutes = match spec.aggregation {
+        BarAggregation::Minute => 1,
+        BarAggregation::Hour => 60,
+        BarAggregation::Day => 1440,
+        BarAggregation::Week => 10080,
+        other => {
+            return Err(KrakenWsError::SubscriptionError(format!(
+                "Unsupported bar aggregation for Kraken OHLC streaming: {other:?}"
+            )));
+        }
+    };
+
+    let interval = base_minutes * step;
+
+    const VALID_INTERVALS: [u32; 9] = [1, 5, 15, 30, 60, 240, 1440, 10080, 21600];
+    if !VALID_INTERVALS.contains(&interval) {
+        return Err(KrakenWsError::SubscriptionError(format!(
+            "Invalid bar interval {interval} minutes for Kraken OHLC streaming. \
+             Supported intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600"
+        )));
+    }
+
+    Ok(interval)
 }
