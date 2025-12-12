@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class FillResult:
     latency_ms: int
 
 
-class BotfolioFillModel:
+class QuantChatFillModel:
     """
     Configurable fill model for simulating realistic order execution.
 

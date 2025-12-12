@@ -1,5 +1,5 @@
 """
-Trading Engine entry point for bot-folio.
+Trading Engine entry point for quantchat.
 
 Fetches strategy code and config from Redis, sets up credentials as environment
 variables, then executes the strategy using Nautilus Trader.
@@ -97,24 +97,24 @@ def setup_credentials_env(config: dict) -> None:
     """
     credentials = config.get("credentials", {})
 
-    # Provider (e.g., 'alpaca', 'botfolio')
+    # Provider (e.g., 'alpaca', 'quantchat')
     provider = credentials.get("provider", "")
-    os.environ["BOTFOLIO_PROVIDER"] = provider
+    os.environ["QUANTCHAT_PROVIDER"] = provider
 
     # Trading mode (paper/live)
     trading_mode = credentials.get("tradingMode", "paper")
-    os.environ["BOTFOLIO_TRADING_MODE"] = trading_mode
+    os.environ["QUANTCHAT_TRADING_MODE"] = trading_mode
 
-    if provider == "botfolio":
-        # Local paper trading with bot-folio adapter
+    if provider == "quantchat":
+        # Local paper trading with quantchat adapter
         # No external credentials needed - uses Redis for market data
-        os.environ["BOTFOLIO_ADAPTER"] = "local"
-        os.environ["BOTFOLIO_REDIS_URL"] = os.environ.get("REDIS_URL", "redis://localhost:6379")
-        log("Using bot-folio local adapter for paper trading")
+        os.environ["QUANTCHAT_ADAPTER"] = "local"
+        os.environ["QUANTCHAT_REDIS_URL"] = os.environ.get("REDIS_URL", "redis://localhost:6379")
+        log("Using quantchat local adapter for paper trading")
 
     elif provider == "alpaca":
         # Alpaca external broker
-        os.environ["BOTFOLIO_ADAPTER"] = "alpaca"
+        os.environ["QUANTCHAT_ADAPTER"] = "alpaca"
 
         # API Key authentication
         if "apiKey" in credentials:
@@ -131,12 +131,12 @@ def setup_credentials_env(config: dict) -> None:
         )
 
     # Capital settings
-    os.environ["BOTFOLIO_INITIAL_CAPITAL"] = str(config.get("initialCapital", 100000))
-    os.environ["BOTFOLIO_VIRTUAL_CASH"] = str(config.get("virtualCash", 100000))
+    os.environ["QUANTCHAT_INITIAL_CAPITAL"] = str(config.get("initialCapital", 100000))
+    os.environ["QUANTCHAT_VIRTUAL_CASH"] = str(config.get("virtualCash", 100000))
 
     # Membership tier feature flag - PRO/ELITE users can access tick data
     can_access_tick_data = config.get("canAccessTickData", False)
-    os.environ["BOTFOLIO_CAN_ACCESS_TICK_DATA"] = "true" if can_access_tick_data else "false"
+    os.environ["QUANTCHAT_CAN_ACCESS_TICK_DATA"] = "true" if can_access_tick_data else "false"
     if can_access_tick_data:
         log("Tick data access: enabled (PRO/ELITE membership)")
     else:
@@ -145,7 +145,7 @@ def setup_credentials_env(config: dict) -> None:
     # Position isolation: Store bot's positions for restoration on startup
     # This ensures each bot only sees its own positions, even when sharing an Alpaca account
     positions = config.get("positions", [])
-    os.environ["BOTFOLIO_POSITIONS"] = json.dumps(positions)
+    os.environ["QUANTCHAT_POSITIONS"] = json.dumps(positions)
     if positions:
         log(f"Position isolation: {len(positions)} position(s) to restore")
 
@@ -177,7 +177,7 @@ def main():
             return
 
         log(f"Starting strategy for bot {_bot_id}...")
-        os.environ["BOTFOLIO_BOT_ID"] = _bot_id
+        os.environ["QUANTCHAT_BOT_ID"] = _bot_id
 
         # 2. Connect to Redis
         try:

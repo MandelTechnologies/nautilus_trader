@@ -1,13 +1,13 @@
 # -------------------------------------------------------------------------------------------------
-#  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  QuantChat Local Paper Trading Adapter for Nautilus Trader
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.model.identifiers import Venue
 
 
 # Venue identifier for local paper trading
-BOTFOLIO_VENUE = Venue("BOTFOLIO")
+QUANTCHAT_VENUE = Venue("QUANTCHAT")
 
 # Default Redis channel prefixes
 REDIS_BAR_CHANNEL_PREFIX = "market:bar:"

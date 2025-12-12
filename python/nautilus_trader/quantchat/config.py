@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 
 @dataclass
-class BotfolioConfig:
+class QuantChatConfig:
     """
     Configuration loaded from environment variables set by the trading engine.
     """
@@ -38,27 +38,27 @@ class BotfolioConfig:
         return self.trading_mode == "live"
 
 
-def get_config() -> BotfolioConfig:
+def get_config() -> QuantChatConfig:
     """
-    Get the bot-folio configuration from environment variables.
+    Get the quantchat configuration from environment variables.
 
     These are set by run_strategy.py before executing the user's strategy.
 
     Returns
     -------
-    BotfolioConfig
+    QuantChatConfig
         The configuration object with credentials and settings.
 
     """
-    return BotfolioConfig(
-        bot_id=os.environ.get("BOTFOLIO_BOT_ID", ""),
-        provider=os.environ.get("BOTFOLIO_PROVIDER", ""),
-        trading_mode=os.environ.get("BOTFOLIO_TRADING_MODE", "paper"),
-        initial_capital=float(os.environ.get("BOTFOLIO_INITIAL_CAPITAL", "100000")),
-        virtual_cash=float(os.environ.get("BOTFOLIO_VIRTUAL_CASH", "100000")),
+    return QuantChatConfig(
+        bot_id=os.environ.get("QUANTCHAT_BOT_ID", ""),
+        provider=os.environ.get("QUANTCHAT_PROVIDER", ""),
+        trading_mode=os.environ.get("QUANTCHAT_TRADING_MODE", "paper"),
+        initial_capital=float(os.environ.get("QUANTCHAT_INITIAL_CAPITAL", "100000")),
+        virtual_cash=float(os.environ.get("QUANTCHAT_VIRTUAL_CASH", "100000")),
         alpaca_api_key=os.environ.get("APCA_API_KEY_ID"),
         alpaca_api_secret=os.environ.get("APCA_API_SECRET_KEY"),
         alpaca_access_token=os.environ.get("APCA_API_ACCESS_TOKEN"),
         alpaca_base_url=os.environ.get("APCA_API_BASE_URL"),
-        can_access_tick_data=os.environ.get("BOTFOLIO_CAN_ACCESS_TICK_DATA", "").lower() == "true",
+        can_access_tick_data=os.environ.get("QUANTCHAT_CAN_ACCESS_TICK_DATA", "").lower() == "true",
     )

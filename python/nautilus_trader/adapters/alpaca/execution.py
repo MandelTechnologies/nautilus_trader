@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  Bot-folio Alpaca Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -161,7 +161,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
         """
         Update account state.
 
-        POSITION ISOLATION: Uses bot's virtual cash from BOTFOLIO_VIRTUAL_CASH
+        POSITION ISOLATION: Uses bot's virtual cash from QUANTCHAT_VIRTUAL_CASH
         environment variable instead of the full Alpaca account balance. This
         ensures each bot only sees its allocated capital, preventing bots from
         accidentally trading with capital allocated to other bots.
@@ -171,8 +171,8 @@ class AlpacaExecutionClient(LiveExecutionClient):
 
         # Position Isolation: Use bot's virtual cash instead of Alpaca account balance
         # This prevents bots from seeing/using capital allocated to other bots
-        virtual_cash_str = os.environ.get("BOTFOLIO_VIRTUAL_CASH")
-        initial_capital_str = os.environ.get("BOTFOLIO_INITIAL_CAPITAL")
+        virtual_cash_str = os.environ.get("QUANTCHAT_VIRTUAL_CASH")
+        initial_capital_str = os.environ.get("QUANTCHAT_INITIAL_CAPITAL")
 
         if virtual_cash_str:
             # Use bot's tracked virtual cash (updated as trades execute)
@@ -195,7 +195,7 @@ class AlpacaExecutionClient(LiveExecutionClient):
             cash = Decimal(str(account_info.get("cash", "0")))
             self._log.warning(
                 f"Position isolation NOT configured - using Alpaca account cash={cash} USD. "
-                f"Set BOTFOLIO_VIRTUAL_CASH for proper bot isolation.",
+                f"Set QUANTCHAT_VIRTUAL_CASH for proper bot isolation.",
             )
 
         # Create account balance for USD

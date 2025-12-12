@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from nautilus_trader.adapters.botfolio.config import BotfolioDataClientConfig
-from nautilus_trader.adapters.botfolio.constants import BOTFOLIO_VENUE
-from nautilus_trader.adapters.botfolio.constants import REDIS_BAR_CHANNEL_PREFIX
-from nautilus_trader.adapters.botfolio.constants import REDIS_QUOTE_CHANNEL_PREFIX
-from nautilus_trader.adapters.botfolio.providers import BotfolioInstrumentProvider
+from nautilus_trader.adapters.quantchat.config import QuantChatDataClientConfig
+from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
+from nautilus_trader.adapters.quantchat.constants import REDIS_BAR_CHANNEL_PREFIX
+from nautilus_trader.adapters.quantchat.constants import REDIS_QUOTE_CHANNEL_PREFIX
+from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -43,12 +43,12 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
-class BotfolioDataClient(LiveMarketDataClient):
+class QuantChatDataClient(LiveMarketDataClient):
     """
     Provides a data client for Botfolio local paper trading.
 
     Subscribes to Redis pub/sub channels for market data published by the
-    bot-folio backend (from EODHD).
+    quantchat backend (from EODHD).
 
     Parameters
     ----------
@@ -60,9 +60,9 @@ class BotfolioDataClient(LiveMarketDataClient):
         The cache for the client.
     clock : LiveClock
         The clock for the client.
-    instrument_provider : BotfolioInstrumentProvider
+    instrument_provider : QuantChatInstrumentProvider
         The instrument provider.
-    config : BotfolioDataClientConfig
+    config : QuantChatDataClientConfig
         The configuration for the client.
     name : str, optional
         The custom client ID.
@@ -75,14 +75,14 @@ class BotfolioDataClient(LiveMarketDataClient):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        instrument_provider: BotfolioInstrumentProvider,
-        config: BotfolioDataClientConfig,
+        instrument_provider: QuantChatInstrumentProvider,
+        config: QuantChatDataClientConfig,
         name: str | None = None,
     ) -> None:
         super().__init__(
             loop=loop,
-            client_id=ClientId(name or "BOTFOLIO"),
-            venue=BOTFOLIO_VENUE,
+            client_id=ClientId(name or "QUANTCHAT"),
+            venue=QUANTCHAT_VENUE,
             msgbus=msgbus,
             cache=cache,
             clock=clock,
@@ -187,7 +187,7 @@ class BotfolioDataClient(LiveMarketDataClient):
             # Create default 1-minute bar type for this symbol
             instrument_id = InstrumentId(
                 symbol=Symbol(symbol),
-                venue=BOTFOLIO_VENUE,
+                venue=QUANTCHAT_VENUE,
             )
             bar_type = BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL")
             self._bar_types[symbol] = bar_type
@@ -215,7 +215,7 @@ class BotfolioDataClient(LiveMarketDataClient):
         """
         instrument_id = InstrumentId(
             symbol=Symbol(symbol),
-            venue=BOTFOLIO_VENUE,
+            venue=QUANTCHAT_VENUE,
         )
 
         price = data.get("price", 0)

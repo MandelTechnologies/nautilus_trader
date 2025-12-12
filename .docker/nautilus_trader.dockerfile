@@ -45,7 +45,7 @@ RUN uv pip install --system dist/*.whl
 RUN find /usr/local/lib/python3.13/site-packages -name "*.pyc" -exec rm -f {} \;
 
 # Copy bot-folio custom modules into installed package
-COPY python/nautilus_trader/botfolio /usr/local/lib/python3.13/site-packages/nautilus_trader/botfolio
+COPY python/nautilus_trader/quantchat /usr/local/lib/python3.13/site-packages/nautilus_trader/quantchat
 COPY python/nautilus_trader/adapters/alpaca /usr/local/lib/python3.13/site-packages/nautilus_trader/adapters/alpaca
 
 # Final application image
@@ -60,5 +60,5 @@ COPY --from=builder /usr/local/bin/ /usr/local/bin/
 RUN pip install --no-cache-dir redis aiohttp websockets
 
 # Default entrypoint for bot-folio trading engine
-# Runs the strategy fetcher/executor from the botfolio module
-CMD ["python", "-m", "nautilus_trader.botfolio.run_strategy"]
+# Runs the strategy fetcher/executor from the quantchat module
+CMD ["python", "-m", "nautilus_trader.quantchat.run_strategy"]

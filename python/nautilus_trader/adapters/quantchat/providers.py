@@ -1,13 +1,13 @@
 # -------------------------------------------------------------------------------------------------
 #  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.botfolio.constants import BOTFOLIO_VENUE
+from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
@@ -20,7 +20,7 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
-class BotfolioInstrumentProvider(InstrumentProvider):
+class QuantChatInstrumentProvider(InstrumentProvider):
     """
     Provides instruments for Botfolio local paper trading.
 
@@ -107,7 +107,7 @@ class BotfolioInstrumentProvider(InstrumentProvider):
         """
         instrument_id = InstrumentId(
             symbol=Symbol(symbol_str),
-            venue=BOTFOLIO_VENUE,
+            venue=QUANTCHAT_VENUE,
         )
 
         # Determine instrument type based on symbol

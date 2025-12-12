@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from decimal import Decimal
 
 import redis.asyncio as aioredis
 
-from nautilus_trader.adapters.botfolio.config import BotfolioExecClientConfig
-from nautilus_trader.adapters.botfolio.constants import BOTFOLIO_VENUE
-from nautilus_trader.adapters.botfolio.constants import REDIS_BAR_CHANNEL_PREFIX
-from nautilus_trader.adapters.botfolio.fill_model import BotfolioFillModel
-from nautilus_trader.adapters.botfolio.providers import BotfolioInstrumentProvider
+from nautilus_trader.adapters.quantchat.config import QuantChatExecClientConfig
+from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
+from nautilus_trader.adapters.quantchat.constants import REDIS_BAR_CHANNEL_PREFIX
+from nautilus_trader.adapters.quantchat.fill_model import QuantChatFillModel
+from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -47,7 +47,7 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
-class BotfolioExecutionClient(LiveExecutionClient):
+class QuantChatExecutionClient(LiveExecutionClient):
     """
     Provides an execution client for Botfolio local paper trading.
 
@@ -64,9 +64,9 @@ class BotfolioExecutionClient(LiveExecutionClient):
         The cache for the client.
     clock : LiveClock
         The clock for the client.
-    instrument_provider : BotfolioInstrumentProvider
+    instrument_provider : QuantChatInstrumentProvider
         The instrument provider.
-    config : BotfolioExecClientConfig
+    config : QuantChatExecClientConfig
         The configuration for the client.
     name : str, optional
         The custom client ID.
@@ -79,14 +79,14 @@ class BotfolioExecutionClient(LiveExecutionClient):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        instrument_provider: BotfolioInstrumentProvider,
-        config: BotfolioExecClientConfig,
+        instrument_provider: QuantChatInstrumentProvider,
+        config: QuantChatExecClientConfig,
         name: str | None = None,
     ) -> None:
         super().__init__(
             loop=loop,
-            client_id=ClientId(name or "BOTFOLIO"),
-            venue=BOTFOLIO_VENUE,
+            client_id=ClientId(name or "QUANTCHAT"),
+            venue=QUANTCHAT_VENUE,
             oms_type=OmsType.NETTING,
             instrument_provider=instrument_provider,
             account_type=AccountType.CASH,
@@ -100,7 +100,7 @@ class BotfolioExecutionClient(LiveExecutionClient):
         self._redis_url = config.redis_url
 
         # Fill model for simulating realistic execution
-        self._fill_model = BotfolioFillModel(
+        self._fill_model = QuantChatFillModel(
             base_latency_ms=config.base_latency_ms,
             slippage_bps=config.slippage_bps,
             partial_fill_prob=config.partial_fill_prob,
@@ -118,7 +118,7 @@ class BotfolioExecutionClient(LiveExecutionClient):
         self._subscribed_symbols: set[str] = set()
 
         # Generate a unique account ID
-        self._account_id = AccountId(f"BOTFOLIO-PAPER-{UUID4().value[:8]}")
+        self._account_id = AccountId(f"QUANTCHAT-PAPER-{UUID4().value[:8]}")
 
         # Pending orders (for limit/stop orders - future enhancement)
         self._pending_orders: dict[str, SubmitOrder] = {}

@@ -1,5 +1,5 @@
 """
-Position restoration for bot-folio position isolation.
+Position restoration for quantchat position isolation.
 
 When multiple bots share the same Alpaca account, each bot needs to track only its own
 positions. This module restores a bot's positions from the backend database into the
@@ -96,7 +96,7 @@ def restore_positions_from_env(
     logger: Any = None,
 ) -> int:
     """
-    Restore bot positions from BOTFOLIO_POSITIONS environment variable.
+    Restore bot positions from QUANTCHAT_POSITIONS environment variable.
 
     This function reads positions serialized by the backend and creates
     Position objects in the Nautilus cache. This ensures the bot sees
@@ -123,12 +123,12 @@ def restore_positions_from_env(
         Number of positions restored.
 
     """
-    positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
+    positions_json = os.environ.get("QUANTCHAT_POSITIONS", "[]")
 
     try:
         positions_data = json.loads(positions_json)
     except json.JSONDecodeError:
-        _log_warning("Failed to parse BOTFOLIO_POSITIONS JSON", logger)
+        _log_warning("Failed to parse QUANTCHAT_POSITIONS JSON", logger)
         return 0
 
     if not positions_data:
@@ -162,7 +162,7 @@ def restore_positions_from_env(
             if strategy_id:
                 effective_strategy_id = strategy_id
             else:
-                bot_id = os.environ.get("BOTFOLIO_BOT_ID", "")
+                bot_id = os.environ.get("QUANTCHAT_BOT_ID", "")
                 effective_strategy_id = StrategyId(bot_id) if bot_id else StrategyId("RESTORE")
 
             # Create a synthetic fill event to establish the position
@@ -210,9 +210,9 @@ def _get_position_strategy_id(strategy: Strategy) -> StrategyId:
     """
     Get the strategy ID to use for position isolation.
     """
-    bot_id = os.environ.get("BOTFOLIO_BOT_ID", "")
+    bot_id = os.environ.get("QUANTCHAT_BOT_ID", "")
     if not bot_id:
-        strategy.log.warning("Position restore: BOTFOLIO_BOT_ID not set, using strategy.id")
+        strategy.log.warning("Position restore: QUANTCHAT_BOT_ID not set, using strategy.id")
         return strategy.id
     return StrategyId(bot_id)
 
@@ -304,12 +304,12 @@ def restore_positions_for_strategy(
     instrument_ids: list[InstrumentId] | None = None,
 ) -> int:
     """
-    Restore bot positions for a strategy from BOTFOLIO_POSITIONS.
+    Restore bot positions for a strategy from QUANTCHAT_POSITIONS.
 
     This is the recommended way to restore positions. Call this from your
     strategy's on_start() method after the account is connected.
 
-    Position isolation uses the bot_id (from BOTFOLIO_BOT_ID env var) rather
+    Position isolation uses the bot_id (from QUANTCHAT_BOT_ID env var) rather
     than the Nautilus strategy_id. This ensures positions persist correctly
     even if the strategy class name changes between deploys.
 
@@ -321,7 +321,7 @@ def restore_positions_for_strategy(
         The venue string for instrument IDs.
     instrument_ids : list[InstrumentId], optional
         If provided, only restore positions for these instruments.
-        If None, restores all positions from BOTFOLIO_POSITIONS.
+        If None, restores all positions from QUANTCHAT_POSITIONS.
 
     Returns
     -------
@@ -331,7 +331,7 @@ def restore_positions_for_strategy(
     Example
     -------
     ```python
-    from nautilus_trader.botfolio.position_restore import restore_positions_for_strategy
+    from nautilus_trader.quantchat.position_restore import restore_positions_for_strategy
 
     class MyStrategy(Strategy):
         def __init__(self, config):
@@ -354,12 +354,12 @@ def restore_positions_for_strategy(
     ```
 
     """
-    positions_json = os.environ.get("BOTFOLIO_POSITIONS", "[]")
+    positions_json = os.environ.get("QUANTCHAT_POSITIONS", "[]")
 
     try:
         positions_data = json.loads(positions_json)
     except json.JSONDecodeError:
-        strategy.log.warning("Failed to parse BOTFOLIO_POSITIONS JSON")
+        strategy.log.warning("Failed to parse QUANTCHAT_POSITIONS JSON")
         return 0
 
     if not positions_data:

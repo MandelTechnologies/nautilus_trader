@@ -1,5 +1,5 @@
 """
-Event Emitter Actor for bot-folio.
+Event Emitter Actor for quantchat.
 
 Subscribes to trading events within Nautilus and publishes them to Redis for the backend
 to persist orders, fills, and positions.
@@ -50,7 +50,7 @@ class EventEmitter(Actor):
 
     def __init__(self, config: EventEmitterConfig) -> None:
         super().__init__(config)
-        self._bot_id = config.bot_id or os.environ.get("BOTFOLIO_BOT_ID", "")
+        self._bot_id = config.bot_id or os.environ.get("QUANTCHAT_BOT_ID", "")
         self._redis_url = config.redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
         self._redis: redis.Redis | None = None
         self._channel = f"engine:events:{self._bot_id}"

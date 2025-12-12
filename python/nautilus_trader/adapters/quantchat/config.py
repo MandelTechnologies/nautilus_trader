@@ -1,26 +1,26 @@
 # -------------------------------------------------------------------------------------------------
 #  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/bot-folio
+#  https://github.com/mandeltechnologies/quantchat
 # -------------------------------------------------------------------------------------------------
 
-from nautilus_trader.adapters.botfolio.constants import BOTFOLIO_VENUE
-from nautilus_trader.adapters.botfolio.constants import DEFAULT_BASE_LATENCY_MS
-from nautilus_trader.adapters.botfolio.constants import DEFAULT_REDIS_URL
-from nautilus_trader.adapters.botfolio.constants import DEFAULT_SLIPPAGE_BPS
-from nautilus_trader.adapters.botfolio.constants import DEFAULT_STARTING_BALANCE
+from nautilus_trader.adapters.quantchat.constants import DEFAULT_BASE_LATENCY_MS
+from nautilus_trader.adapters.quantchat.constants import DEFAULT_REDIS_URL
+from nautilus_trader.adapters.quantchat.constants import DEFAULT_SLIPPAGE_BPS
+from nautilus_trader.adapters.quantchat.constants import DEFAULT_STARTING_BALANCE
+from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
 from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.config import PositiveInt
 from nautilus_trader.model.identifiers import Venue
 
 
-class BotfolioDataClientConfig(LiveDataClientConfig, frozen=True):
+class QuantChatDataClientConfig(LiveDataClientConfig, frozen=True):
     """
-    Configuration for ``BotfolioDataClient`` instances.
+    Configuration for ``QuantChatDataClient`` instances.
 
     Parameters
     ----------
-    venue : Venue, default BOTFOLIO_VENUE
+    venue : Venue, default QUANTCHAT_VENUE
         The venue for the client.
     redis_url : str, default "redis://localhost:6379"
         The Redis connection URL for subscribing to market data.
@@ -31,19 +31,19 @@ class BotfolioDataClientConfig(LiveDataClientConfig, frozen=True):
 
     """
 
-    venue: Venue = BOTFOLIO_VENUE
+    venue: Venue = QUANTCHAT_VENUE
     redis_url: str = DEFAULT_REDIS_URL
     symbols: list[str] | None = None
     can_access_tick_data: bool = False
 
 
-class BotfolioExecClientConfig(LiveExecClientConfig, frozen=True):
+class QuantChatExecClientConfig(LiveExecClientConfig, frozen=True):
     """
-    Configuration for ``BotfolioExecutionClient`` instances.
+    Configuration for ``QuantChatExecutionClient`` instances.
 
     Parameters
     ----------
-    venue : Venue, default BOTFOLIO_VENUE
+    venue : Venue, default QUANTCHAT_VENUE
         The venue for the client.
     redis_url : str, default "redis://localhost:6379"
         The Redis connection URL for receiving price data (used for fill simulation).
@@ -58,7 +58,7 @@ class BotfolioExecClientConfig(LiveExecClientConfig, frozen=True):
 
     """
 
-    venue: Venue = BOTFOLIO_VENUE
+    venue: Venue = QUANTCHAT_VENUE
     redis_url: str = DEFAULT_REDIS_URL
     starting_balance: str = DEFAULT_STARTING_BALANCE
     base_latency_ms: PositiveInt = DEFAULT_BASE_LATENCY_MS
