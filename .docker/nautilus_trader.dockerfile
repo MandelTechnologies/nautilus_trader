@@ -33,6 +33,7 @@ COPY uv.lock pyproject.toml build.py ./
 RUN uv sync --no-install-package nautilus_trader
 
 # Build nautilus_trader
+COPY rust-toolchain rust-toolchain.toml ./
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY crates ./crates
