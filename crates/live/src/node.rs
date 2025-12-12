@@ -393,7 +393,7 @@ impl LiveNode {
 
     /// Gets an exclusive reference to the underlying kernel.
     #[must_use]
-    pub(crate) const fn kernel_mut(&mut self) -> &mut NautilusKernel {
+    pub const fn kernel_mut(&mut self) -> &mut NautilusKernel {
         &mut self.kernel
     }
 

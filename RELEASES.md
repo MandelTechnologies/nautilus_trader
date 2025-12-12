@@ -120,7 +120,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added non-mutating swap quote simulation for Pool tickmap profiling (#3123), thanks @filipmacek
 - Added ERC20 token balance tracking to BlockchainExecutionClient (#3224), thanks @filipmacek
 - Added DeFi pool discovery service with full Uniswap(V2/V3/V4) support (#3255), thanks @filipmacek
-- Added initial Deribit HTTP client with instrument support (#3288), thanks @filipmacek
+- Added Deribit HTTP client with instrument support (#3288), thanks @filipmacek
+- Added Deribit account balance and credential management (#3295), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
@@ -161,6 +162,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Improved dYdX v4 gRPC execution with edge cases and batch cancel (#3239), thanks @nicolad
 - Improved dYdX v4 data/exec testers and fix GTT (#3254), thanks @nicolad
 - Improved dYdX v4 WebSocket subscription state management (#3286), thanks @nicolad
+- Improved dYdX v4 enums for type safety and improve WS tests (#3294), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Improved Tardis adapter robustness and error handling
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
@@ -168,6 +170,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Standardized dYdX per adapter guide conventions (#3267), thanks @nicolad
 - Changed Interactive Brokers default quote tick subscription to batch quotes (#3196), thanks @faysou
 - Refined timer name validation to accept non-ASCII characters (common for foreign currencies) (#3154), thanks for reporting @woung717
+- Refined spread support (#3284), thanks @faysou
 - Refined support for monthly and yearly bars (#3166), thanks @faysou
 - Refined bar aggregators in Rust (#3170), thanks @faysou
 - Refined adding files to catalog session (#3215), thanks @faysou
@@ -193,13 +196,14 @@ This release adds support for Python 3.14 with the following limitations:
 - Repaired Bybit `get_account_details` (#3219), thanks @sunlei
 - Repaired Bybit `set_position_mode` (#3220), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
-- Upgraded Rust (MSRV) to 1.91.1
+- Upgraded Rust (MSRV) to 1.92.0
 - Upgraded Cython to v3.2.2
 - Upgraded `databento` crate to v0.37.0
 - Upgraded `datafusion` crate to v51.0.0
 - Upgraded `msgspec` to 0.20.0
 - Upgraded `pyo3` crate to v0.27.2
 - Upgraded `pyo3-async-runtimes` crate to v0.27.0
+- Upgraded `redis` crate to v1.0.1
 
 ### Documentation Updates
 - Added Polymarket historical data loading docs

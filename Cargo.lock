@@ -714,6 +714,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69f7f8c3906b62b754cd5326047894316021dcfe5a194c8ea52bdd94934a3457"
 
 [[package]]
+name = "arcstr"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d"
+
+[[package]]
 name = "ark-ff"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1142,9 +1148,9 @@ dependencies = [
 
 [[package]]
 name = "async-compression"
-version = "0.4.35"
+version = "0.4.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07a926debf178f2d355197f9caddb08e54a9329d44748034bba349c5848cb519"
+checksum = "98ec5f6c2f8bc326c994cb9e241cc257ddaba9afa8555a43cffbb5dd86efaa37"
 dependencies = [
  "compression-codecs",
  "compression-core",
@@ -1878,9 +1884,9 @@ checksum = "120133d4db2ec47efe2e26502ee984747630c67f51974fca0b6c1340cf2368d3"
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34a3cbbb8b6eca96f3a5c4bf6938d5b27ced3675d69f95bb51948722870bc323"
+checksum = "b0f7ac3e5b97fdce45e8922fb05cae2c37f7bbd63d30dd94821dacfd8f3f2bf2"
 dependencies = [
  "compression-core",
  "zstd",
@@ -4724,7 +4730,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cbindgen",
- "chrono",
  "log",
  "nautilus-common",
  "nautilus-core",
@@ -4775,7 +4780,6 @@ dependencies = [
  "pyo3-async-runtimes",
  "rstest",
  "rust_decimal",
- "rust_decimal_macros",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -4887,7 +4891,6 @@ dependencies = [
 name = "nautilus-cli"
 version = "0.52.0"
 dependencies = [
- "alloy-primitives",
  "anyhow",
  "clap",
  "dotenvy",
@@ -5026,7 +5029,6 @@ dependencies = [
  "nautilus-core",
  "pem",
  "pyo3",
- "rand 0.9.2",
  "rstest",
  "rustls",
  "tracing",
@@ -5110,6 +5112,7 @@ dependencies = [
  "derive_builder",
  "dotenvy",
  "futures-util",
+ "hex",
  "iai",
  "indexmap 2.12.1",
  "log",
@@ -5159,7 +5162,6 @@ dependencies = [
  "dashmap",
  "derive_builder",
  "dydx-proto",
- "futures-util",
  "hex",
  "indexmap 2.12.1",
  "nautilus-common",
@@ -5171,10 +5173,8 @@ dependencies = [
  "nautilus-network",
  "nautilus-testkit",
  "prost",
- "prost-types",
  "pyo3",
  "pyo3-async-runtimes",
- "rand 0.9.2",
  "rstest",
  "rust_decimal",
  "rust_decimal_macros",
@@ -5344,9 +5344,7 @@ dependencies = [
  "dashmap",
  "derive_builder",
  "futures-util",
- "hex",
  "indexmap 2.12.1",
- "log",
  "nautilus-common",
  "nautilus-core",
  "nautilus-data",
@@ -5505,7 +5503,6 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "iai",
- "indexmap 2.12.1",
  "log",
  "nautilus-common",
  "nautilus-core",
@@ -5545,7 +5542,6 @@ dependencies = [
  "anyhow",
  "arrow",
  "binary-heap-plus",
- "chrono",
  "compare",
  "criterion",
  "datafusion",
@@ -5590,7 +5586,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.17",
- "ustr",
 ]
 
 [[package]]
@@ -5674,7 +5669,6 @@ version = "0.52.0"
 dependencies = [
  "ahash 0.8.12",
  "anyhow",
- "futures",
  "hostname",
  "log",
  "nautilus-common",
@@ -6928,11 +6922,12 @@ dependencies = [
 
 [[package]]
 name = "redis"
-version = "0.32.7"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014cc767fefab6a3e798ca45112bccad9c6e0e218fbd49720042716c73cfef44"
+checksum = "e2dc509b442812959ab125c74be2a930dd9b603038b6da9df9ec013aa23a4e9c"
 dependencies = [
  "arc-swap",
+ "arcstr",
  "backon",
  "bytes",
  "cfg-if",
@@ -6940,7 +6935,6 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "itoa",
- "num-bigint",
  "percent-encoding",
  "pin-project-lite",
  "rand 0.9.2",
@@ -6953,6 +6947,7 @@ dependencies = [
  "tokio-util",
  "url",
  "webpki-roots 1.0.4",
+ "xxhash-rust",
 ]
 
 [[package]]

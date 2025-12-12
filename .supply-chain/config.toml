@@ -284,12 +284,12 @@ criteria = "safe-to-deploy"
 version = "1.0.100"
 criteria = "safe-to-deploy"
 
-[[exemptions.ar_archive_writer]]
-version = "0.2.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.arc-swap]]
 version = "1.7.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.arcstr]]
+version = "1.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ark-ff]]
@@ -352,10 +352,6 @@ criteria = "safe-to-deploy"
 version = "0.5.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.array-init-cursor]]
-version = "0.2.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.arrow]]
 version = "57.1.0"
 criteria = "safe-to-deploy"
@@ -413,7 +409,7 @@ version = "57.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.async-compression]]
-version = "0.4.35"
+version = "0.4.36"
 criteria = "safe-to-deploy"
 
 [[exemptions.async-stream]]
@@ -430,10 +426,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.atoi]]
 version = "2.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.atoi_simd]]
-version = "0.15.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.auto_impl]]
@@ -521,15 +513,7 @@ version = "1.6.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.brotli]]
-version = "6.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.brotli]]
 version = "8.0.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.brotli-decompressor]]
-version = "4.0.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.brotli-decompressor]]
@@ -554,14 +538,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.bytecount]]
 version = "0.6.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.bytemuck]]
-version = "1.24.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.bytemuck_derive]]
-version = "1.10.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.bytes]]
@@ -657,7 +633,7 @@ version = "0.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.compression-codecs]]
-version = "0.4.34"
+version = "0.4.35"
 criteria = "safe-to-deploy"
 
 [[exemptions.compression-core]]
@@ -1044,10 +1020,6 @@ criteria = "safe-to-deploy"
 version = "0.8.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.ethnum]]
-version = "1.5.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.evalexpr]]
 version = "11.3.1"
 criteria = "safe-to-deploy"
@@ -1066,10 +1038,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.fallible-streaming-iterator]]
 version = "0.1.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.fast-float]]
-version = "0.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.faster-hex]]
@@ -1440,14 +1408,6 @@ criteria = "safe-to-deploy"
 version = "0.1.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.lz4]]
-version = "1.28.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.lz4-sys]]
-version = "1.11.1+lz4-1.10.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.lz4_flex]]
 version = "0.12.0"
 criteria = "safe-to-deploy"
@@ -1476,10 +1436,6 @@ criteria = "safe-to-deploy"
 version = "2.7.6"
 criteria = "safe-to-deploy"
 
-[[exemptions.memmap2]]
-version = "0.7.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.memoffset]]
 version = "0.9.1"
 criteria = "safe-to-deploy"
@@ -1498,14 +1454,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.multimap]]
 version = "0.10.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.multiversion]]
-version = "0.7.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.multiversion-macros]]
-version = "0.7.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.nautilus-analysis]]
@@ -1668,10 +1616,6 @@ criteria = "safe-to-deploy"
 version = "0.3.2"
 criteria = "safe-to-deploy"
 
-[[exemptions.object]]
-version = "0.32.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.object_store]]
 version = "0.12.4"
 criteria = "safe-to-deploy"
@@ -1734,10 +1678,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.parquet]]
 version = "57.1.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.parquet-format-safe]]
-version = "0.2.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.paste]]
@@ -1804,34 +1744,6 @@ criteria = "safe-to-deploy"
 version = "0.3.32"
 criteria = "safe-to-deploy"
 
-[[exemptions.planus]]
-version = "0.3.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.polars-arrow]]
-version = "0.42.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.polars-arrow-format]]
-version = "0.1.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.polars-compute]]
-version = "0.42.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.polars-error]]
-version = "0.42.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.polars-parquet]]
-version = "0.42.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.polars-utils]]
-version = "0.42.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.portable-atomic]]
 version = "1.11.1"
 criteria = "safe-to-deploy"
@@ -1890,10 +1802,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.prost-types]]
 version = "0.13.5"
-criteria = "safe-to-deploy"
-
-[[exemptions.psm]]
-version = "0.1.28"
 criteria = "safe-to-deploy"
 
 [[exemptions.ptr_meta]]
@@ -1972,16 +1880,12 @@ criteria = "safe-to-deploy"
 version = "0.4.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.raw-cpuid]]
-version = "11.6.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.rawpointer]]
 version = "0.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.redis]]
-version = "0.32.7"
+version = "1.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.redox_syscall]]
@@ -2284,10 +2188,6 @@ criteria = "safe-to-deploy"
 version = "0.4.11"
 criteria = "safe-to-deploy"
 
-[[exemptions.smartstring]]
-version = "1.0.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.snap]]
 version = "1.1.1"
 criteria = "safe-to-deploy"
@@ -2348,22 +2248,6 @@ criteria = "safe-to-deploy"
 version = "1.2.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.stacker]]
-version = "0.1.22"
-criteria = "safe-to-deploy"
-
-[[exemptions.streaming-decompression]]
-version = "0.1.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.streaming-iterator]]
-version = "0.1.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.strength_reduce]]
-version = "0.2.4"
-criteria = "safe-to-deploy"
-
 [[exemptions.stringprep]]
 version = "0.1.5"
 criteria = "safe-to-deploy"
@@ -2402,10 +2286,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.tabled_derive]]
 version = "0.11.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.target-features]]
-version = "0.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.target-lexicon]]

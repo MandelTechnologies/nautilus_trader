@@ -43,7 +43,6 @@ nautilus-trading = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
-futures = { workspace = true }
 hostname = { workspace = true }
 log = { workspace = true }
 ustr = { workspace = true }

@@ -124,7 +124,7 @@ pub fn get_redis_url(config: DatabaseConfig) -> (String, String) {
 ///
 /// In case of reconnection issues, the connection will retry reconnection
 /// `number_of_retries` times, with an exponentially increasing delay, calculated as
-/// `rand(0 .. factor * (exponent_base ^ current-try))`.
+/// `factor * (exponent_base ^ current-try)`, bounded by `max_delay`.
 ///
 /// The new connection will time out operations after `response_timeout` has passed.
 /// Each connection attempt to the server will time out after `connection_timeout`.
@@ -139,20 +139,20 @@ pub async fn create_redis_connection(
     let connection_timeout = Duration::from_secs(u64::from(config.connection_timeout));
     let response_timeout = Duration::from_secs(u64::from(config.response_timeout));
     let number_of_retries = config.number_of_retries;
-    let exponent_base = config.exponent_base;
-    let factor = config.factor;
+    let exponent_base = config.exponent_base as f32;
 
-    // into milliseconds
-    let max_delay = config.max_delay * 1000;
+    // Use factor as min_delay base for backoff: factor * (exponent_base ^ tries)
+    let min_delay = Duration::from_millis(config.factor);
+    let max_delay = Duration::from_secs(config.max_delay);
 
     let client = redis::Client::open(redis_url)?;
 
     let connection_manager_config = redis::aio::ConnectionManagerConfig::new()
         .set_exponent_base(exponent_base)
-        .set_factor(factor)
         .set_number_of_retries(number_of_retries)
-        .set_response_timeout(response_timeout)
-        .set_connection_timeout(connection_timeout)
+        .set_response_timeout(Some(response_timeout))
+        .set_connection_timeout(Some(connection_timeout))
+        .set_min_delay(min_delay)
         .set_max_delay(max_delay);
 
     let mut con = client

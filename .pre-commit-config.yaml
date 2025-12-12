@@ -59,7 +59,7 @@ repos:
         description: Lint Dockerfiles for best practices and errors
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.39.0 # v1.39.0 (reverts to v1 on updates)
+    rev: v1.39.0 # v1.39.0 (pinned for security; autoupdate bumps to moving v1)
     hooks:
       - id: typos
         description: Checks for common typos
@@ -82,7 +82,7 @@ repos:
         args: ["--staged", "--redact"]
 
   - repo: https://github.com/google/osv-scanner
-    rev: v2.3.0
+    rev: v2.3.1
     hooks:
       - id: osv-scanner
         name: osv-scanner (dependency vulnerabilities)

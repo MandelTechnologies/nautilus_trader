@@ -47,7 +47,7 @@ use super::models::PerpetualMarket;
 use crate::{
     common::{
         enums::{DydxMarketStatus, DydxOrderExecution, DydxOrderType, DydxTimeInForce},
-        parse::{get_currency, parse_decimal, parse_instrument_id, parse_price, parse_quantity},
+        parse::{parse_decimal, parse_instrument_id, parse_price, parse_quantity},
     },
     websocket::messages::DydxSubaccountInfo,
 };
@@ -231,8 +231,8 @@ pub fn parse_instrument_any(
     let (base_str, quote_str) = parse_ticker_currencies(&definition.ticker)
         .context(format!("Failed to parse ticker '{}'", definition.ticker))?;
 
-    let base_currency = get_currency(base_str);
-    let quote_currency = get_currency(quote_str);
+    let base_currency = Currency::get_or_create_crypto_with_context(base_str, None);
+    let quote_currency = Currency::get_or_create_crypto_with_context(quote_str, None);
     let settlement_currency = quote_currency; // dYdX perpetuals settle in quote currency
 
     // Parse price and size increments with context
@@ -761,7 +761,7 @@ mod tests {
         let first_order = &response[0];
         assert_eq!(first_order.id, "0f0981cb-152e-57d3-bea9-4d8e0dd5ed35");
         assert_eq!(first_order.side, OrderSide::Buy);
-        assert_eq!(first_order.order_type, "LIMIT");
+        assert_eq!(first_order.order_type, DydxOrderType::Limit);
         assert!(first_order.reduce_only);
 
         let second_order = &response[1];
@@ -850,8 +850,7 @@ pub fn parse_order_status_report(
     };
 
     // Parse order type and time-in-force
-    let dydx_order_type = DydxOrderType::from_str(&order.order_type)?;
-    let order_type = dydx_order_type.into();
+    let order_type = order.order_type.into();
 
     let execution = order.execution.or({
         // Infer execution type from post_only flag if not explicitly set
@@ -862,7 +861,7 @@ pub fn parse_order_status_report(
         }
     });
     let time_in_force = calculate_time_in_force(
-        dydx_order_type,
+        order.order_type,
         order.time_in_force,
         order.reduce_only,
         execution,
@@ -1128,7 +1127,7 @@ pub fn parse_account_state(
     ))?;
 
     // dYdX uses USDC as the settlement currency
-    let currency = get_currency("USDC");
+    let currency = Currency::get_or_create_crypto_with_context("USDC", None);
 
     let total = Money::new(equity_f64, currency);
     let free = Money::new(free_collateral_f64, currency);
@@ -1344,7 +1343,7 @@ mod reconciliation_tests {
             total_filled: dec!(1.0),
             price: dec!(50000.0),
             status: DydxOrderStatus::PartiallyFilled,
-            order_type: "LIMIT".to_string(),
+            order_type: DydxOrderType::Limit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: false,
             post_only: false,
@@ -1394,7 +1393,7 @@ mod reconciliation_tests {
             total_filled: dec!(0.0),
             price: dec!(51000.0),
             status: DydxOrderStatus::Untriggered,
-            order_type: "STOP_LIMIT".to_string(),
+            order_type: DydxOrderType::StopLimit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: true,
             post_only: false,
@@ -1572,7 +1571,7 @@ mod reconciliation_tests {
             total_filled: dec!(0.0),
             price: dec!(50000.0),
             status: DydxOrderStatus::Open,
-            order_type: "LIMIT".to_string(),
+            order_type: DydxOrderType::Limit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: false,
             post_only: false,
@@ -1619,7 +1618,7 @@ mod reconciliation_tests {
             total_filled: dec!(0.75),
             price: dec!(50000.0),
             status: DydxOrderStatus::PartiallyFilled,
-            order_type: "LIMIT".to_string(),
+            order_type: DydxOrderType::Limit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: false,
             post_only: false,

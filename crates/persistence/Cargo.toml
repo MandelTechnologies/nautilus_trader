@@ -56,7 +56,6 @@ ahash = { workspace = true }
 anyhow = { workspace = true }
 arrow = { workspace = true }
 binary-heap-plus = { workspace = true }
-chrono = { workspace = true }
 compare = { workspace = true }
 datafusion = { workspace = true }
 futures = { workspace = true }
