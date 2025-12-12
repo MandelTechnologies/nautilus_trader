@@ -1295,6 +1295,13 @@ impl PyDataActor {
         Ok(())
     }
 
+    #[pyo3(name = "subscribe_order_cancels")]
+    #[pyo3(signature = (instrument_id))]
+    fn py_subscribe_order_cancels(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+        DataActor::subscribe_order_cancels(self.inner_mut(), instrument_id);
+        Ok(())
+    }
+
     #[cfg(feature = "defi")]
     #[pyo3(name = "subscribe_blocks")]
     #[pyo3(signature = (chain, client_id=None, params=None))]
@@ -1719,6 +1726,13 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id))]
     fn py_unsubscribe_order_fills(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
         DataActor::unsubscribe_order_fills(self.inner_mut(), instrument_id);
+        Ok(())
+    }
+
+    #[pyo3(name = "unsubscribe_order_cancels")]
+    #[pyo3(signature = (instrument_id))]
+    fn py_unsubscribe_order_cancels(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+        DataActor::unsubscribe_order_cancels(self.inner_mut(), instrument_id);
         Ok(())
     }
 

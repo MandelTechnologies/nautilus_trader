@@ -268,9 +268,35 @@ impl OrderBook {
     /// # Errors
     ///
     /// Returns an error if:
+    /// - The delta's instrument ID does not match this book's instrument ID.
     /// - An `Add` is given with `NoOrderSide` (either explicitly or because the cache lookup failed).
     /// - After resolution the delta still has `NoOrderSide` but its action is not `Clear`.
     pub fn apply_delta(&mut self, delta: &OrderBookDelta) -> Result<(), BookIntegrityError> {
+        if delta.instrument_id != self.instrument_id {
+            return Err(BookIntegrityError::InstrumentMismatch(
+                self.instrument_id,
+                delta.instrument_id,
+            ));
+        }
+        self.apply_delta_unchecked(delta)
+    }
+
+    /// Applies a single order book delta operation without instrument ID validation.
+    ///
+    /// "Unchecked" refers only to skipping the instrument ID match - other validations
+    /// still apply and errors are still returned. This exists because `Ustr` interning
+    /// is not shared across FFI boundaries, causing pointer-based equality to fail even
+    /// when string values match. This limitation may be resolved in a future version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - An `Add` is given with `NoOrderSide` (either explicitly or because the cache lookup failed).
+    /// - After resolution the delta still has `NoOrderSide` but its action is not `Clear`.
+    pub fn apply_delta_unchecked(
+        &mut self,
+        delta: &OrderBookDelta,
+    ) -> Result<(), BookIntegrityError> {
         let mut order = delta.order;
 
         if order.side == OrderSide::NoOrderSide && order.order_id != 0 {
@@ -316,16 +342,62 @@ impl OrderBook {
     ///
     /// # Errors
     ///
-    /// Returns the first error encountered when applying deltas.
+    /// Returns an error if:
+    /// - The deltas' instrument ID does not match this book's instrument ID.
+    /// - Any individual delta application fails (see [`apply_delta`]).
     pub fn apply_deltas(&mut self, deltas: &OrderBookDeltas) -> Result<(), BookIntegrityError> {
+        if deltas.instrument_id != self.instrument_id {
+            return Err(BookIntegrityError::InstrumentMismatch(
+                self.instrument_id,
+                deltas.instrument_id,
+            ));
+        }
+        self.apply_deltas_unchecked(deltas)
+    }
+
+    /// Applies multiple order book delta operations without instrument ID validation.
+    ///
+    /// See [`apply_delta_unchecked`] for details on why this function exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any individual delta application fails.
+    pub fn apply_deltas_unchecked(
+        &mut self,
+        deltas: &OrderBookDeltas,
+    ) -> Result<(), BookIntegrityError> {
         for delta in &deltas.deltas {
-            self.apply_delta(delta)?;
+            self.apply_delta_unchecked(delta)?;
         }
         Ok(())
     }
 
     /// Replaces current book state with a depth snapshot.
-    pub fn apply_depth(&mut self, depth: &OrderBookDepth10) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the depth's instrument ID does not match this book's instrument ID.
+    pub fn apply_depth(&mut self, depth: &OrderBookDepth10) -> Result<(), BookIntegrityError> {
+        if depth.instrument_id != self.instrument_id {
+            return Err(BookIntegrityError::InstrumentMismatch(
+                self.instrument_id,
+                depth.instrument_id,
+            ));
+        }
+        self.apply_depth_unchecked(depth)
+    }
+
+    /// Replaces current book state with a depth snapshot without instrument ID validation.
+    ///
+    /// See [`apply_delta_unchecked`] for details on why this function exists.
+    ///
+    /// # Errors
+    ///
+    /// This function currently does not return errors, but returns `Result` for API consistency.
+    pub fn apply_depth_unchecked(
+        &mut self,
+        depth: &OrderBookDepth10,
+    ) -> Result<(), BookIntegrityError> {
         self.bids.clear();
         self.asks.clear();
 
@@ -364,6 +436,8 @@ impl OrderBook {
         }
 
         self.increment(depth.sequence, depth.ts_event);
+
+        Ok(())
     }
 
     fn resolve_no_side_order(&self, mut order: BookOrder) -> Result<BookOrder, BookIntegrityError> {
@@ -690,14 +764,13 @@ impl OrderBook {
     ///
     /// # Errors
     ///
-    /// Returns an error if the book type is not `L1_MBP` (operation is invalid).
+    /// Returns an error if the book type is not `L1_MBP`.
     pub fn update_quote_tick(&mut self, quote: &QuoteTick) -> Result<(), InvalidBookOperation> {
         if self.book_type != BookType::L1_MBP {
             return Err(InvalidBookOperation::Update(self.book_type));
         }
 
-        // Note: Crossed quotes (bid > ask) can occur temporarily in volatile markets or during updates
-        // This is more of a data quality warning than a hard invariant
+        // Crossed quotes (bid > ask) can occur temporarily in volatile markets
         if cfg!(debug_assertions) && quote.bid_price > quote.ask_price {
             log::warn!(
                 "Quote has crossed prices: bid={}, ask={} for {}",
@@ -706,12 +779,6 @@ impl OrderBook {
                 self.instrument_id
             );
         }
-        debug_assert!(
-            quote.bid_size.is_positive() && quote.ask_size.is_positive(),
-            "Quote has non-positive sizes: bid_size={}, ask_size={}",
-            quote.bid_size,
-            quote.ask_size
-        );
 
         let bid = BookOrder::new(
             OrderSide::Buy,
@@ -739,18 +806,20 @@ impl OrderBook {
     ///
     /// # Errors
     ///
-    /// Returns an error if the book type is not `L1_MBP` (operation is invalid).
+    /// Returns an error if the book type is not `L1_MBP`.
     pub fn update_trade_tick(&mut self, trade: &TradeTick) -> Result<(), InvalidBookOperation> {
         if self.book_type != BookType::L1_MBP {
             return Err(InvalidBookOperation::Update(self.book_type));
         }
 
-        // Note: Prices can be zero or negative for certain instruments (options, commodities, spreads)
+        // Prices can be zero or negative for certain instruments (options, spreads)
         debug_assert!(
             trade.price.raw != PRICE_UNDEF && trade.price.raw != PRICE_ERROR,
             "Trade has invalid/uninitialized price: {}",
             trade.price
         );
+
+        // TradeTick enforces positive size at construction, but assert as sanity check
         debug_assert!(
             trade.size.is_positive(),
             "Trade has non-positive size: {}",

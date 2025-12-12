@@ -151,7 +151,7 @@ pub extern "C" fn orderbook_clear_asks(book: &mut OrderBook_API, sequence: u64, 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_apply_delta(book: &mut OrderBook_API, delta: &OrderBookDelta) {
-    if let Err(e) = book.apply_delta(delta) {
+    if let Err(e) = book.apply_delta_unchecked(delta) {
         log::error!("Failed to apply order book delta: {e}");
     }
 }
@@ -159,14 +159,16 @@ pub extern "C" fn orderbook_apply_delta(book: &mut OrderBook_API, delta: &OrderB
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_apply_deltas(book: &mut OrderBook_API, deltas: &OrderBookDeltas_API) {
     // Clone will actually copy the contents of the `deltas` vec
-    if let Err(e) = book.apply_deltas(deltas.deref()) {
+    if let Err(e) = book.apply_deltas_unchecked(deltas.deref()) {
         log::error!("Failed to apply order book deltas: {e}");
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_apply_depth(book: &mut OrderBook_API, depth: &OrderBookDepth10) {
-    book.apply_depth(depth);
+    if let Err(e) = book.apply_depth_unchecked(depth) {
+        log::error!("Failed to apply order book depth: {e}");
+    }
 }
 
 #[unsafe(no_mangle)]

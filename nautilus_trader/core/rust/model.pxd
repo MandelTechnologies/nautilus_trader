@@ -1247,6 +1247,9 @@ cdef extern from "../includes/model.h":
 
     CVec orderbook_deltas_vec_deltas(const OrderBookDeltas_API *deltas);
 
+    # Returns `1` if the first delta is a `Clear` action (snapshot), `0` otherwise.
+    #
+    # Returns `0` for empty delta vectors to avoid panicking on malformed FFI input.
     uint8_t orderbook_deltas_is_snapshot(const OrderBookDeltas_API *deltas);
 
     uint8_t orderbook_deltas_flags(const OrderBookDeltas_API *deltas);

@@ -409,7 +409,7 @@ impl ExecutionClient for OKXExecutionClient {
         }
 
         for inst_type in &instrument_types {
-            tracing::info!(
+            tracing::debug!(
                 "Subscribing to channels for instrument type: {:?}",
                 inst_type
             );
@@ -689,7 +689,7 @@ impl ExecutionClient for OKXExecutionClient {
             }
             drop(cache);
 
-            tracing::info!(
+            tracing::debug!(
                 "Canceling {} open orders for {} via batch cancel",
                 payload.len(),
                 cmd.instrument_id

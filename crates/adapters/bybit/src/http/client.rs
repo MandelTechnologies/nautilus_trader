@@ -18,7 +18,7 @@
 //! Bybit API reference <https://bybit-exchange.github.io/docs/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::{Debug, Formatter},
     num::NonZeroU32,
     sync::{
@@ -27,6 +27,7 @@ use std::{
     },
 };
 
+use ahash::{AHashMap, AHashSet};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::{
@@ -85,7 +86,7 @@ use crate::{
             BybitAccountType, BybitEnvironment, BybitMarginMode, BybitOpenOnly, BybitOrderFilter,
             BybitOrderSide, BybitOrderType, BybitPositionMode, BybitProductType, BybitTimeInForce,
         },
-        models::BybitResponse,
+        models::{BybitErrorCheck, BybitResponseCheck},
         parse::{
             bar_spec_to_bybit_interval, make_bybit_symbol, parse_account_state, parse_fill_report,
             parse_inverse_instrument, parse_kline_bar, parse_linear_instrument,
@@ -373,7 +374,7 @@ impl BybitRawHttpClient {
         Ok(headers)
     }
 
-    async fn send_request<T: DeserializeOwned, P: Serialize>(
+    async fn send_request<T: DeserializeOwned + BybitResponseCheck, P: Serialize>(
         &self,
         method: Method,
         endpoint: &str,
@@ -458,20 +459,34 @@ impl BybitRawHttpClient {
                     });
                 }
 
-                // Parse as BybitResponse to check retCode
-                let bybit_response: BybitResponse<serde_json::Value> =
-                    serde_json::from_slice(&response.body)?;
-
-                if bybit_response.ret_code != 0 {
-                    return Err(BybitHttpError::BybitError {
-                        error_code: bybit_response.ret_code as i32,
-                        message: bybit_response.ret_msg,
-                    });
+                // Try to deserialize into the target type
+                match serde_json::from_slice::<T>(&response.body) {
+                    Ok(result) => {
+                        // Check for API-level errors
+                        if result.ret_code() != 0 {
+                            return Err(BybitHttpError::BybitError {
+                                error_code: result.ret_code() as i32,
+                                message: result.ret_msg().to_string(),
+                            });
+                        }
+                        Ok(result)
+                    }
+                    Err(json_err) => {
+                        // Deserialization failed - check if it's a Bybit error response
+                        // (error responses often have result: null which fails typed deserialization)
+                        if let Ok(error_check) =
+                            serde_json::from_slice::<BybitErrorCheck>(&response.body)
+                            && error_check.ret_code != 0
+                        {
+                            return Err(BybitHttpError::BybitError {
+                                error_code: error_check.ret_code as i32,
+                                message: error_check.ret_msg,
+                            });
+                        }
+                        // Not a Bybit error, propagate the JSON parse error
+                        Err(json_err.into())
+                    }
                 }
-
-                // Deserialize the full response
-                let result: T = serde_json::from_slice(&response.body)?;
-                Ok(result)
             }
         };
 
@@ -536,7 +551,7 @@ impl BybitRawHttpClient {
     /// # References
     ///
     /// - <https://bybit-exchange.github.io/docs/v5/market/instrument>
-    pub async fn get_instruments<T: DeserializeOwned>(
+    pub async fn get_instruments<T: DeserializeOwned + BybitResponseCheck>(
         &self,
         params: &BybitInstrumentsInfoParams,
     ) -> Result<T, BybitHttpError> {
@@ -1052,7 +1067,7 @@ impl BybitRawHttpClient {
     /// # References
     ///
     /// - <https://bybit-exchange.github.io/docs/v5/market/tickers>
-    pub async fn get_tickers<T: DeserializeOwned>(
+    pub async fn get_tickers<T: DeserializeOwned + BybitResponseCheck>(
         &self,
         params: &BybitTickersParams,
     ) -> Result<T, BybitHttpError> {
@@ -1375,7 +1390,7 @@ impl BybitHttpClient {
     /// # References
     ///
     /// - <https://bybit-exchange.github.io/docs/v5/market/instrument>
-    pub async fn get_instruments<T: DeserializeOwned>(
+    pub async fn get_instruments<T: DeserializeOwned + BybitResponseCheck>(
         &self,
         params: &BybitInstrumentsInfoParams,
     ) -> Result<T, BybitHttpError> {
@@ -2408,11 +2423,8 @@ impl BybitHttpClient {
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
     ) -> anyhow::Result<Option<OrderStatusReport>> {
-        tracing::info!(
-            "query_order called: instrument_id={}, client_order_id={:?}, venue_order_id={:?}",
-            instrument_id,
-            client_order_id,
-            venue_order_id
+        tracing::debug!(
+            "query_order: instrument_id={instrument_id}, client_order_id={client_order_id:?}, venue_order_id={venue_order_id:?}"
         );
 
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
@@ -2604,7 +2616,7 @@ impl BybitHttpClient {
         match product_type {
             BybitProductType::Spot => {
                 // Try to get fee rates, use defaults if credentials are missing
-                let fee_map: HashMap<_, _> = {
+                let fee_map: AHashMap<_, _> = {
                     let mut fee_params = BybitFeeRateParamsBuilder::default();
                     fee_params.category(product_type);
                     if let Ok(params) = fee_params.build() {
@@ -2617,12 +2629,12 @@ impl BybitHttpClient {
                                 .collect(),
                             Err(BybitHttpError::MissingCredentials) => {
                                 tracing::warn!("Missing credentials for fee rates, using defaults");
-                                HashMap::new()
+                                AHashMap::new()
                             }
                             Err(e) => return Err(e.into()),
                         }
                     } else {
-                        HashMap::new()
+                        AHashMap::new()
                     }
                 };
 
@@ -2661,7 +2673,7 @@ impl BybitHttpClient {
             }
             BybitProductType::Linear => {
                 // Try to get fee rates, use defaults if credentials are missing
-                let fee_map: HashMap<_, _> = {
+                let fee_map: AHashMap<_, _> = {
                     let mut fee_params = BybitFeeRateParamsBuilder::default();
                     fee_params.category(product_type);
                     if let Ok(params) = fee_params.build() {
@@ -2674,12 +2686,12 @@ impl BybitHttpClient {
                                 .collect(),
                             Err(BybitHttpError::MissingCredentials) => {
                                 tracing::warn!("Missing credentials for fee rates, using defaults");
-                                HashMap::new()
+                                AHashMap::new()
                             }
                             Err(e) => return Err(e.into()),
                         }
                     } else {
-                        HashMap::new()
+                        AHashMap::new()
                     }
                 };
 
@@ -2718,7 +2730,7 @@ impl BybitHttpClient {
             }
             BybitProductType::Inverse => {
                 // Try to get fee rates, use defaults if credentials are missing
-                let fee_map: HashMap<_, _> = {
+                let fee_map: AHashMap<_, _> = {
                     let mut fee_params = BybitFeeRateParamsBuilder::default();
                     fee_params.category(product_type);
                     if let Ok(params) = fee_params.build() {
@@ -2731,12 +2743,12 @@ impl BybitHttpClient {
                                 .collect(),
                             Err(BybitHttpError::MissingCredentials) => {
                                 tracing::warn!("Missing credentials for fee rates, using defaults");
-                                HashMap::new()
+                                AHashMap::new()
                             }
                             Err(e) => return Err(e.into()),
                         }
                     } else {
-                        HashMap::new()
+                        AHashMap::new()
                     }
                 };
 
@@ -2929,18 +2941,20 @@ impl BybitHttpClient {
         )?;
 
         let start_ms = start.map(|dt| dt.timestamp_millis());
-        let mut all_bars: Vec<Bar> = Vec::new();
-        let mut seen_timestamps: HashSet<i64> = HashSet::new();
+        let mut seen_timestamps: AHashSet<i64> = AHashSet::new();
         let current_time_ms = get_atomic_clock_realtime().get_time_ms() as i64;
 
         // Pagination strategy: work backwards from end time
         // - Each page fetched is older than the previous page
         // - Within each page, bars are in chronological order (oldest to newest)
-        // - We insert each new (older) page at the front to maintain overall chronological order
+        // - We collect pages in reverse order (newest first) then reverse at the end
         // Example with 2 pages:
         //   Page 1 (most recent): bars [T=2000..2999]
         //   Page 2 (older):       bars [T=1000..1999]
-        //   Result after splice:  bars [T=1000..1999, T=2000..2999] ✓ chronological
+        //   Collected: [[T=2000..2999], [T=1000..1999]]
+        //   After reverse + flatten: [T=1000..1999, T=2000..2999] ✓ chronological
+        let mut pages: Vec<Vec<Bar>> = Vec::new();
+        let mut total_bars = 0usize;
         let mut current_end = end.map(|dt| dt.timestamp_millis());
         let mut page_count = 0;
 
@@ -2968,53 +2982,64 @@ impl BybitHttpClient {
                 break;
             }
 
-            // Sort klines by start time
-            let mut sorted_klines = klines;
-            sorted_klines.sort_by_key(|k| k.start.parse::<i64>().unwrap_or(0));
-
-            let new_timestamps: Vec<i64> = sorted_klines
-                .iter()
-                .filter_map(|k| k.start.parse::<i64>().ok())
-                .filter(|ts| !seen_timestamps.contains(ts))
+            // Parse timestamps once and pair with klines for sorting
+            let mut klines_with_ts: Vec<(i64, _)> = klines
+                .into_iter()
+                .filter_map(|k| k.start.parse::<i64>().ok().map(|ts| (ts, k)))
                 .collect();
 
-            if new_timestamps.is_empty() {
+            klines_with_ts.sort_by_key(|(ts, _)| *ts);
+
+            // Check if we have any new timestamps
+            let has_new = klines_with_ts
+                .iter()
+                .any(|(ts, _)| !seen_timestamps.contains(ts));
+            if !has_new {
                 break;
             }
 
             let ts_init = self.generate_ts_init();
-            let mut new_bars = Vec::new();
+            let mut page_bars = Vec::with_capacity(klines_with_ts.len());
 
-            for kline in &sorted_klines {
-                let start_time = kline.start.parse::<i64>().unwrap_or(0);
-                let bar_end_time = interval.bar_end_time_ms(start_time);
+            let mut earliest_ts: Option<i64> = None;
+
+            for (start_time, kline) in &klines_with_ts {
+                // Track earliest timestamp for pagination
+                if earliest_ts.is_none_or(|ts| *start_time < ts) {
+                    earliest_ts = Some(*start_time);
+                }
+
+                let bar_end_time = interval.bar_end_time_ms(*start_time);
                 if bar_end_time > current_time_ms {
                     continue;
                 }
 
-                if !seen_timestamps.contains(&start_time)
+                if !seen_timestamps.contains(start_time)
                     && let Ok(bar) =
                         parse_kline_bar(kline, &instrument, bar_type, timestamp_on_close, ts_init)
                 {
-                    new_bars.push(bar);
+                    page_bars.push(bar);
+                    seen_timestamps.insert(*start_time);
                 }
             }
 
-            // new_bars may be empty if all klines were partial, but pagination
+            // page_bars may be empty if all klines were partial, but pagination
             // continues to fetch older closed bars
-            all_bars.splice(0..0, new_bars);
-            seen_timestamps.extend(new_timestamps);
+            total_bars += page_bars.len();
+            pages.push(page_bars);
 
             // Check if we've reached the requested limit
             if let Some(limit_val) = limit
-                && all_bars.len() >= limit_val as usize
+                && total_bars >= limit_val as usize
             {
                 break;
             }
 
             // Move end time backwards to get earlier data
             // Set new end to be 1ms before the first bar of this page
-            let earliest_bar_time = sorted_klines[0].start.parse::<i64>().unwrap_or(0);
+            let Some(earliest_bar_time) = earliest_ts else {
+                break;
+            };
             if let Some(start_val) = start_ms
                 && earliest_bar_time <= start_val
             {
@@ -3029,7 +3054,12 @@ impl BybitHttpClient {
             }
         }
 
-        // all_bars is now in chronological order (oldest to newest)
+        // Reverse pages and flatten to get chronological order (oldest to newest)
+        let mut all_bars: Vec<Bar> = Vec::with_capacity(total_bars);
+        for page in pages.into_iter().rev() {
+            all_bars.extend(page);
+        }
+
         // If limit is specified and we have more bars, return the last N bars (most recent)
         if let Some(limit_val) = limit {
             let limit_usize = limit_val as usize;
@@ -3264,7 +3294,7 @@ impl BybitHttpClient {
                     }
                 }
 
-                let seen_order_ids: std::collections::HashSet<Ustr> =
+                let seen_order_ids: AHashSet<Ustr> =
                     open_orders.iter().map(|o| o.order_id).collect();
 
                 all_orders.extend(open_orders);

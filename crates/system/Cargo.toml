@@ -22,9 +22,10 @@ crate-type = ["rlib", "cdylib"]
 
 [features]
 default = []
-extension-module = ["python", "pyo3/extension-module"]
+streaming = ["nautilus-persistence"]
+extension-module = ["python", "pyo3/extension-module", "streaming"]
 live = ["nautilus-common/live"]
-python = ["pyo3"]
+python = ["pyo3", "streaming"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -36,7 +37,7 @@ nautilus-core = { workspace = true }
 nautilus-data = { workspace = true }
 nautilus-execution = { workspace = true }
 nautilus-model = { workspace = true, features = ["stubs"] }
-nautilus-persistence = { workspace = true }
+nautilus-persistence = { workspace = true, optional = true }
 nautilus-portfolio = { workspace = true }
 nautilus-risk = { workspace = true }
 nautilus-trading = { workspace = true }

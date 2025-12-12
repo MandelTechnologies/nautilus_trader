@@ -81,6 +81,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny, SyntheticInstrument},
     orderbook::OrderBook,
 };
+#[cfg(feature = "streaming")]
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use ustr::Ustr;
 
@@ -107,6 +108,7 @@ pub struct DataEngine {
     pub(crate) external_clients: AHashSet<ClientId>,
     clients: IndexMap<ClientId, DataClientAdapter>,
     default_client: Option<DataClientAdapter>,
+    #[cfg(feature = "streaming")]
     catalogs: AHashMap<Ustr, ParquetDataCatalog>,
     routing_map: IndexMap<Venue, ClientId>,
     book_intervals: AHashMap<NonZeroUsize, AHashSet<InstrumentId>>,
@@ -152,6 +154,7 @@ impl DataEngine {
             external_clients,
             clients: IndexMap::new(),
             default_client: None,
+            #[cfg(feature = "streaming")]
             catalogs: AHashMap::new(),
             routing_map: IndexMap::new(),
             book_intervals: AHashMap::new(),
@@ -198,6 +201,7 @@ impl DataEngine {
     /// # Panics
     ///
     /// Panics if a catalog with the same `name` has already been registered.
+    #[cfg(feature = "streaming")]
     pub fn register_catalog(&mut self, catalog: ParquetDataCatalog, name: Option<String>) {
         let name = Ustr::from(name.as_deref().unwrap_or("catalog_0"));
 

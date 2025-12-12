@@ -160,6 +160,7 @@ cdef class ExecutionEngine(Component):
         self._topic_cache_order_events: dict[StrategyId, str] = {}
         self._topic_cache_position_events: dict[StrategyId, str] = {}
         self._topic_cache_fill_events: dict[InstrumentId, str] = {}
+        self._topic_cache_cancel_events: dict[InstrumentId, str] = {}
         self._topic_cache_commands: dict[ClientId, str] = {}
 
         # Configuration
@@ -870,6 +871,14 @@ cdef class ExecutionEngine(Component):
 
         return topic
 
+    cdef str _get_cancel_events_topic(self, InstrumentId instrument_id):
+        cdef str topic = self._topic_cache_cancel_events.get(instrument_id)
+        if topic is None:
+            topic = f"events.cancels.{instrument_id}"
+            self._topic_cache_cancel_events[instrument_id] = topic
+
+        return topic
+
     cdef str _get_commands_topic(self, ClientId client_id):
         cdef str topic = self._topic_cache_commands.get(client_id)
         if topic is None:
@@ -1251,6 +1260,13 @@ cdef class ExecutionEngine(Component):
             topic=self._get_order_events_topic(event.strategy_id),
             msg=event,
         )
+
+        # Publish to cancel events topic for OrderCanceled events
+        if isinstance(event, OrderCanceled):
+            self._msgbus.publish_c(
+                topic=self._get_cancel_events_topic(event.instrument_id),
+                msg=event,
+            )
 
         cdef:
             PositionEvent pos_event

@@ -2137,6 +2137,11 @@ struct InstrumentId_t orderbook_deltas_instrument_id(const struct OrderBookDelta
 
 CVec orderbook_deltas_vec_deltas(const struct OrderBookDeltas_API *deltas);
 
+/**
+ * Returns `1` if the first delta is a `Clear` action (snapshot), `0` otherwise.
+ *
+ * Returns `0` for empty delta vectors to avoid panicking on malformed FFI input.
+ */
 uint8_t orderbook_deltas_is_snapshot(const struct OrderBookDeltas_API *deltas);
 
 uint8_t orderbook_deltas_flags(const struct OrderBookDeltas_API *deltas);

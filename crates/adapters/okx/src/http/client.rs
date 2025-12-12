@@ -22,7 +22,7 @@
 //! Key responsibilities handled internally:
 //! • Request signing and header composition for private routes (HMAC-SHA256).
 //! • Rate-limiting based on the public OKX specification.
-//! • Zero-copy deserialization of large JSON payloads into domain models.
+//! • Deserialization of JSON payloads into domain models.
 //! • Conversion of raw exchange errors into the rich [`OKXHttpError`] enum.
 //!
 //! # Official documentation
@@ -410,15 +410,18 @@ impl OKXRawHttpClient {
         authenticate: bool,
     ) -> Result<Vec<T>, OKXHttpError> {
         let url = format!("{}{path}", self.base_url);
-        let endpoint = path.to_string();
-        let method_clone = method.clone();
-        let body_clone = body.clone();
+
+        // Pre-compute rate limit keys once outside the retry closure
+        let rate_keys: Vec<String> = Self::rate_limit_keys(path)
+            .into_iter()
+            .map(|k| k.to_string())
+            .collect();
 
         let operation = || {
             let url = url.clone();
-            let method = method_clone.clone();
-            let body = body_clone.clone();
-            let endpoint = endpoint.clone();
+            let method = method.clone();
+            let body = body.clone();
+            let rate_keys = rate_keys.clone();
 
             async move {
                 // Serialize params to query string for signing (if needed)
@@ -432,9 +435,9 @@ impl OKXRawHttpClient {
 
                 // Build full path with query string for signing
                 let full_path = if query_string.is_empty() {
-                    endpoint.clone()
+                    path.to_string()
                 } else {
-                    format!("{endpoint}?{query_string}")
+                    format!("{path}?{query_string}")
                 };
 
                 let mut headers = if authenticate {
@@ -448,10 +451,6 @@ impl OKXRawHttpClient {
                     headers.insert("Content-Type".to_string(), "application/json".to_string());
                 }
 
-                let rate_keys = Self::rate_limit_keys(endpoint.as_str())
-                    .into_iter()
-                    .map(|k| k.to_string())
-                    .collect();
                 let resp = self
                     .client
                     .request_with_params(
@@ -537,7 +536,7 @@ impl OKXRawHttpClient {
 
         self.retry_manager
             .execute_with_retry_with_cancel(
-                endpoint.as_str(),
+                path,
                 operation,
                 should_retry,
                 create_error,

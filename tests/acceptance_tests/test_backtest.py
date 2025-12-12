@@ -886,7 +886,7 @@ class TestBacktestAcceptanceTestsMarketMaking:
 
         # Assert
         assert self.engine.kernel.msgbus.sent_count == 23_688
-        assert self.engine.kernel.msgbus.pub_count == 25_902
+        assert self.engine.kernel.msgbus.pub_count == 26_806
         assert self.engine.iteration == 8_198
         account = self.engine.portfolio.account(self.venue)
         assert account is not None

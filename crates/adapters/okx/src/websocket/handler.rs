@@ -334,11 +334,11 @@ impl OKXWsFeedHandler {
                 Some(cmd) = self.cmd_rx.recv() => {
                     match cmd {
                         HandlerCommand::SetClient(client) => {
-                            tracing::info!("Handler received WebSocket client");
+                            tracing::debug!("Handler received WebSocket client");
                             self.inner = Some(client);
                         }
                         HandlerCommand::Disconnect => {
-                            tracing::info!("Handler disconnecting WebSocket client");
+                            tracing::debug!("Handler disconnecting WebSocket client");
                             self.inner = None;
                         }
                         HandlerCommand::Authenticate { payload } => {
@@ -891,7 +891,7 @@ impl OKXWsFeedHandler {
             tracing::debug!("Order operation successful: id={id:?} op={op} code={code}");
 
             if op == OKXWsOperation::BatchCancelOrders {
-                tracing::info!(
+                tracing::debug!(
                     "Batch cancel operation successful: id={id:?} cancel_count={}",
                     data.len()
                 );
@@ -935,7 +935,7 @@ impl OKXWsFeedHandler {
                 && let Some(request_id) = &id
                 && let Some(instrument_id) = self.pending_mass_cancel_requests.remove(request_id)
             {
-                tracing::info!(
+                tracing::debug!(
                     "Mass cancel operation successful for instrument: {}",
                     instrument_id
                 );
@@ -990,7 +990,7 @@ impl OKXWsFeedHandler {
                                 // not base currency (ETH). We can't accurately parse the
                                 // base quantity without the fill price, so we skip the
                                 // synthetic OrderAccepted and rely on the orders channel
-                                tracing::info!(
+                                tracing::debug!(
                                     "Skipping synthetic OrderAccepted for {} quote-sized order: client_order_id={client_order_id}, venue_order_id={venue_order_id:?}",
                                     if is_explicit_quote_sized {
                                         "explicit"
@@ -1030,7 +1030,7 @@ impl OKXWsFeedHandler {
                             return Some(NautilusWsMessage::OrderAccepted(accepted));
                         }
                         PendingOrderParams::Algo(_) => {
-                            tracing::info!(
+                            tracing::debug!(
                                 "Algo order placement confirmed: client_order_id={client_order_id}, venue_order_id={:?}",
                                 venue_order_id
                             );
@@ -1317,30 +1317,33 @@ impl OKXWsFeedHandler {
         data: Value,
         ts_init: UnixNanos,
     ) -> Option<NautilusWsMessage> {
-        match serde_json::from_value::<Vec<OKXAccount>>(data) {
-            Ok(accounts) => {
-                if let Some(account) = accounts.first() {
-                    match parse_account_state(account, self.account_id, ts_init) {
-                        Ok(account_state) => {
-                            if let Some(last_account_state) = &self.last_account_state
-                                && account_state.has_same_balances_and_margins(last_account_state)
-                            {
-                                return None;
-                            }
-                            self.last_account_state = Some(account_state.clone());
-                            Some(NautilusWsMessage::AccountUpdate(account_state))
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to parse account state: {e}");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            }
+        let Value::Array(arr) = data else {
+            tracing::error!("Account data is not an array");
+            return None;
+        };
+
+        let first = arr.into_iter().next()?;
+
+        let account: OKXAccount = match serde_json::from_value(first) {
+            Ok(acc) => acc,
             Err(e) => {
                 tracing::error!("Failed to parse account data: {e}");
+                return None;
+            }
+        };
+
+        match parse_account_state(&account, self.account_id, ts_init) {
+            Ok(account_state) => {
+                if let Some(last_account_state) = &self.last_account_state
+                    && account_state.has_same_balances_and_margins(last_account_state)
+                {
+                    return None;
+                }
+                self.last_account_state = Some(account_state.clone());
+                Some(NautilusWsMessage::AccountUpdate(account_state))
+            }
+            Err(e) => {
+                tracing::error!("Failed to parse account state: {e}");
                 None
             }
         }
@@ -1352,29 +1355,18 @@ impl OKXWsFeedHandler {
                 tracing::debug!("Received {} position update(s)", positions.len());
 
                 for position in positions {
-                    let instrument_id =
-                        match InstrumentId::from_as_ref(format!("{}.OKX", position.inst_id)) {
-                            Ok(id) => id,
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to parse instrument ID from {}: {e}",
-                                    position.inst_id
-                                );
-                                continue;
-                            }
-                        };
-
                     let instrument = match self.instruments_cache.get(&position.inst_id) {
                         Some(inst) => inst,
                         None => {
                             tracing::warn!(
                                 "Received position update for unknown instrument {}, skipping",
-                                instrument_id
+                                position.inst_id
                             );
                             continue;
                         }
                     };
 
+                    let instrument_id = instrument.id();
                     let size_precision = instrument.size_precision();
 
                     match parse_position_status_report(
@@ -1417,7 +1409,7 @@ impl OKXWsFeedHandler {
             orders.len()
         );
 
-        let mut exec_reports: Vec<ExecutionReport> = Vec::new();
+        let mut exec_reports: Vec<ExecutionReport> = Vec::with_capacity(orders.len());
 
         for msg in orders {
             tracing::debug!(
@@ -1441,16 +1433,15 @@ impl OKXWsFeedHandler {
             let effective_client_id =
                 self.register_client_order_aliases(&raw_child, &parent_from_msg);
 
-            let instrument = match self.instruments_cache.get(&msg.inst_id) {
-                Some(inst) => inst.clone(),
-                None => {
-                    tracing::error!(
-                        "No instrument found for inst_id: {inst_id}",
-                        inst_id = msg.inst_id
-                    );
-                    continue;
-                }
+            let Some(instrument) = self.instruments_cache.get(&msg.inst_id) else {
+                tracing::error!(
+                    "No instrument found for inst_id: {inst_id}",
+                    inst_id = msg.inst_id
+                );
+                continue;
             };
+            let price_precision = instrument.price_precision();
+            let size_precision = instrument.size_precision();
 
             let order_metadata = effective_client_id
                 .and_then(|cid| self.active_client_orders.get(&cid).map(|e| *e.value()));
@@ -1470,7 +1461,7 @@ impl OKXWsFeedHandler {
                     self.account_id,
                     trader_id,
                     strategy_id,
-                    &instrument,
+                    instrument,
                     previous_fee,
                     previous_filled_qty,
                     previous_state.as_ref(),
@@ -1480,7 +1471,8 @@ impl OKXWsFeedHandler {
                         self.process_parsed_order_event(
                             event,
                             &msg,
-                            &instrument,
+                            price_precision,
+                            size_precision,
                             canonical_client_id,
                             &raw_child,
                             &mut exec_reports,
@@ -1523,11 +1515,13 @@ impl OKXWsFeedHandler {
     }
 
     /// Processes a parsed order event and emits the appropriate message.
+    #[allow(clippy::too_many_arguments)]
     fn process_parsed_order_event(
         &mut self,
         event: ParsedOrderEvent,
         msg: &OKXOrderMsg,
-        instrument: &InstrumentAny,
+        price_precision: u8,
+        size_precision: u8,
         canonical_client_id: ClientOrderId,
         raw_child: &Option<ClientOrderId>,
         exec_reports: &mut Vec<ExecutionReport>,
@@ -1543,7 +1537,12 @@ impl OKXWsFeedHandler {
                     return;
                 }
                 self.emitted_order_accepted.insert(venue_order_id, ());
-                self.update_order_state_cache(&canonical_client_id, msg, instrument);
+                self.update_order_state_cache(
+                    &canonical_client_id,
+                    msg,
+                    price_precision,
+                    size_precision,
+                );
 
                 self.pending_messages
                     .push_back(NautilusWsMessage::OrderAccepted(accepted));
@@ -1559,12 +1558,22 @@ impl OKXWsFeedHandler {
                     .push_back(NautilusWsMessage::OrderExpired(expired));
             }
             ParsedOrderEvent::Triggered(triggered) => {
-                self.update_order_state_cache(&canonical_client_id, msg, instrument);
+                self.update_order_state_cache(
+                    &canonical_client_id,
+                    msg,
+                    price_precision,
+                    size_precision,
+                );
                 self.pending_messages
                     .push_back(NautilusWsMessage::OrderTriggered(triggered));
             }
             ParsedOrderEvent::Updated(updated) => {
-                self.update_order_state_cache(&canonical_client_id, msg, instrument);
+                self.update_order_state_cache(
+                    &canonical_client_id,
+                    msg,
+                    price_precision,
+                    size_precision,
+                );
                 self.pending_messages
                     .push_back(NautilusWsMessage::OrderUpdated(updated));
             }
@@ -1601,12 +1610,13 @@ impl OKXWsFeedHandler {
         &mut self,
         client_order_id: &ClientOrderId,
         msg: &OKXOrderMsg,
-        instrument: &InstrumentAny,
+        price_precision: u8,
+        size_precision: u8,
     ) {
         let venue_order_id = VenueOrderId::new(msg.ord_id);
-        let quantity = parse_quantity(&msg.sz, instrument.size_precision()).ok();
+        let quantity = parse_quantity(&msg.sz, size_precision).ok();
         let price = if !is_market_price(&msg.px) {
-            parse_price(&msg.px, instrument.price_precision()).ok()
+            parse_price(&msg.px, price_precision).ok()
         } else {
             None
         };
@@ -2469,18 +2479,26 @@ pub fn is_post_only_rejection(code: &str, data: &[Value]) -> bool {
     false
 }
 
+/// Case-insensitive substring check.
+#[inline]
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// Determines if an OKX WebSocket error should trigger a retry.
 fn should_retry_okx_error(error: &OKXWsError) -> bool {
     match error {
         OKXWsError::OkxError { error_code, .. } => should_retry_error_code(error_code),
         OKXWsError::TungsteniteError(_) => true, // Network errors are retryable
         OKXWsError::ClientError(msg) => {
-            // Retry on timeout and connection errors (case-insensitive)
-            let msg_lower = msg.to_lowercase();
-            msg_lower.contains("timeout")
-                || msg_lower.contains("timed out")
-                || msg_lower.contains("connection")
-                || msg_lower.contains("network")
+            // Retry on timeout and connection errors
+            contains_ignore_ascii_case(msg, "timeout")
+                || contains_ignore_ascii_case(msg, "timed out")
+                || contains_ignore_ascii_case(msg, "connection")
+                || contains_ignore_ascii_case(msg, "network")
         }
         OKXWsError::AuthenticationError(_)
         | OKXWsError::JsonError(_)
@@ -2864,5 +2882,423 @@ mod tests {
         assert!(client_id_aliases.contains_key(&canonical2));
         assert!(client_id_aliases.contains_key(&child2));
         assert!(emitted_order_accepted.contains_key(&venue_id2));
+    }
+
+    // ==================================================================================
+    // Channel routing integration tests
+    // ==================================================================================
+
+    mod channel_routing {
+        use nautilus_core::nanos::UnixNanos;
+        use nautilus_model::{
+            identifiers::{InstrumentId, Symbol},
+            instruments::{CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny},
+            types::{Currency, Price, Quantity},
+        };
+        use rstest::rstest;
+        use ustr::Ustr;
+
+        use super::*;
+        use crate::{
+            common::{enums::OKXBookAction, testing::load_test_json},
+            websocket::{enums::OKXWsChannel, messages::OKXWsMessage},
+        };
+
+        fn create_spot_instrument() -> InstrumentAny {
+            let instrument_id = InstrumentId::from("BTC-USDT.OKX");
+            InstrumentAny::CurrencyPair(CurrencyPair::new(
+                instrument_id,
+                Symbol::from("BTC-USDT"),
+                Currency::BTC(),
+                Currency::USDT(),
+                2,
+                8,
+                Price::from("0.01"),
+                Quantity::from("0.00000001"),
+                None, // multiplier
+                None, // lot_size
+                None, // max_quantity
+                None, // min_quantity
+                None, // max_notional
+                None, // min_notional
+                None, // max_price
+                None, // min_price
+                None, // margin_init
+                None, // margin_maint
+                None, // maker_fee
+                None, // taker_fee
+                UnixNanos::default(),
+                UnixNanos::default(),
+            ))
+        }
+
+        fn create_swap_instrument() -> InstrumentAny {
+            let instrument_id = InstrumentId::from("BTC-USDT-SWAP.OKX");
+            InstrumentAny::CryptoPerpetual(CryptoPerpetual::new(
+                instrument_id,
+                Symbol::from("BTC-USDT-SWAP"),
+                Currency::BTC(),
+                Currency::USDT(),
+                Currency::USDT(),
+                false,
+                2,
+                8,
+                Price::from("0.01"),
+                Quantity::from("0.00000001"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                UnixNanos::default(),
+                UnixNanos::default(),
+            ))
+        }
+
+        fn create_handler_with_instruments(instruments: Vec<InstrumentAny>) -> OKXWsFeedHandler {
+            let (mut handler, _, _, _, _) = create_test_handler();
+            for inst in instruments {
+                handler
+                    .instruments_cache
+                    .insert(inst.symbol().inner(), inst);
+            }
+            handler
+        }
+
+        #[rstest]
+        fn test_parse_raw_message_ticker_channel() {
+            let json = load_test_json("ws_tickers.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            match msg {
+                OKXWsMessage::Data { arg, data } => {
+                    assert!(
+                        matches!(arg.channel, OKXWsChannel::Tickers),
+                        "Expected Tickers channel"
+                    );
+                    assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USDT")));
+                    assert!(data.is_array());
+                }
+                _ => panic!("Expected OKXWsMessage::Data variant"),
+            }
+        }
+
+        #[rstest]
+        fn test_parse_raw_message_trades_channel() {
+            let json = load_test_json("ws_trades.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            match msg {
+                OKXWsMessage::Data { arg, data } => {
+                    assert!(
+                        matches!(arg.channel, OKXWsChannel::Trades),
+                        "Expected Trades channel"
+                    );
+                    assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USD")));
+                    assert!(data.is_array());
+                }
+                _ => panic!("Expected OKXWsMessage::Data variant"),
+            }
+        }
+
+        #[rstest]
+        fn test_parse_raw_message_books_channel() {
+            let json = load_test_json("ws_books_snapshot.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            match msg {
+                OKXWsMessage::BookData { arg, action, data } => {
+                    assert!(
+                        matches!(arg.channel, OKXWsChannel::Books),
+                        "Expected Books channel"
+                    );
+                    assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USDT")));
+                    assert!(
+                        matches!(action, OKXBookAction::Snapshot),
+                        "Expected snapshot action"
+                    );
+                    assert!(!data.is_empty());
+                }
+                _ => panic!("Expected OKXWsMessage::BookData variant"),
+            }
+        }
+
+        #[rstest]
+        fn test_parse_raw_message_candle_channel() {
+            let json = load_test_json("ws_candle.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            match msg {
+                OKXWsMessage::Data { arg, data } => {
+                    // Candle channel variant is Candle1Day for "candle1D"
+                    assert!(
+                        matches!(arg.channel, OKXWsChannel::Candle1Day),
+                        "Expected Candle1Day channel, got {:?}",
+                        arg.channel
+                    );
+                    assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USDT")));
+                    assert!(data.is_array());
+                }
+                _ => panic!("Expected OKXWsMessage::Data variant"),
+            }
+        }
+
+        #[rstest]
+        fn test_parse_raw_message_funding_rate_channel() {
+            let json = load_test_json("ws_funding_rate.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            match msg {
+                OKXWsMessage::Data { arg, data } => {
+                    assert!(
+                        matches!(arg.channel, OKXWsChannel::FundingRate),
+                        "Expected FundingRate channel"
+                    );
+                    assert_eq!(arg.inst_id, Some(Ustr::from("BTC-USDT-SWAP")));
+                    assert!(data.is_array());
+                }
+                _ => panic!("Expected OKXWsMessage::Data variant"),
+            }
+        }
+
+        #[rstest]
+        fn test_parse_raw_message_bbo_tbt_channel() {
+            let json = load_test_json("ws_bbo_tbt.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            match msg {
+                OKXWsMessage::Data { arg, data } => {
+                    assert!(
+                        matches!(arg.channel, OKXWsChannel::BboTbt),
+                        "Expected BboTbt channel"
+                    );
+                    assert!(data.is_array());
+                }
+                _ => panic!("Expected OKXWsMessage::Data variant"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_other_channel_data_tickers() {
+            let mut handler = create_handler_with_instruments(vec![create_spot_instrument()]);
+            let json = load_test_json("ws_tickers.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::Data { arg, data } = msg else {
+                panic!("Expected OKXWsMessage::Data");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_other_channel_data(arg.channel, arg.inst_id, data, ts_init);
+
+            assert!(result.is_some());
+            match result.unwrap() {
+                NautilusWsMessage::Data(payloads) => {
+                    assert!(!payloads.is_empty(), "Should produce data payloads");
+                }
+                other => panic!("Expected NautilusWsMessage::Data, got {other:?}"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_other_channel_data_trades() {
+            // Create instrument with BTC-USD symbol (matches test data)
+            let instrument_id = InstrumentId::from("BTC-USD.OKX");
+            let instrument = InstrumentAny::CurrencyPair(CurrencyPair::new(
+                instrument_id,
+                Symbol::from("BTC-USD"),
+                Currency::BTC(),
+                Currency::USD(),
+                1,
+                8,
+                Price::from("0.1"),
+                Quantity::from("0.00000001"),
+                None, // multiplier
+                None, // lot_size
+                None, // max_quantity
+                None, // min_quantity
+                None, // max_notional
+                None, // min_notional
+                None, // max_price
+                None, // min_price
+                None, // margin_init
+                None, // margin_maint
+                None, // maker_fee
+                None, // taker_fee
+                UnixNanos::default(),
+                UnixNanos::default(),
+            ));
+
+            let mut handler = create_handler_with_instruments(vec![instrument]);
+            let json = load_test_json("ws_trades.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::Data { arg, data } = msg else {
+                panic!("Expected OKXWsMessage::Data");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_other_channel_data(arg.channel, arg.inst_id, data, ts_init);
+
+            assert!(result.is_some());
+            match result.unwrap() {
+                NautilusWsMessage::Data(payloads) => {
+                    assert!(!payloads.is_empty(), "Should produce trade data payloads");
+                }
+                other => panic!("Expected NautilusWsMessage::Data, got {other:?}"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_book_data_snapshot() {
+            let handler = create_handler_with_instruments(vec![create_spot_instrument()]);
+            let json = load_test_json("ws_books_snapshot.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::BookData { arg, action, data } = msg else {
+                panic!("Expected OKXWsMessage::BookData");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_book_data(arg, action, data, ts_init);
+
+            assert!(result.is_some());
+            match result.unwrap() {
+                NautilusWsMessage::Data(payloads) => {
+                    assert!(!payloads.is_empty(), "Should produce order book payloads");
+                }
+                other => panic!("Expected NautilusWsMessage::Data, got {other:?}"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_book_data_update() {
+            let handler = create_handler_with_instruments(vec![create_spot_instrument()]);
+            let json = load_test_json("ws_books_update.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::BookData { arg, action, data } = msg else {
+                panic!("Expected OKXWsMessage::BookData");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_book_data(arg, action, data, ts_init);
+
+            assert!(result.is_some());
+            match result.unwrap() {
+                NautilusWsMessage::Data(payloads) => {
+                    assert!(
+                        !payloads.is_empty(),
+                        "Should produce order book delta payloads"
+                    );
+                }
+                other => panic!("Expected NautilusWsMessage::Data, got {other:?}"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_other_channel_data_candles() {
+            let mut handler = create_handler_with_instruments(vec![create_spot_instrument()]);
+            let json = load_test_json("ws_candle.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::Data { arg, data } = msg else {
+                panic!("Expected OKXWsMessage::Data");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_other_channel_data(arg.channel, arg.inst_id, data, ts_init);
+
+            assert!(result.is_some());
+            match result.unwrap() {
+                NautilusWsMessage::Data(payloads) => {
+                    assert!(!payloads.is_empty(), "Should produce bar data payloads");
+                }
+                other => panic!("Expected NautilusWsMessage::Data, got {other:?}"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_other_channel_data_funding_rate() {
+            let mut handler = create_handler_with_instruments(vec![create_swap_instrument()]);
+            let json = load_test_json("ws_funding_rate.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::Data { arg, data } = msg else {
+                panic!("Expected OKXWsMessage::Data");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_other_channel_data(arg.channel, arg.inst_id, data, ts_init);
+
+            // Funding rate returns FundingRates variant when rate changes
+            assert!(result.is_none() || matches!(result, Some(NautilusWsMessage::FundingRates(_))));
+        }
+
+        #[rstest]
+        fn test_handle_account_data_parses_successfully() {
+            let mut handler = create_handler_with_instruments(vec![]);
+            let json = load_test_json("ws_account.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::Data { data, .. } = msg else {
+                panic!("Expected OKXWsMessage::Data");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_account_data(data, ts_init);
+
+            assert!(result.is_some());
+            match result.unwrap() {
+                NautilusWsMessage::AccountUpdate(account_state) => {
+                    assert!(
+                        !account_state.balances.is_empty(),
+                        "Should have balance data"
+                    );
+                }
+                other => panic!("Expected NautilusWsMessage::AccountUpdate, got {other:?}"),
+            }
+        }
+
+        #[rstest]
+        fn test_handle_other_channel_data_missing_instrument() {
+            let mut handler = create_handler_with_instruments(vec![]);
+            let json = load_test_json("ws_tickers.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::Data { arg, data } = msg else {
+                panic!("Expected OKXWsMessage::Data");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_other_channel_data(arg.channel, arg.inst_id, data, ts_init);
+
+            // Should return None when instrument is not in cache
+            assert!(result.is_none());
+        }
+
+        #[rstest]
+        fn test_handle_book_data_missing_instrument() {
+            let handler = create_handler_with_instruments(vec![]);
+            let json = load_test_json("ws_books_snapshot.json");
+            let msg: OKXWsMessage = serde_json::from_str(&json).unwrap();
+
+            let OKXWsMessage::BookData { arg, action, data } = msg else {
+                panic!("Expected OKXWsMessage::BookData");
+            };
+
+            let ts_init = UnixNanos::from(1_000_000_000u64);
+            let result = handler.handle_book_data(arg, action, data, ts_init);
+
+            // Should return None when instrument is not in cache
+            assert!(result.is_none());
+        }
     }
 }

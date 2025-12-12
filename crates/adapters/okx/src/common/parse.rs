@@ -205,11 +205,13 @@ where
         return Ok(OKXVipLevel::Vip0);
     }
 
-    let s_lower = s.to_lowercase();
-    let level_str = s_lower
-        .strip_prefix("vip")
-        .or_else(|| s_lower.strip_prefix("lv"))
-        .unwrap_or(&s_lower);
+    let level_str = if s.len() >= 3 && s[..3].eq_ignore_ascii_case("vip") {
+        &s[3..]
+    } else if s.len() >= 2 && s[..2].eq_ignore_ascii_case("lv") {
+        &s[2..]
+    } else {
+        &s
+    };
 
     let level_num = level_str
         .parse::<u8>()
@@ -243,24 +245,25 @@ pub fn okx_instrument_type(instrument: &InstrumentAny) -> anyhow::Result<OKXInst
 /// - FUTURES: {BASE}-{QUOTE}-{YYMMDD} (e.g., BTC-USDT-250328)
 /// - OPTION: {BASE}-{QUOTE}-{YYMMDD}-{STRIKE}-{C/P} (e.g., BTC-USD-250328-50000-C)
 pub fn okx_instrument_type_from_symbol(symbol: &str) -> OKXInstrumentType {
-    // TODO: Improve efficiency of this
-    let parts: Vec<&str> = symbol.split('-').collect();
+    // Count dashes to determine part count
+    let dash_count = symbol.bytes().filter(|&b| b == b'-').count();
 
-    match parts.len() {
-        2 => OKXInstrumentType::Spot,
-        3 => {
-            let suffix = parts[2];
+    match dash_count {
+        1 => OKXInstrumentType::Spot, // 2 parts: BASE-QUOTE
+        2 => {
+            // 3 parts: Check suffix after last dash
+            let suffix = symbol.rsplit('-').next().unwrap_or("");
             if suffix == "SWAP" {
                 OKXInstrumentType::Swap
-            } else if suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_digit()) {
+            } else if suffix.len() == 6 && suffix.bytes().all(|b| b.is_ascii_digit()) {
                 // Date format YYMMDD
                 OKXInstrumentType::Futures
             } else {
                 OKXInstrumentType::Spot
             }
         }
-        5 => OKXInstrumentType::Option,
-        _ => OKXInstrumentType::Spot, // Default fallback
+        4 => OKXInstrumentType::Option, // 5 parts: BASE-QUOTE-DATE-STRIKE-C/P
+        _ => OKXInstrumentType::Spot,   // Default fallback
     }
 }
 
@@ -1063,23 +1066,13 @@ where
     F: Fn(&T) -> anyhow::Result<R>,
     W: Fn(R) -> Data,
 {
-    let items = match data {
-        serde_json::Value::Array(items) => items,
-        other => {
-            let raw = serde_json::to_string(&other).unwrap_or_else(|_| other.to_string());
-            let mut snippet: String = raw.chars().take(512).collect();
-            if raw.len() > snippet.len() {
-                snippet.push_str("...");
-            }
-            anyhow::bail!("Expected array payload, received {snippet}");
-        }
-    };
+    let messages: Vec<T> =
+        serde_json::from_value(data).map_err(|e| anyhow::anyhow!("Expected array payload: {e}"))?;
 
-    let mut results = Vec::with_capacity(items.len());
+    let mut results = Vec::with_capacity(messages.len());
 
-    for item in items {
-        let message: T = serde_json::from_value(item)?;
-        let parsed = parser(&message)?;
+    for message in &messages {
+        let parsed = parser(message)?;
         results.push(wrapper(parsed));
     }
 

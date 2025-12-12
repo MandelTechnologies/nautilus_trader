@@ -301,16 +301,13 @@ fn bench_tungstenite_message_access(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    // Futures
     bench_futures_classification,
     bench_futures_full_flow,
     bench_futures_batch,
-    // Spot
     bench_spot_parsing,
     bench_spot_full_flow,
     bench_spot_heartbeat_prefilter,
     bench_spot_batch,
-    // Shared
     bench_subscription_check,
     bench_tungstenite_message_access,
 );

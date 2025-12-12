@@ -32,8 +32,8 @@ use nautilus_core::UUID4;
 use nautilus_model::{
     enums::{OrderSide, OrderStatus, PositionSide, TimeInForce, TriggerType},
     events::{
-        OrderAccepted, OrderCancelRejected, OrderCanceled, OrderDenied, OrderEmulated,
-        OrderEventAny, OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
+        OrderAccepted, OrderCancelRejected, OrderDenied, OrderEmulated, OrderEventAny,
+        OrderExpired, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
         OrderPendingUpdate, OrderRejected, OrderReleased, OrderSubmitted, OrderTriggered,
         OrderUpdated, PositionChanged, PositionClosed, PositionEvent, PositionOpened,
     },
@@ -540,7 +540,9 @@ pub trait Strategy: DataActor {
             OrderEventAny::Submitted(e) => self.on_order_submitted(*e),
             OrderEventAny::Rejected(e) => self.on_order_rejected(*e),
             OrderEventAny::Accepted(e) => self.on_order_accepted(*e),
-            OrderEventAny::Canceled(e) => self.on_order_canceled(*e),
+            OrderEventAny::Canceled(e) => {
+                let _ = DataActor::on_order_canceled(self, e);
+            }
             OrderEventAny::Expired(e) => self.on_order_expired(*e),
             OrderEventAny::Triggered(e) => self.on_order_triggered(*e),
             OrderEventAny::PendingUpdate(e) => self.on_order_pending_update(*e),
@@ -662,12 +664,6 @@ pub trait Strategy: DataActor {
     /// Override this method to implement custom logic when an order is accepted.
     #[allow(unused_variables)]
     fn on_order_accepted(&mut self, event: OrderAccepted) {}
-
-    /// Called when an order is canceled.
-    ///
-    /// Override this method to implement custom logic when an order is canceled.
-    #[allow(unused_variables)]
-    fn on_order_canceled(&mut self, event: OrderCanceled) {}
 
     /// Called when an order expires.
     ///
@@ -1047,7 +1043,7 @@ mod tests {
         strategy.on_order_released(Default::default());
         strategy.on_order_submitted(Default::default());
         strategy.on_order_rejected(Default::default());
-        strategy.on_order_canceled(Default::default());
+        let _ = DataActor::on_order_canceled(&mut strategy, &Default::default());
         strategy.on_order_expired(Default::default());
         strategy.on_order_triggered(Default::default());
         strategy.on_order_pending_update(Default::default());

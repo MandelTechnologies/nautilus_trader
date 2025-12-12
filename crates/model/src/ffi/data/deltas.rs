@@ -61,9 +61,15 @@ pub extern "C" fn orderbook_deltas_vec_deltas(deltas: &OrderBookDeltas_API) -> C
     deltas.deltas.clone().into()
 }
 
+/// Returns `1` if the first delta is a `Clear` action (snapshot), `0` otherwise.
+///
+/// Returns `0` for empty delta vectors to avoid panicking on malformed FFI input.
 #[unsafe(no_mangle)]
 pub extern "C" fn orderbook_deltas_is_snapshot(deltas: &OrderBookDeltas_API) -> u8 {
-    u8::from(deltas.deltas[0].action == BookAction::Clear)
+    deltas
+        .deltas
+        .first()
+        .map_or(0, |first| u8::from(first.action == BookAction::Clear))
 }
 
 #[unsafe(no_mangle)]

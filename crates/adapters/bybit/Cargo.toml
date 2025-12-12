@@ -101,3 +101,8 @@ path = "bin/http.rs"
 [[bin]]
 name = "bybit-ws-data"
 path = "bin/ws_data.rs"
+
+# Run with `cargo bench -p nautilus-bybit --bench websocket`
+[[bench]]
+name = "websocket"
+harness = false

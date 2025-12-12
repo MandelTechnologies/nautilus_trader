@@ -1093,7 +1093,7 @@ impl OKXWebSocketClient {
             return Ok(());
         }
 
-        tracing::info!("Subscribing to instrument type {inst_type:?} for {instrument_id}");
+        tracing::debug!("Subscribing to instrument type {inst_type:?} for {instrument_id}");
         self.subscribe_instruments(inst_type).await
     }
 

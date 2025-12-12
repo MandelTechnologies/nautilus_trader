@@ -123,3 +123,8 @@ required-features = []
 name = "okx-exec-tester"
 path = "examples/node_exec_tester.rs"
 required-features = []
+
+# Run with `cargo bench -p nautilus-okx --bench websocket`
+[[bench]]
+name = "websocket"
+harness = false

@@ -123,6 +123,27 @@ pub struct OptionLotSizeFilter {
     pub qty_step: String,
 }
 
+/// Trait for Bybit response types that contain ret_code and ret_msg fields.
+pub trait BybitResponseCheck {
+    /// Returns the response code (0 = success).
+    fn ret_code(&self) -> i64;
+    /// Returns the response message.
+    fn ret_msg(&self) -> &str;
+}
+
+/// Lightweight struct for checking Bybit API errors without deserializing result.
+///
+/// Bybit error responses often have `result: null` which would fail deserialization
+/// into typed response structs. This struct ignores the result field entirely.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitErrorCheck {
+    /// Return code (0 = success).
+    pub ret_code: i64,
+    /// Textual message accompanying the response.
+    pub ret_msg: String,
+}
+
 /// Top-level response envelope returned by Bybit HTTP endpoints.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +160,16 @@ pub struct BybitResponse<T> {
     /// Server time in milliseconds when the response was produced.
     #[serde(default)]
     pub time: Option<i64>,
+}
+
+impl<T> BybitResponseCheck for BybitResponse<T> {
+    fn ret_code(&self) -> i64 {
+        self.ret_code
+    }
+
+    fn ret_msg(&self) -> &str {
+        &self.ret_msg
+    }
 }
 
 /// Convenience alias for responses that return a simple list.

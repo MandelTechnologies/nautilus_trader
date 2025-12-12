@@ -380,9 +380,9 @@ fn test_book_get_price_for_exposure_no_market() {
 #[rstest]
 fn test_book_get_price_for_exposure(stub_depth10: OrderBookDepth10) {
     let depth = stub_depth10;
-    let instrument_id = InstrumentId::from("ETHUSDT-PERP.BINANCE");
+    let instrument_id = InstrumentId::from("AAPL.XNAS"); // Must match stub_depth10's instrument_id
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     let qty = Quantity::from(1);
 
@@ -403,7 +403,7 @@ fn test_book_apply_depth(stub_depth10: OrderBookDepth10) {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     assert_eq!(book.best_bid_price().unwrap(), Price::from("99.00"));
     assert_eq!(book.best_ask_price().unwrap(), Price::from("100.00"));
@@ -417,7 +417,7 @@ fn test_book_apply_depth_all_levels(stub_depth10: OrderBookDepth10) {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify exactly 10 bid levels
     let bid_levels: Vec<_> = book.bids(None).collect();
@@ -515,7 +515,7 @@ fn test_book_apply_depth_empty_snapshot() {
         UnixNanos::from(2000),
     );
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify no phantom levels at price 0
     assert_eq!(
@@ -613,7 +613,7 @@ fn test_book_apply_depth_partial_snapshot() {
         UnixNanos::from(4000),
     );
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify exactly 3 levels on each side
     let bid_levels: Vec<_> = book.bids(None).collect();
@@ -649,7 +649,7 @@ fn test_book_apply_depth_updates_metadata_once(stub_depth10: OrderBookDepth10) {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify metadata updated exactly once (not 20 times for 20 orders)
     assert_eq!(book.sequence, depth.sequence);
@@ -658,6 +658,28 @@ fn test_book_apply_depth_updates_metadata_once(stub_depth10: OrderBookDepth10) {
         book.update_count, 1,
         "Should increment update_count exactly once"
     );
+}
+
+#[rstest]
+fn test_book_apply_depth_instrument_mismatch(stub_depth10: OrderBookDepth10) {
+    let depth = stub_depth10; // Uses AAPL.XNAS
+    let instrument_id = InstrumentId::from("ETHUSDT-PERP.BINANCE"); // Different instrument
+    let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+
+    let result = book.apply_depth(&depth);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        BookIntegrityError::InstrumentMismatch(book_id, delta_id) => {
+            assert_eq!(book_id.to_string(), "ETHUSDT-PERP.BINANCE");
+            assert_eq!(delta_id.to_string(), "AAPL.XNAS");
+        }
+        other => panic!("Expected InstrumentMismatch error, was {other:?}"),
+    }
+
+    assert_eq!(book.update_count, 0);
+    assert!(!book.has_bid());
+    assert!(!book.has_ask());
 }
 
 #[rstest]

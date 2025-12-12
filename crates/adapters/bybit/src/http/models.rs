@@ -446,15 +446,16 @@ impl<'de> Deserialize<'de> for BybitKline {
     where
         D: serde::Deserializer<'de>,
     {
-        let arr: [String; 7] = Deserialize::deserialize(deserializer)?;
+        let [start, open, high, low, close, volume, turnover]: [String; 7] =
+            Deserialize::deserialize(deserializer)?;
         Ok(Self {
-            start: arr[0].clone(),
-            open: arr[1].clone(),
-            high: arr[2].clone(),
-            low: arr[3].clone(),
-            close: arr[4].clone(),
-            volume: arr[5].clone(),
-            turnover: arr[6].clone(),
+            start,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            turnover,
         })
     }
 }

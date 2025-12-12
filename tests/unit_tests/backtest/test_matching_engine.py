@@ -158,7 +158,7 @@ class TestOrderMatchingEngine:
             cache=self.cache,
             clock=self.clock,
         )
-        depth = TestDataStubs.order_book_depth10()
+        depth = TestDataStubs.order_book_depth10(instrument_id=self.instrument_id)
         assert matching_engine_l2.best_ask_price() is None
         assert matching_engine_l2.best_bid_price() is None
 

@@ -5383,7 +5383,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "criterion",
- "futures",
  "log",
  "nautilus-common",
  "nautilus-core",

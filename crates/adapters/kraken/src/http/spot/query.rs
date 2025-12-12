@@ -67,7 +67,7 @@ pub struct KrakenSpotAddOrderParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeinforce: Option<String>,
 
-    /// Expiration time for GTD orders (Unix timestamp or "+<seconds>").
+    /// Expiration time for GTD orders (Unix timestamp or `+<seconds>`).
     #[builder(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expiretm: Option<String>,

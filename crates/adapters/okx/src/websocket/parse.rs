@@ -287,17 +287,24 @@ pub fn parse_order_event(
     }
 }
 
+/// Case-insensitive substring check.
+#[inline]
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// Determines if a Canceled order is actually an Expired order based on cancel reason.
 fn is_order_expired_by_reason(msg: &OKXOrderMsg) -> bool {
-    if let Some(ref reason) = msg.cancel_source_reason {
-        let reason_lower = reason.to_lowercase();
-        if reason_lower.contains("expir")
-            || reason_lower.contains("gtd")
-            || reason_lower.contains("timeout")
-            || reason_lower.contains("time_expired")
-        {
-            return true;
-        }
+    if let Some(ref reason) = msg.cancel_source_reason
+        && (contains_ignore_ascii_case(reason, "expir")
+            || contains_ignore_ascii_case(reason, "gtd")
+            || contains_ignore_ascii_case(reason, "timeout")
+            || contains_ignore_ascii_case(reason, "time_expired"))
+    {
+        return true;
     }
 
     // OKX cancel source codes that indicate expiration
@@ -2115,7 +2122,13 @@ mod tests {
     #[rstest]
     fn test_parse_ws_account_message() {
         let json_data = load_test_json("ws_account.json");
-        let accounts: Vec<OKXAccount> = serde_json::from_str(&json_data).unwrap();
+        let msg: OKXWsMessage = serde_json::from_str(&json_data).unwrap();
+
+        let OKXWsMessage::Data { data, .. } = msg else {
+            panic!("Expected OKXWsMessage::Data");
+        };
+
+        let accounts: Vec<OKXAccount> = serde_json::from_value(data).unwrap();
 
         assert_eq!(accounts.len(), 1);
         let account = &accounts[0];

@@ -2121,15 +2121,14 @@ mod tests {
     use super::*;
     use crate::{
         common::testing::load_test_json,
-        websocket::{handler::FeedHandler, messages::BybitWsMessage},
+        websocket::{classify_bybit_message, messages::BybitWsMessage},
     };
 
     #[rstest]
     fn classify_orderbook_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_orderbook_snapshot.json"))
             .expect("invalid fixture");
-        let message =
-            FeedHandler::classify_bybit_message(&json).expect("expected orderbook message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::Orderbook(_)));
     }
 
@@ -2137,7 +2136,7 @@ mod tests {
     fn classify_trade_snapshot() {
         let json: Value =
             serde_json::from_str(&load_test_json("ws_public_trade.json")).expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected trade message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::Trade(_)));
     }
 
@@ -2145,7 +2144,7 @@ mod tests {
     fn classify_ticker_linear_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_ticker_linear.json"))
             .expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected ticker message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::TickerLinear(_)));
     }
 
@@ -2153,7 +2152,7 @@ mod tests {
     fn classify_ticker_option_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_ticker_option.json"))
             .expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected ticker message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::TickerOption(_)));
     }
 
