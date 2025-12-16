@@ -171,10 +171,6 @@ fn create_router(state: TestServerState) -> Router {
         .with_state(state)
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_get_account_summaries_success() {
     let state = TestServerState::default();

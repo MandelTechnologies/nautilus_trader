@@ -27,7 +27,7 @@ use nautilus_common::{
     timer::TimeEvent,
 };
 use nautilus_model::{
-    data::{QuoteTick, TradeTick},
+    data::{Bar, IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick},
     enums::{BookType, OrderSide, OrderStatus, OrderType, TimeInForce, TriggerType},
     identifiers::{ClientId, InstrumentId, StrategyId},
     instruments::{Instrument, InstrumentAny},
@@ -103,10 +103,14 @@ pub struct ExecTesterConfig {
     pub cancel_orders_on_stop: bool,
     /// Close all positions on stop.
     pub close_positions_on_stop: bool,
+    /// Time in force for closing positions (None defaults to GTC).
+    pub close_positions_time_in_force: Option<TimeInForce>,
     /// Use reduce_only when closing positions.
     pub reduce_only_on_stop: bool,
     /// Use individual cancel commands instead of cancel_all.
     pub use_individual_cancels_on_stop: bool,
+    /// Use batch cancel command when stopping.
+    pub use_batch_cancel_on_stop: bool,
     /// Dry run mode (no order submission).
     pub dry_run: bool,
     /// Log received data.
@@ -164,8 +168,10 @@ impl ExecTesterConfig {
             use_post_only: false,
             cancel_orders_on_stop: true,
             close_positions_on_stop: true,
+            close_positions_time_in_force: None,
             reduce_only_on_stop: true,
             use_individual_cancels_on_stop: false,
+            use_batch_cancel_on_stop: false,
             dry_run: false,
             log_data: true,
             can_unsubscribe: true,
@@ -281,6 +287,21 @@ impl ExecTesterConfig {
     }
 
     #[must_use]
+    pub fn with_close_positions_time_in_force(
+        mut self,
+        time_in_force: Option<TimeInForce>,
+    ) -> Self {
+        self.close_positions_time_in_force = time_in_force;
+        self
+    }
+
+    #[must_use]
+    pub fn with_use_batch_cancel_on_stop(mut self, use_batch: bool) -> Self {
+        self.use_batch_cancel_on_stop = use_batch;
+        self
+    }
+
+    #[must_use]
     pub fn with_can_unsubscribe(mut self, can_unsubscribe: bool) -> Self {
         self.can_unsubscribe = can_unsubscribe;
         self
@@ -321,8 +342,10 @@ impl Default for ExecTesterConfig {
             use_post_only: false,
             cancel_orders_on_stop: true,
             close_positions_on_stop: true,
+            close_positions_time_in_force: None,
             reduce_only_on_stop: true,
             use_individual_cancels_on_stop: false,
+            use_batch_cancel_on_stop: false,
             dry_run: false,
             log_data: true,
             can_unsubscribe: true,
@@ -407,8 +430,8 @@ impl DataActor for ExecTester {
         let client_id = self.config.client_id;
 
         if self.config.cancel_orders_on_stop {
+            let strategy_id = StrategyId::from(self.core.actor.actor_id.inner().as_str());
             if self.config.use_individual_cancels_on_stop {
-                let strategy_id = StrategyId::from(self.core.actor.actor_id.inner().as_str());
                 let cache = self.cache();
                 let open_orders: Vec<OrderAny> = cache
                     .orders_open(None, Some(&instrument_id), Some(&strategy_id), None)
@@ -422,23 +445,39 @@ impl DataActor for ExecTester {
                         log::error!("Failed to cancel order: {e}");
                     }
                 }
+            } else if self.config.use_batch_cancel_on_stop {
+                let cache = self.cache();
+                let open_orders: Vec<OrderAny> = cache
+                    .orders_open(None, Some(&instrument_id), Some(&strategy_id), None)
+                    .iter()
+                    .map(|o| (*o).clone())
+                    .collect();
+                drop(cache);
+
+                if let Err(e) = self.cancel_orders(open_orders, client_id, None) {
+                    log::error!("Failed to batch cancel orders: {e}");
+                }
             } else if let Err(e) = self.cancel_all_orders(instrument_id, None, client_id) {
                 log::error!("Failed to cancel all orders: {e}");
             }
         }
 
-        if self.config.close_positions_on_stop
-            && let Err(e) = self.close_all_positions(
+        if self.config.close_positions_on_stop {
+            let time_in_force = self
+                .config
+                .close_positions_time_in_force
+                .or(Some(TimeInForce::Gtc));
+            if let Err(e) = self.close_all_positions(
                 instrument_id,
                 None,
                 client_id,
                 None,
-                Some(TimeInForce::Gtc),
+                time_in_force,
                 Some(self.config.reduce_only_on_stop),
                 None,
-            )
-        {
-            log::error!("Failed to close all positions: {e}");
+            ) {
+                log::error!("Failed to close all positions: {e}");
+            }
         }
 
         if self.config.can_unsubscribe && self.instrument.is_some() {
@@ -485,6 +524,18 @@ impl DataActor for ExecTester {
             let instrument_id = book.instrument_id;
             let book_str = book.pprint(num_levels, None);
             log_info!("\n{instrument_id}\n{book_str}", color = LogColor::Cyan);
+
+            // Log own order book if available
+            if self.is_registered() {
+                let cache = self.cache();
+                if let Some(own_book) = cache.own_order_book(&instrument_id) {
+                    let own_book_str = own_book.pprint(num_levels, None);
+                    log_info!(
+                        "\n{instrument_id} (own)\n{own_book_str}",
+                        color = LogColor::Magenta
+                    );
+                }
+            }
         }
 
         let Some(best_bid) = book.best_bid_price() else {
@@ -495,6 +546,34 @@ impl DataActor for ExecTester {
         };
 
         self.maintain_orders(best_bid, best_ask);
+        Ok(())
+    }
+
+    fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        if self.config.log_data {
+            log_info!("Received {deltas:?}", color = LogColor::Cyan);
+        }
+        Ok(())
+    }
+
+    fn on_bar(&mut self, bar: &Bar) -> anyhow::Result<()> {
+        if self.config.log_data {
+            log_info!("Received {bar:?}", color = LogColor::Cyan);
+        }
+        Ok(())
+    }
+
+    fn on_mark_price(&mut self, mark_price: &MarkPriceUpdate) -> anyhow::Result<()> {
+        if self.config.log_data {
+            log_info!("Received {mark_price:?}", color = LogColor::Cyan);
+        }
+        Ok(())
+    }
+
+    fn on_index_price(&mut self, index_price: &IndexPriceUpdate) -> anyhow::Result<()> {
+        if self.config.log_data {
+            log_info!("Received {index_price:?}", color = LogColor::Cyan);
+        }
         Ok(())
     }
 
@@ -1083,14 +1162,11 @@ impl ExecTester {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use nautilus_core::UnixNanos;
     use nautilus_model::{
+        data::stubs::{OrderBookDeltaTestBuilder, stub_bar},
         enums::AggressorSide,
         identifiers::{StrategyId, TradeId},
         instruments::stubs::crypto_perpetual_ethusdt,
@@ -1160,6 +1236,8 @@ mod tests {
         assert!(!config.enable_limit_sells);
         assert!(config.cancel_orders_on_stop);
         assert!(config.close_positions_on_stop);
+        assert!(config.close_positions_time_in_force.is_none());
+        assert!(!config.use_batch_cancel_on_stop);
     }
 
     #[rstest]
@@ -1177,6 +1255,12 @@ mod tests {
         assert_eq!(tester.config.stop_order_type, OrderType::StopLimit);
         assert_eq!(tester.config.stop_offset_ticks, 200);
         assert_eq!(tester.config.stop_limit_offset_ticks, Some(50));
+    }
+
+    #[rstest]
+    fn test_config_with_batch_cancel() {
+        let config = ExecTesterConfig::default().with_use_batch_cancel_on_stop(true);
+        assert!(config.use_batch_cancel_on_stop);
     }
 
     #[rstest]
@@ -1211,6 +1295,14 @@ mod tests {
             Some(Decimal::from(1))
         );
         assert_eq!(tester.config.open_position_time_in_force, TimeInForce::Ioc);
+    }
+
+    #[rstest]
+    fn test_config_with_close_positions_time_in_force_builder() {
+        let config =
+            ExecTesterConfig::default().with_close_positions_time_in_force(Some(TimeInForce::Ioc));
+
+        assert_eq!(config.close_positions_time_in_force, Some(TimeInForce::Ioc));
     }
 
     #[rstest]
@@ -1403,6 +1495,128 @@ mod tests {
         let book = OrderBook::new(InstrumentId::from("BTCUSDT-PERP.BINANCE"), BookType::L2_MBP);
 
         let result = tester.on_book(&book);
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_book_deltas_with_logging(config: ExecTesterConfig) {
+        let mut tester = ExecTester::new(config);
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        let delta = OrderBookDeltaTestBuilder::new(instrument_id).build();
+        let deltas = OrderBookDeltas::new(instrument_id, vec![delta]);
+
+        let result = tester.on_book_deltas(&deltas);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_book_deltas_without_logging(mut config: ExecTesterConfig) {
+        config.log_data = false;
+        let mut tester = ExecTester::new(config);
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        let delta = OrderBookDeltaTestBuilder::new(instrument_id).build();
+        let deltas = OrderBookDeltas::new(instrument_id, vec![delta]);
+
+        let result = tester.on_book_deltas(&deltas);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_bar_with_logging(config: ExecTesterConfig) {
+        let mut tester = ExecTester::new(config);
+        let bar = stub_bar();
+
+        let result = tester.on_bar(&bar);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_bar_without_logging(mut config: ExecTesterConfig) {
+        config.log_data = false;
+        let mut tester = ExecTester::new(config);
+        let bar = stub_bar();
+
+        let result = tester.on_bar(&bar);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_mark_price_with_logging(config: ExecTesterConfig) {
+        let mut tester = ExecTester::new(config);
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        let mark_price = MarkPriceUpdate::new(
+            instrument_id,
+            Price::from("50000.0"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+
+        let result = tester.on_mark_price(&mark_price);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_mark_price_without_logging(mut config: ExecTesterConfig) {
+        config.log_data = false;
+        let mut tester = ExecTester::new(config);
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        let mark_price = MarkPriceUpdate::new(
+            instrument_id,
+            Price::from("50000.0"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+
+        let result = tester.on_mark_price(&mark_price);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_index_price_with_logging(config: ExecTesterConfig) {
+        let mut tester = ExecTester::new(config);
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        let index_price = IndexPriceUpdate::new(
+            instrument_id,
+            Price::from("49999.0"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+
+        let result = tester.on_index_price(&index_price);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_index_price_without_logging(mut config: ExecTesterConfig) {
+        config.log_data = false;
+        let mut tester = ExecTester::new(config);
+        let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+        let index_price = IndexPriceUpdate::new(
+            instrument_id,
+            Price::from("49999.0"),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+
+        let result = tester.on_index_price(&index_price);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_on_stop_dry_run(mut config: ExecTesterConfig) {
+        config.dry_run = true;
+        let mut tester = ExecTester::new(config);
+
+        let result = tester.on_stop();
+
         assert!(result.is_ok());
     }
 

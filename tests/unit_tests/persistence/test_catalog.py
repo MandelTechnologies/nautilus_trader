@@ -150,6 +150,58 @@ def test_catalog_instrument_ids_correctly_unmapped(catalog: ParquetDataCatalog) 
     assert trade_tick.instrument_id.value == "AUD/USD.SIM"
 
 
+def test_query_files_discovers_when_files_none(
+    catalog: ParquetDataCatalog,
+    monkeypatch,
+) -> None:
+    discovered_files = ["a.parquet", "b.parquet"]
+
+    def fake_get_file_list(data_cls: type):
+        return discovered_files
+
+    monkeypatch.setattr(catalog, "get_file_list_from_data_cls", fake_get_file_list)
+    monkeypatch.setattr(
+        catalog,
+        "filter_files",
+        lambda data_cls, file_paths, identifiers, start, end: file_paths,
+    )
+
+    result = catalog._query_files(
+        data_cls=QuoteTick,
+        identifiers=None,
+        start=None,
+        end=None,
+        files=None,
+    )
+
+    assert result == discovered_files
+
+
+def test_query_files_respects_empty_files_list(
+    catalog: ParquetDataCatalog,
+    monkeypatch,
+) -> None:
+    def fail_get_file_list(_):
+        raise AssertionError("get_file_list_from_data_cls should not be called")
+
+    monkeypatch.setattr(catalog, "get_file_list_from_data_cls", fail_get_file_list)
+    monkeypatch.setattr(
+        catalog,
+        "filter_files",
+        lambda data_cls, file_paths, identifiers, start, end: file_paths,
+    )
+
+    result = catalog._query_files(
+        data_cls=QuoteTick,
+        identifiers=None,
+        start=None,
+        end=None,
+        files=[],
+    )
+
+    assert result == []
+
+
 @pytest.mark.skip("development_only")
 def test_catalog_with_databento_instruments(catalog: ParquetDataCatalog) -> None:
     # Arrange

@@ -738,9 +738,6 @@ pub fn parse_settlement_currency(info: &TardisInstrumentInfo, is_inverse: bool) 
         .to_uppercase()
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use nautilus_model::{identifiers::InstrumentId, instruments::Instrument};

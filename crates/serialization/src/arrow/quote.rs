@@ -29,7 +29,7 @@ use nautilus_model::{
 
 use super::{
     DecodeDataFromRecordBatch, EncodingError, KEY_INSTRUMENT_ID, KEY_PRICE_PRECISION,
-    KEY_SIZE_PRECISION, extract_column, get_raw_price, get_raw_quantity,
+    KEY_SIZE_PRECISION, extract_column, get_corrected_raw_price, get_corrected_raw_quantity,
 };
 use crate::arrow::{ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch};
 
@@ -200,24 +200,25 @@ impl DecodeFromRecordBatch for QuoteTick {
             ));
         }
 
+        // Use corrected raw values to handle floating-point precision errors in stored data
         let result: Result<Vec<Self>, EncodingError> = (0..record_batch.num_rows())
             .map(|row| {
                 Ok(Self {
                     instrument_id,
                     bid_price: Price::from_raw(
-                        get_raw_price(bid_price_values.value(row)),
+                        get_corrected_raw_price(bid_price_values.value(row), price_precision),
                         price_precision,
                     ),
                     ask_price: Price::from_raw(
-                        get_raw_price(ask_price_values.value(row)),
+                        get_corrected_raw_price(ask_price_values.value(row), price_precision),
                         price_precision,
                     ),
                     bid_size: Quantity::from_raw(
-                        get_raw_quantity(bid_size_values.value(row)),
+                        get_corrected_raw_quantity(bid_size_values.value(row), size_precision),
                         size_precision,
                     ),
                     ask_size: Quantity::from_raw(
-                        get_raw_quantity(ask_size_values.value(row)),
+                        get_corrected_raw_quantity(ask_size_values.value(row), size_precision),
                         size_precision,
                     ),
                     ts_event: ts_event_values.value(row).into(),
@@ -240,9 +241,6 @@ impl DecodeDataFromRecordBatch for QuoteTick {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
@@ -252,7 +250,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::arrow::get_raw_price;
+    use crate::arrow::{get_raw_price, get_raw_quantity};
 
     #[rstest]
     fn test_get_schema() {
@@ -406,15 +404,14 @@ mod tests {
         let instrument_id = InstrumentId::from("AAPL.XNAS");
         let metadata = QuoteTick::get_metadata(&instrument_id, 2, 0);
 
+        let raw_bid1 = (100.00 * FIXED_SCALAR) as PriceRaw;
+        let raw_bid2 = (99.00 * FIXED_SCALAR) as PriceRaw;
+        let raw_ask1 = (101.00 * FIXED_SCALAR) as PriceRaw;
+        let raw_ask2 = (100.00 * FIXED_SCALAR) as PriceRaw;
+
         let (bid_price, ask_price) = (
-            FixedSizeBinaryArray::from(vec![
-                &(10000 as PriceRaw).to_le_bytes(),
-                &(9900 as PriceRaw).to_le_bytes(),
-            ]),
-            FixedSizeBinaryArray::from(vec![
-                &(10100 as PriceRaw).to_le_bytes(),
-                &(10000 as PriceRaw).to_le_bytes(),
-            ]),
+            FixedSizeBinaryArray::from(vec![&raw_bid1.to_le_bytes(), &raw_bid2.to_le_bytes()]),
+            FixedSizeBinaryArray::from(vec![&raw_ask1.to_le_bytes(), &raw_ask2.to_le_bytes()]),
         );
 
         let bid_size = FixedSizeBinaryArray::from(vec![
@@ -445,9 +442,9 @@ mod tests {
         assert_eq!(decoded_data.len(), 2);
 
         // Verify decoded values
-        assert_eq!(decoded_data[0].bid_price, Price::from_raw(10000, 2));
-        assert_eq!(decoded_data[0].ask_price, Price::from_raw(10100, 2));
-        assert_eq!(decoded_data[1].bid_price, Price::from_raw(9900, 2));
-        assert_eq!(decoded_data[1].ask_price, Price::from_raw(10000, 2));
+        assert_eq!(decoded_data[0].bid_price, Price::from_raw(raw_bid1, 2));
+        assert_eq!(decoded_data[0].ask_price, Price::from_raw(raw_ask1, 2));
+        assert_eq!(decoded_data[1].bid_price, Price::from_raw(raw_bid2, 2));
+        assert_eq!(decoded_data[1].ask_price, Price::from_raw(raw_ask2, 2));
     }
 }

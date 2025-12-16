@@ -32,12 +32,10 @@ use nautilus_model::{
 
 use super::{
     DecodeDataFromRecordBatch, EncodingError, KEY_INSTRUMENT_ID, KEY_PRICE_PRECISION,
-    KEY_SIZE_PRECISION, extract_column,
+    KEY_SIZE_PRECISION, extract_column, get_corrected_raw_price, get_corrected_raw_quantity,
+    get_raw_price, get_raw_quantity,
 };
-use crate::arrow::{
-    ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch, get_raw_price,
-    get_raw_quantity,
-};
+use crate::arrow::{ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch};
 
 impl ArrowSchemaProvider for OrderBookDelta {
     fn get_schema(metadata: Option<HashMap<String, String>>) -> Schema {
@@ -222,21 +220,27 @@ impl DecodeFromRecordBatch for OrderBookDelta {
                         format!("Invalid enum value, was {side_value}"),
                     )
                 })?;
+                // Use corrected raw values to handle floating-point precision errors in stored data,
+                // but skip correction for sentinel values (PRICE_UNDEF, QUANTITY_UNDEF)
                 let raw_price = get_raw_price(price_values.value(i));
-                let price_prec = if raw_price == PRICE_UNDEF {
-                    0
+                let price = if raw_price == PRICE_UNDEF {
+                    Price::from_raw(raw_price, 0)
                 } else {
-                    price_precision
+                    Price::from_raw(
+                        get_corrected_raw_price(price_values.value(i), price_precision),
+                        price_precision,
+                    )
                 };
-                let price = Price::from_raw(raw_price, price_prec);
 
                 let raw_size = get_raw_quantity(size_values.value(i));
-                let size_prec = if raw_size == QUANTITY_UNDEF {
-                    0
+                let size = if raw_size == QUANTITY_UNDEF {
+                    Quantity::from_raw(raw_size, 0)
                 } else {
-                    size_precision
+                    Quantity::from_raw(
+                        get_corrected_raw_quantity(size_values.value(i), size_precision),
+                        size_precision,
+                    )
                 };
-                let size = Quantity::from_raw(raw_size, size_prec);
                 let order_id = order_id_values.value(i);
                 let flags = flags_values.value(i);
                 let sequence = sequence_values.value(i);
@@ -274,9 +278,6 @@ impl DecodeDataFromRecordBatch for OrderBookDelta {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

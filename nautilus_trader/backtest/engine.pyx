@@ -39,6 +39,7 @@ from nautilus_trader.trading.trader import Trader
 
 from cpython.datetime cimport timedelta
 from cpython.object cimport PyObject
+from libc.stdint cimport uint8_t
 from libc.stdint cimport uint32_t
 from libc.stdint cimport uint64_t
 
@@ -89,6 +90,7 @@ from nautilus_trader.core.rust.core cimport CVec
 from nautilus_trader.core.rust.model cimport AccountType
 from nautilus_trader.core.rust.model cimport AggregationSource
 from nautilus_trader.core.rust.model cimport AggressorSide
+from nautilus_trader.core.rust.model cimport BookAction
 from nautilus_trader.core.rust.model cimport BookType
 from nautilus_trader.core.rust.model cimport ContingencyType
 from nautilus_trader.core.rust.model cimport InstrumentCloseType
@@ -3542,6 +3544,8 @@ cdef class OrderMatchingEngine:
             fill_market_order=self.fill_market_order,
             fill_limit_order=self.fill_limit_order,
         )
+        self._price_prec = instrument.price_precision
+        self._size_prec = instrument.size_precision
 
         self._target_bid = 0
         self._target_ask = 0
@@ -3550,6 +3554,7 @@ cdef class OrderMatchingEngine:
         self._last_bid_bar: Bar | None = None
         self._last_ask_bar: Bar | None = None
         self._last_trade_size: Quantity | None = None
+        self._fill_at_market = True  # Fill stop orders at market price vs trigger price
 
         self._position_count = 0
         self._order_count = 0
@@ -3616,6 +3621,8 @@ cdef class OrderMatchingEngine:
         Condition.equal(instrument.id, self.instrument.id, "instrument.id", "self.instrument.id")
 
         self.instrument = instrument
+        self._price_prec = instrument.price_precision
+        self._size_prec = instrument.size_precision
 
         self._log.debug(f"Updated instrument definition for {instrument.id}")
 
@@ -3701,11 +3708,31 @@ cdef class OrderMatchingEngine:
         delta : OrderBookDelta
             The order book delta to process.
 
+        Raises
+        ------
+        RuntimeError
+            If the delta price precision does not match the instrument for the matching engine.
+        RuntimeError
+            If the delta size precision does not match the instrument for the matching engine.
+
         """
         Condition.not_none(delta, "delta")
 
         if is_logging_initialized():
             self._log.debug(f"Processing {delta!r}")
+
+        # Validate precisions for ADD and UPDATE actions
+        if delta._mem.action == BookAction.ADD or delta._mem.action == BookAction.UPDATE:
+            if delta._mem.order.price.precision != self._price_prec:
+                raise RuntimeError(
+                    f"invalid delta price precision={delta._mem.order.price.precision} "
+                    f"did not match instrument.price_precision={self._price_prec}",
+                )
+            if delta._mem.order.size.precision != self._size_prec:
+                raise RuntimeError(
+                    f"invalid delta size precision={delta._mem.order.size.precision} "
+                    f"did not match instrument.size_precision={self._size_prec}",
+                )
 
         self._book.apply_delta(delta)
 
@@ -3720,11 +3747,33 @@ cdef class OrderMatchingEngine:
         delta : OrderBookDeltas
             The order book deltas to process.
 
+        Raises
+        ------
+        RuntimeError
+            If any delta price precision does not match the instrument for the matching engine.
+        RuntimeError
+            If any delta size precision does not match the instrument for the matching engine.
+
         """
         Condition.not_none(deltas, "deltas")
 
         if is_logging_initialized():
             self._log.debug(f"Processing {deltas!r}")
+
+        # Validate precisions for ADD and UPDATE actions
+        cdef OrderBookDelta delta
+        for delta in deltas.deltas:
+            if delta._mem.action == BookAction.ADD or delta._mem.action == BookAction.UPDATE:
+                if delta._mem.order.price.precision != self._price_prec:
+                    raise RuntimeError(
+                        f"invalid delta price precision={delta._mem.order.price.precision} "
+                        f"did not match instrument.price_precision={self._price_prec}",
+                    )
+                if delta._mem.order.size.precision != self._size_prec:
+                    raise RuntimeError(
+                        f"invalid delta size precision={delta._mem.order.size.precision} "
+                        f"did not match instrument.size_precision={self._size_prec}",
+                    )
 
         self._book.apply_deltas(deltas)
 
@@ -3739,11 +3788,48 @@ cdef class OrderMatchingEngine:
         depth : OrderBookDepth10
             The order book depth to process.
 
+        Raises
+        ------
+        RuntimeError
+            If any order price precision does not match the instrument for the matching engine.
+        RuntimeError
+            If any order size precision does not match the instrument for the matching engine.
+
         """
         Condition.not_none(depth, "depth")
 
         if is_logging_initialized():
             self._log.debug(f"Processing {depth!r}")
+
+        # Validate precisions for non-null orders
+        cdef BookOrder order
+        for order in depth.bids:
+            if order._mem.side == OrderSide.NO_ORDER_SIDE:
+                continue  # Skip null orders
+            if order._mem.price.precision != self._price_prec:
+                raise RuntimeError(
+                    f"invalid depth bid price precision={order._mem.price.precision} "
+                    f"did not match instrument.price_precision={self._price_prec}",
+                )
+            if order._mem.size.precision != self._size_prec:
+                raise RuntimeError(
+                    f"invalid depth bid size precision={order._mem.size.precision} "
+                    f"did not match instrument.size_precision={self._size_prec}",
+                )
+
+        for order in depth.asks:
+            if order._mem.side == OrderSide.NO_ORDER_SIDE:
+                continue  # Skip null orders
+            if order._mem.price.precision != self._price_prec:
+                raise RuntimeError(
+                    f"invalid depth ask price precision={order._mem.price.precision} "
+                    f"did not match instrument.price_precision={self._price_prec}",
+                )
+            if order._mem.size.precision != self._size_prec:
+                raise RuntimeError(
+                    f"invalid depth ask size precision={order._mem.size.precision} "
+                    f"did not match instrument.size_precision={self._size_prec}",
+                )
 
         self._book.apply_depth(depth)
 
@@ -3775,21 +3861,21 @@ cdef class OrderMatchingEngine:
             self._log.debug(f"Processing {tick!r}")
 
         # Validate precisions
-        if tick._mem.bid_price.precision != self.instrument.price_precision:
+        if tick._mem.bid_price.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {tick.bid_price.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {tick.bid_price.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if tick._mem.ask_price.precision != self.instrument.price_precision:
+        if tick._mem.ask_price.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {tick.ask_price.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {tick.ask_price.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if tick._mem.bid_size.precision != self.instrument.size_precision:
+        if tick._mem.bid_size.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {tick.bid_size.precision=} did not match {self.instrument.size_precision=}",
+                f"invalid {tick.bid_size.precision=} did not match instrument.size_precision={self._size_prec}",
             )
-        if tick._mem.ask_size.precision != self.instrument.size_precision:
+        if tick._mem.ask_size.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {tick.ask_size.precision=} did not match {self.instrument.size_precision=}",
+                f"invalid {tick.ask_size.precision=} did not match instrument.size_precision={self._size_prec}",
             )
 
         if self.book_type == BookType.L1_MBP:
@@ -3822,13 +3908,13 @@ cdef class OrderMatchingEngine:
             self._log.debug(f"Processing {tick!r}")
 
         # Validate precisions
-        if tick._mem.price.precision != self.instrument.price_precision:
+        if tick._mem.price.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {tick.price.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {tick.price.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if tick._mem.size.precision != self.instrument.size_precision:
+        if tick._mem.size.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {tick.size.precision=} did not match {self.instrument.size_precision=}",
+                f"invalid {tick.size.precision=} did not match instrument.size_precision={self._size_prec}",
             )
 
         if self.book_type == BookType.L1_MBP:
@@ -3922,25 +4008,25 @@ cdef class OrderMatchingEngine:
             return  # Do not process internally aggregated bars
 
         # Validate precisions
-        if bar._mem.open.precision != self.instrument.price_precision:
+        if bar._mem.open.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.open.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {bar.open.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if bar._mem.high.precision != self.instrument.price_precision:
+        if bar._mem.high.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.high.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {bar.high.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if bar._mem.low.precision != self.instrument.price_precision:
+        if bar._mem.low.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.low.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {bar.low.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if bar._mem.close.precision != self.instrument.price_precision:
+        if bar._mem.close.precision != self._price_prec:
             raise RuntimeError(
-                f"invalid {bar.close.precision=} did not match {self.instrument.price_precision=}",
+                f"invalid {bar.close.precision=} did not match instrument.price_precision={self._price_prec}",
             )
-        if bar._mem.volume.precision != self.instrument.size_precision:
+        if bar._mem.volume.precision != self._size_prec:
             raise RuntimeError(
-                f"invalid {bar.volume.precision=} did not match {self.instrument.size_precision=}",
+                f"invalid {bar.volume.precision=} did not match instrument.size_precision={self._size_prec}",
             )
 
         cdef InstrumentId instrument_id = bar_type.instrument_id
@@ -4045,6 +4131,9 @@ cdef class OrderMatchingEngine:
 
         self._process_trade_bar_close(bar, tick, close_size)
 
+        # Reset flag after bar processing for correct inter-bar behavior
+        self._fill_at_market = True
+
     cdef TradeTick _create_base_trade_tick(self, Bar bar, Quantity size):
         return TradeTick(
             bar.bar_type.instrument_id,
@@ -4061,6 +4150,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with open {bar.open}")
 
+            self._fill_at_market = True  # Gap from previous bar
             self._book.update_trade_tick(tick)
             self.iterate(tick.ts_init)
             self._core.set_last_raw(bar._mem.open.raw)
@@ -4070,6 +4160,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with high {bar.high}")
 
+            self._fill_at_market = False  # Market moving through prices
             tick._mem.price = bar._mem.high
             tick._mem.aggressor_side = AggressorSide.BUYER
             tick._mem.trade_id = trade_id_new(pystr_to_cstr(self._generate_trade_id_str()))
@@ -4082,6 +4173,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with low {bar.low}")
 
+            self._fill_at_market = False  # Market moving through prices
             tick._mem.price = bar._mem.low
             tick._mem.aggressor_side = AggressorSide.SELLER
             tick._mem.trade_id = trade_id_new(pystr_to_cstr(self._generate_trade_id_str()))
@@ -4094,6 +4186,7 @@ cdef class OrderMatchingEngine:
             if is_logging_initialized():
                 self._log.debug(f"Updating with close {bar.close}")
 
+            self._fill_at_market = False  # Market moving through prices
             tick._mem.price = bar._mem.close
             if close_size is not None:
                 tick._mem.size = close_size._mem
@@ -4150,6 +4243,9 @@ cdef class OrderMatchingEngine:
         self._last_bid_bar = None
         self._last_ask_bar = None
 
+        # Reset flag after bar processing for correct inter-bar behavior
+        self._fill_at_market = True
+
     cdef QuoteTick _create_base_quote_tick(self, Quantity bid_size, Quantity ask_size):
         return QuoteTick(
             self._book.instrument_id,
@@ -4162,22 +4258,26 @@ cdef class OrderMatchingEngine:
         )
 
     cdef void _process_quote_bar_open(self, QuoteTick tick):
+        self._fill_at_market = True  # Gap from previous bar
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
     cdef void _process_quote_bar_high(self, QuoteTick tick):
+        self._fill_at_market = False  # Market moving through prices
         tick._mem.bid_price = self._last_bid_bar._mem.high
         tick._mem.ask_price = self._last_ask_bar._mem.high
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
     cdef void _process_quote_bar_low(self, QuoteTick tick):
+        self._fill_at_market = False  # Market moving through prices
         tick._mem.bid_price = self._last_bid_bar._mem.low
         tick._mem.ask_price = self._last_ask_bar._mem.low
         self._book.update_quote_tick(tick)
         self.iterate(tick.ts_init)
 
     cdef void _process_quote_bar_close(self, QuoteTick tick, Quantity bid_close_size = None, Quantity ask_close_size = None):
+        self._fill_at_market = False  # Market moving through prices
         tick._mem.bid_price = self._last_bid_bar._mem.close
         tick._mem.ask_price = self._last_ask_bar._mem.close
         if bid_close_size is not None:
@@ -4243,55 +4343,55 @@ cdef class OrderMatchingEngine:
                             self._generate_order_rejected(order, f"Contingent order {client_order_id} already closed")
                             return  # Order rejected
 
-        # Check order quantity precision
-        if order.quantity._mem.precision != self.instrument.size_precision:
+        # Check order quantity precision (must be <= instrument precision)
+        if order.quantity._mem.precision > self._size_prec:
             self._generate_order_rejected(
                 order,
                 f"Invalid size precision for order {order.client_order_id}, "
                 f"was {order.quantity.precision} "
-                f"when {self.instrument.id} size precision is {self.instrument.size_precision}"
+                f"when {self.instrument.id} size precision is {self._size_prec}"
             )
             return  # Invalid order
 
         cdef Price price
         if order.has_price_c():
-            # Check order price precision
+            # Check order price precision (must be <= instrument precision)
             price = order.price
 
-            if price._mem.precision != self.instrument.price_precision:
+            if price._mem.precision > self._price_prec:
                 self._generate_order_rejected(
                     order,
                     f"Invalid price precision for order {order.client_order_id}, "
                     f"was {price.precision} "
-                    f"when {self.instrument.id} price precision is {self.instrument.price_precision}"
+                    f"when {self.instrument.id} price precision is {self._price_prec}"
                 )
                 return  # Invalid order
 
         cdef Price trigger_price
         if order.has_trigger_price_c():
-            # Check order trigger price precision
+            # Check order trigger price precision (must be <= instrument precision)
             trigger_price = order.trigger_price
 
-            if trigger_price._mem.precision != self.instrument.price_precision:
+            if trigger_price._mem.precision > self._price_prec:
                 self._generate_order_rejected(
                     order,
                     f"Invalid trigger price precision for order {order.client_order_id}, "
                     f"was {trigger_price.precision} "
-                    f"when {self.instrument.id} price precision is {self.instrument.price_precision}"
+                    f"when {self.instrument.id} price precision is {self._price_prec}"
                 )
                 return  # Invalid order
 
         cdef Price activation_price
         if order.has_activation_price_c():
-            # Check order activation price precision
+            # Check order activation price precision (must be <= instrument precision)
             activation_price = order.activation_price
 
-            if activation_price._mem.precision != self.instrument.price_precision:
+            if activation_price._mem.precision > self._price_prec:
                 self._generate_order_rejected(
                     order,
                     f"Invalid activation price precision for order {order.client_order_id}, "
                     f"was {activation_price.precision} "
-                    f"when {self.instrument.id} price precision is {self.instrument.price_precision}"
+                    f"when {self.instrument.id} price precision is {self._price_prec}"
                 )
                 return  # Invalid order
 
@@ -5016,8 +5116,8 @@ cdef class OrderMatchingEngine:
             # Use simulated OrderBook for fill determination
             fills = simulated_book.simulate_fills(
                 order,
-                price_prec=self.instrument.price_precision,
-                size_prec=self.instrument.size_precision,
+                price_prec=self._price_prec,
+                size_prec=self._size_prec,
                 is_aggressive=True,
             )
             # If simulation produced no fills (e.g., custom model removed best levels),
@@ -5048,64 +5148,23 @@ cdef class OrderMatchingEngine:
         """
         cdef list fills = self._book.simulate_fills(
             order,
-            price_prec=self.instrument.price_precision,
-            size_prec=self.instrument.size_precision,
+            price_prec=self._price_prec,
+            size_prec=self._size_prec,
             is_aggressive=True,
         )
 
-        cdef Price price
+        # For stop market orders during bar H/L/C processing, fill at trigger price
+        # (market moved through the trigger). For gaps/immediate triggers, fill at market.
         cdef Price triggered_price
-        if self._book.book_type == BookType.L1_MBP and fills:
+        if (
+            not self._fill_at_market
+            and self._book.book_type == BookType.L1_MBP
+            and fills
+            and (order.order_type == OrderType.STOP_MARKET or order.order_type == OrderType.TRAILING_STOP_MARKET)
+        ):
             triggered_price = order.get_triggered_price_c()
-
-            if order.order_type == OrderType.MARKET or order.order_type == OrderType.MARKET_TO_LIMIT or order.order_type == OrderType.MARKET_IF_TOUCHED:
-                if order.side == OrderSide.BUY:
-                    if self._core.is_ask_initialized:
-                        price = self._core.ask
-                    else:
-                        price = self.best_ask_price()
-
-                    if triggered_price:
-                        price = triggered_price
-
-                    if price is not None:
-                        self._core.set_last_raw(price._mem.raw)
-                        fills[0] = (price, fills[0][1])
-                    else:
-                        raise RuntimeError(  # pragma: no cover (design-time error)
-                            "Market best ASK price was None when filling MARKET order",  # pragma: no cover
-                        )
-                elif order.side == OrderSide.SELL:
-                    if self._core.is_bid_initialized:
-                        price = self._core.bid
-                    else:
-                        price = self.best_bid_price()
-
-                    if triggered_price:
-                        price = triggered_price
-
-                    if price is not None:
-                        self._core.set_last_raw(price._mem.raw)
-                        fills[0] = (price, fills[0][1])
-                    else:
-                        raise RuntimeError(  # pragma: no cover (design-time error)
-                            "Market best BID price was None when filling MARKET order",  # pragma: no cover
-                        )
-            else:
-                price = order.price if (order.order_type == OrderType.LIMIT or order.order_type == OrderType.LIMIT_IF_TOUCHED) else order.trigger_price
-
-                if triggered_price:
-                    price = triggered_price
-
-                if order.side == OrderSide.BUY:
-                    self._core.set_ask_raw(price._mem.raw)
-                elif order.side == OrderSide.SELL:
-                    self._core.set_bid_raw(price._mem.raw)
-                else:
-                    raise RuntimeError(f"invalid `OrderSide`, was {order.side}")  # pragma: no cover (design-time error)
-
-                self._core.set_last_raw(price._mem.raw)
-                fills[0] = (price, fills[0][1])
+            if triggered_price is not None:
+                fills[0] = (triggered_price, fills[0][1])
 
         return fills
 
@@ -5191,8 +5250,8 @@ cdef class OrderMatchingEngine:
             # Use simulated OrderBook for fill determination
             return simulated_book.simulate_fills(
                 order,
-                price_prec=self.instrument.price_precision,
-                size_prec=self.instrument.size_precision,
+                price_prec=self._price_prec,
+                size_prec=self._size_prec,
                 is_aggressive=False,
             )
         else:
@@ -5213,12 +5272,15 @@ cdef class OrderMatchingEngine:
 
         Returns None if there is no quantity available to fill.
         """
-        cdef uint64_t leaves_raw = order.quantity._mem.raw - order.filled_qty._mem.raw
+        # Use instrument size precision as single source of truth
+        cdef uint8_t size_prec = self._size_prec
+
+        cdef QuantityRaw leaves_raw = order.quantity._mem.raw - order.filled_qty._mem.raw
         if leaves_raw == 0:
             return None
 
-        cdef uint64_t fill_raw = leaves_raw
-        cdef uint64_t remaining_raw
+        cdef QuantityRaw fill_raw = leaves_raw
+        cdef QuantityRaw remaining_raw
 
         if self._last_trade_size is not None:
             if self._last_trade_size._mem.raw == 0:
@@ -5229,10 +5291,10 @@ cdef class OrderMatchingEngine:
             remaining_raw = self._last_trade_size._mem.raw - fill_raw
             self._last_trade_size = Quantity.from_raw_c(
                 remaining_raw,
-                self._last_trade_size._mem.precision,
+                size_prec,
             )
 
-        return Quantity.from_raw_c(fill_raw, order.quantity._mem.precision)
+        return Quantity.from_raw_c(fill_raw, size_prec)
 
     cpdef list determine_limit_price_and_volume(self, Order order):
         """
@@ -5260,8 +5322,8 @@ cdef class OrderMatchingEngine:
 
         cdef list fills = self._book.simulate_fills(
             order,
-            price_prec=self.instrument.price_precision,
-            size_prec=self.instrument.size_precision,
+            price_prec=self._price_prec,
+            size_prec=self._size_prec,
             is_aggressive=False,
         )
 
@@ -5438,18 +5500,18 @@ cdef class OrderMatchingEngine:
             Price last_fill_px = None
         for fill_px, fill_qty in fills:
             # Validate price precision
-            if fill_px._mem.precision != self.instrument.price_precision:
+            if fill_px._mem.precision != self._price_prec:
                 raise RuntimeError(
                     f"Invalid price precision for fill {fill_px.precision} "
-                    f"when instrument price precision is {self.instrument.price_precision}. "
+                    f"when instrument price precision is {self._price_prec}. "
                     f"Check that the data price precision matches the {self.instrument.id} instrument"
                 )
 
             # Validate size precision
-            if fill_qty._mem.precision != self.instrument.size_precision:
+            if fill_qty._mem.precision != self._size_prec:
                 raise RuntimeError(
                     f"Invalid size precision for fill {fill_qty.precision} "
-                    f"when instrument size precision is {self.instrument.size_precision}. "
+                    f"when instrument size precision is {self._size_prec}. "
                     f"Check that the data size precision matches the {self.instrument.id} instrument"
                 )
 
@@ -5479,7 +5541,7 @@ cdef class OrderMatchingEngine:
                     return  # Done
 
                 # Adjust fill to honor reduce only execution (fill remaining position size only)
-                fill_qty = Quantity.from_raw_c(position.quantity._mem.raw, fill_qty._mem.precision)
+                fill_qty = Quantity.from_raw_c(position.quantity._mem.raw, self._size_prec)
 
                 self._generate_order_updated(
                     order=order,
@@ -5839,17 +5901,28 @@ cdef class OrderMatchingEngine:
         Condition.not_none(last_qty, "last_qty")
         Condition.not_equal(liquidity_side, LiquiditySide.NO_LIQUIDITY_SIDE, "liquidity_side", "NO_LIQUIDITY_SIDE")
 
+        # Use instrument size precision as single source of truth
+        cdef uint8_t size_prec = self._size_prec
+
+        # Validate incoming fill precision matches instrument
+        if last_qty._mem.precision != size_prec:
+            raise RuntimeError(
+                f"Invalid size precision for fill {last_qty._mem.precision} "
+                f"when instrument size precision is {size_prec}; "
+                f"check that the data size precision matches the {self.instrument.id} instrument"
+            )
+
         order.liquidity_side = liquidity_side
 
         cdef Quantity cached_filled_qty = self._cached_filled_qty.get(order.client_order_id)
         cdef Quantity leaves_qty = None
         if cached_filled_qty is None:
             # Clamp the first fill to the order quantity to avoid over-filling
-            last_qty = Quantity.from_raw_c(min(order.quantity._mem.raw, last_qty._mem.raw), last_qty._mem.precision)
-            self._cached_filled_qty[order.client_order_id] = Quantity.from_raw_c(last_qty._mem.raw, last_qty._mem.precision)
+            last_qty = Quantity.from_raw_c(min(order.quantity._mem.raw, last_qty._mem.raw), size_prec)
+            self._cached_filled_qty[order.client_order_id] = Quantity.from_raw_c(last_qty._mem.raw, size_prec)
         else:
-            leaves_qty = Quantity.from_raw_c(order.quantity._mem.raw - cached_filled_qty._mem.raw, last_qty._mem.precision)
-            last_qty = Quantity.from_raw_c(min(leaves_qty._mem.raw, last_qty._mem.raw), last_qty._mem.precision)
+            leaves_qty = Quantity.from_raw_c(order.quantity._mem.raw - cached_filled_qty._mem.raw, size_prec)
+            last_qty = Quantity.from_raw_c(min(leaves_qty._mem.raw, last_qty._mem.raw), size_prec)
             cached_filled_qty._mem.raw += last_qty._mem.raw
 
         # Nothing to fill when adjusted last_qty <= 0.
@@ -6127,6 +6200,23 @@ cdef class OrderMatchingEngine:
         if qty is None:
             qty = order.quantity
 
+        # Validate precision of update parameters (must be <= instrument precision)
+        if qty._mem.precision > self._size_prec:
+            raise RuntimeError(
+                f"invalid update qty precision {qty._mem.precision} "
+                f"when {self.instrument.id} size precision is {self._size_prec}"
+            )
+        if price is not None and price._mem.precision > self._price_prec:
+            raise RuntimeError(
+                f"invalid update price precision {price._mem.precision} "
+                f"when {self.instrument.id} price precision is {self._price_prec}"
+            )
+        if trigger_price is not None and trigger_price._mem.precision > self._price_prec:
+            raise RuntimeError(
+                f"invalid update trigger_price precision {trigger_price._mem.precision} "
+                f"when {self.instrument.id} price precision is {self._price_prec}"
+            )
+
         # Use _cached_filled_qty since order object may not have updated filled_qty
         cdef Quantity filled_qty = self._cached_filled_qty.get(order.client_order_id, order.filled_qty)
         if qty < filled_qty:
@@ -6190,7 +6280,7 @@ cdef class OrderMatchingEngine:
                 f"invalid `OrderType` was {order.order_type}")  # pragma: no cover (design-time error)
 
         # If order now has zero leaves after update, cancel it
-        cdef uint64_t new_leaves_raw = qty._mem.raw - filled_qty._mem.raw if qty._mem.raw > filled_qty._mem.raw else 0
+        cdef QuantityRaw new_leaves_raw = qty._mem.raw - filled_qty._mem.raw if qty._mem.raw > filled_qty._mem.raw else 0
         if new_leaves_raw == 0:
             if self._support_contingent_orders and order.contingency_type != ContingencyType.NO_CONTINGENCY and update_contingencies:
                 self._update_contingent_orders(order)
@@ -6246,12 +6336,12 @@ cdef class OrderMatchingEngine:
         self._log.debug(f"Updating OUO orders from {order.client_order_id}", LogColor.MAGENTA)
 
         cdef Quantity parent_filled_qty = self._cached_filled_qty.get(order.client_order_id, order.filled_qty)
-        cdef uint64_t parent_leaves_raw = order.quantity._mem.raw - parent_filled_qty._mem.raw if order.quantity._mem.raw > parent_filled_qty._mem.raw else 0
+        cdef QuantityRaw parent_leaves_raw = order.quantity._mem.raw - parent_filled_qty._mem.raw if order.quantity._mem.raw > parent_filled_qty._mem.raw else 0
 
         cdef ClientOrderId client_order_id
         cdef Order ouo_order
         cdef Quantity child_filled_qty
-        cdef uint64_t child_leaves_raw
+        cdef QuantityRaw child_leaves_raw
         for client_order_id in order.linked_order_ids or []:
             ouo_order = self.cache.order(client_order_id)
             assert ouo_order is not None, "OUO order not found"
@@ -6274,7 +6364,7 @@ cdef class OrderMatchingEngine:
                 if child_leaves_raw != parent_leaves_raw:
                     self.update_order(
                         ouo_order,
-                        Quantity.from_raw_c(parent_leaves_raw, order.quantity._mem.precision),
+                        Quantity.from_raw_c(parent_leaves_raw, self._size_prec),
                         price=ouo_order.price if ouo_order.has_price_c() else None,
                         trigger_price=ouo_order.trigger_price if ouo_order.has_trigger_price_c() else None,
                         update_contingencies=False,

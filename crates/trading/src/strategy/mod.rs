@@ -19,11 +19,13 @@ pub mod core;
 pub use core::StrategyCore;
 
 pub use config::StrategyConfig;
+use indexmap::IndexMap;
 use nautilus_common::{
     actor::DataActor,
     logging::{EVT, RECV},
     messages::execution::{
-        CancelAllOrders, CancelOrder, ModifyOrder, SubmitOrder, SubmitOrderList, TradingCommand,
+        BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount, QueryOrder,
+        SubmitOrder, SubmitOrderList, TradingCommand,
     },
     msgbus,
     timer::TimeEvent,
@@ -37,7 +39,7 @@ use nautilus_model::{
         OrderPendingUpdate, OrderRejected, OrderReleased, OrderSubmitted, OrderTriggered,
         OrderUpdated, PositionChanged, PositionClosed, PositionEvent, PositionOpened,
     },
-    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     orders::{Order, OrderAny, OrderCore, OrderList},
     position::Position,
     types::{Price, Quantity},
@@ -83,11 +85,32 @@ pub trait Strategy: DataActor {
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
     ) -> anyhow::Result<()> {
+        self.submit_order_with_params(order, position_id, client_id, IndexMap::new())
+    }
+
+    /// Submits an order with adapter-specific parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered or order submission fails.
+    fn submit_order_with_params(
+        &mut self,
+        order: OrderAny,
+        position_id: Option<PositionId>,
+        client_id: Option<ClientId>,
+        params: IndexMap<String, String>,
+    ) -> anyhow::Result<()> {
         let core = self.core_mut();
 
         let trader_id = core.trader_id().expect("Trader ID not set");
         let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
         let ts_init = core.clock().timestamp_ns();
+
+        let params = if params.is_empty() {
+            None
+        } else {
+            Some(params)
+        };
 
         let command = SubmitOrder::new(
             trader_id,
@@ -99,7 +122,7 @@ pub trait Strategy: DataActor {
             order.clone(),
             order.exec_algorithm_id(),
             position_id,
-            None, // params
+            params,
             UUID4::new(),
             ts_init,
         )?;
@@ -222,11 +245,41 @@ pub trait Strategy: DataActor {
         trigger_price: Option<Price>,
         client_id: Option<ClientId>,
     ) -> anyhow::Result<()> {
+        self.modify_order_with_params(
+            order,
+            quantity,
+            price,
+            trigger_price,
+            client_id,
+            IndexMap::new(),
+        )
+    }
+
+    /// Modifies an order with adapter-specific parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered or order modification fails.
+    fn modify_order_with_params(
+        &mut self,
+        order: OrderAny,
+        quantity: Option<Quantity>,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+        client_id: Option<ClientId>,
+        params: IndexMap<String, String>,
+    ) -> anyhow::Result<()> {
         let core = self.core_mut();
 
         let trader_id = core.trader_id().expect("Trader ID not set");
         let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
         let ts_init = core.clock().timestamp_ns();
+
+        let params = if params.is_empty() {
+            None
+        } else {
+            Some(params)
+        };
 
         let command = ModifyOrder::new(
             trader_id,
@@ -240,6 +293,7 @@ pub trait Strategy: DataActor {
             trigger_price,
             UUID4::new(),
             ts_init,
+            params,
         )?;
 
         let Some(manager) = &mut core.order_manager else {
@@ -262,11 +316,31 @@ pub trait Strategy: DataActor {
     ///
     /// Returns an error if the strategy is not registered or order cancellation fails.
     fn cancel_order(&mut self, order: OrderAny, client_id: Option<ClientId>) -> anyhow::Result<()> {
+        self.cancel_order_with_params(order, client_id, IndexMap::new())
+    }
+
+    /// Cancels an order with adapter-specific parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered or order cancellation fails.
+    fn cancel_order_with_params(
+        &mut self,
+        order: OrderAny,
+        client_id: Option<ClientId>,
+        params: IndexMap<String, String>,
+    ) -> anyhow::Result<()> {
         let core = self.core_mut();
 
         let trader_id = core.trader_id().expect("Trader ID not set");
         let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
         let ts_init = core.clock().timestamp_ns();
+
+        let params = if params.is_empty() {
+            None
+        } else {
+            Some(params)
+        };
 
         let command = CancelOrder::new(
             trader_id,
@@ -277,6 +351,7 @@ pub trait Strategy: DataActor {
             order.venue_order_id().unwrap_or_default(),
             UUID4::new(),
             ts_init,
+            params,
         )?;
 
         let Some(manager) = &mut core.order_manager else {
@@ -296,6 +371,92 @@ pub trait Strategy: DataActor {
         Ok(())
     }
 
+    /// Batch cancels multiple orders for the same instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered, the orders span multiple instruments,
+    /// or contain emulated/local orders.
+    fn cancel_orders(
+        &mut self,
+        mut orders: Vec<OrderAny>,
+        client_id: Option<ClientId>,
+        params: Option<IndexMap<String, String>>,
+    ) -> anyhow::Result<()> {
+        if orders.is_empty() {
+            anyhow::bail!("Cannot batch cancel empty order list");
+        }
+
+        let core = self.core_mut();
+        let trader_id = core.trader_id().expect("Trader ID not set");
+        let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
+        let ts_init = core.clock().timestamp_ns();
+
+        let Some(manager) = &mut core.order_manager else {
+            anyhow::bail!("Strategy not registered: OrderManager missing");
+        };
+
+        let first = orders.remove(0);
+        let instrument_id = first.instrument_id();
+
+        if first.is_emulated() || first.is_active_local() {
+            anyhow::bail!("Cannot include emulated or local orders in batch cancel");
+        }
+
+        let mut cancels = Vec::with_capacity(orders.len() + 1);
+        cancels.push(CancelOrder::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            strategy_id,
+            instrument_id,
+            first.client_order_id(),
+            first.venue_order_id().unwrap_or_default(),
+            UUID4::new(),
+            ts_init,
+            params.clone(),
+        )?);
+
+        for order in orders {
+            if order.instrument_id() != instrument_id {
+                anyhow::bail!(
+                    "Cannot batch cancel orders for different instruments: {} vs {}",
+                    instrument_id,
+                    order.instrument_id()
+                );
+            }
+
+            if order.is_emulated() || order.is_active_local() {
+                anyhow::bail!("Cannot include emulated or local orders in batch cancel");
+            }
+
+            cancels.push(CancelOrder::new(
+                trader_id,
+                client_id.unwrap_or_default(),
+                strategy_id,
+                instrument_id,
+                order.client_order_id(),
+                order.venue_order_id().unwrap_or_default(),
+                UUID4::new(),
+                ts_init,
+                params.clone(),
+            )?);
+        }
+
+        let command = BatchCancelOrders::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            strategy_id,
+            instrument_id,
+            cancels,
+            UUID4::new(),
+            ts_init,
+            params,
+        )?;
+
+        manager.send_exec_command(TradingCommand::BatchCancelOrders(command));
+        Ok(())
+    }
+
     /// Cancels all open orders for the given instrument.
     ///
     /// # Errors
@@ -307,6 +468,26 @@ pub trait Strategy: DataActor {
         order_side: Option<OrderSide>,
         client_id: Option<ClientId>,
     ) -> anyhow::Result<()> {
+        self.cancel_all_orders_with_params(instrument_id, order_side, client_id, IndexMap::new())
+    }
+
+    /// Cancels all open orders for the given instrument with adapter-specific parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered or order cancellation fails.
+    fn cancel_all_orders_with_params(
+        &mut self,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+        client_id: Option<ClientId>,
+        params: IndexMap<String, String>,
+    ) -> anyhow::Result<()> {
+        let params = if params.is_empty() {
+            None
+        } else {
+            Some(params)
+        };
         let core = self.core_mut();
 
         let trader_id = core.trader_id().expect("Trader ID not set");
@@ -357,6 +538,7 @@ pub trait Strategy: DataActor {
                 "Canceling {open_count} open{side_str} {instrument_id} order{}",
                 if open_count == 1 { "" } else { "s" }
             );
+
             let command = CancelAllOrders::new(
                 trader_id,
                 client_id.unwrap_or_default(),
@@ -365,7 +547,9 @@ pub trait Strategy: DataActor {
                 order_side.unwrap_or(OrderSide::NoOrderSide),
                 UUID4::new(),
                 ts_init,
+                params.clone(),
             )?;
+
             manager.send_exec_command(TradingCommand::CancelAllOrders(command));
         }
 
@@ -374,6 +558,7 @@ pub trait Strategy: DataActor {
                 "Canceling {emulated_count} emulated{side_str} {instrument_id} order{}",
                 if emulated_count == 1 { "" } else { "s" }
             );
+
             let command = CancelAllOrders::new(
                 trader_id,
                 client_id.unwrap_or_default(),
@@ -382,7 +567,9 @@ pub trait Strategy: DataActor {
                 order_side.unwrap_or(OrderSide::NoOrderSide),
                 UUID4::new(),
                 ts_init,
+                params,
             )?;
+
             manager.send_emulator_command(TradingCommand::CancelAllOrders(command));
         }
 
@@ -509,6 +696,74 @@ pub trait Strategy: DataActor {
             self.submit_order(order, Some(pos_id), client_id)?;
         }
 
+        Ok(())
+    }
+
+    /// Queries account state from the execution client.
+    ///
+    /// Creates a [`QueryAccount`] command and sends it to the execution engine,
+    /// which will request the current account state from the execution client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered.
+    fn query_account(
+        &mut self,
+        account_id: AccountId,
+        client_id: Option<ClientId>,
+    ) -> anyhow::Result<()> {
+        let core = self.core_mut();
+
+        let trader_id = core.trader_id().expect("Trader ID not set");
+        let ts_init = core.clock().timestamp_ns();
+
+        let command = QueryAccount::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            account_id,
+            UUID4::new(),
+            ts_init,
+        )?;
+
+        let Some(manager) = &mut core.order_manager else {
+            anyhow::bail!("Strategy not registered: OrderManager missing");
+        };
+
+        manager.send_exec_command(TradingCommand::QueryAccount(command));
+        Ok(())
+    }
+
+    /// Queries order state from the execution client.
+    ///
+    /// Creates a [`QueryOrder`] command and sends it to the execution engine,
+    /// which will request the current order state from the execution client.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the strategy is not registered.
+    fn query_order(&mut self, order: &OrderAny, client_id: Option<ClientId>) -> anyhow::Result<()> {
+        let core = self.core_mut();
+
+        let trader_id = core.trader_id().expect("Trader ID not set");
+        let strategy_id = StrategyId::from(core.actor_id().inner().as_str());
+        let ts_init = core.clock().timestamp_ns();
+
+        let command = QueryOrder::new(
+            trader_id,
+            client_id.unwrap_or_default(),
+            strategy_id,
+            order.instrument_id(),
+            order.client_order_id(),
+            order.venue_order_id().unwrap_or_default(),
+            UUID4::new(),
+            ts_init,
+        )?;
+
+        let Some(manager) = &mut core.order_manager else {
+            anyhow::bail!("Strategy not registered: OrderManager missing");
+        };
+
+        manager.send_exec_command(TradingCommand::QueryOrder(command));
         Ok(())
     }
 
@@ -858,10 +1113,6 @@ pub trait Strategy: DataActor {
         }
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -1259,6 +1510,62 @@ mod tests {
         register_strategy(&mut strategy);
 
         let result = Strategy::on_start(&mut strategy);
+        assert!(result.is_ok());
+    }
+
+    // -- QUERY TESTS ---------------------------------------------------------------------------------
+
+    #[rstest]
+    fn test_query_account_when_registered() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let account_id = AccountId::from("ACC-001");
+
+        let result = strategy.query_account(account_id, None);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_query_account_with_client_id() {
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let account_id = AccountId::from("ACC-001");
+        let client_id = ClientId::from("BINANCE");
+
+        let result = strategy.query_account(account_id, Some(client_id));
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_query_order_when_registered() {
+        use nautilus_model::orders::MarketOrder;
+
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let order = OrderAny::Market(MarketOrder::default());
+
+        let result = strategy.query_order(&order, None);
+
+        assert!(result.is_ok());
+    }
+
+    #[rstest]
+    fn test_query_order_with_client_id() {
+        use nautilus_model::orders::MarketOrder;
+
+        let mut strategy = create_test_strategy();
+        register_strategy(&mut strategy);
+
+        let order = OrderAny::Market(MarketOrder::default());
+        let client_id = ClientId::from("BINANCE");
+
+        let result = strategy.query_order(&order, Some(client_id));
+
         assert!(result.is_ok());
     }
 }

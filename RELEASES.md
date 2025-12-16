@@ -43,7 +43,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Renamed `parse_instrument` to `parse_polymarket_instrument` in Polymarket adapter for clarity
 - Renamed `ExecTesterConfig.enable_buys` to `enable_limit_buys`
 - Renamed `ExecTesterConfig.enable_sells` to `enable_limit_sells`
-- **Standardized data catalog directory naming**: Order book data directory names now use plural forms to align with the Rust catalog and Tardis Machine conventions. This ensures data written by the Python `StreamingFeatherWriter` can be read by the Rust catalog.
+- Changed `ParquetDataCatalog.register_data` to now treat `files=[]` as registering no files; pass `files=None` (default) to include all files
+- **Standardized data catalog directory naming**: Order book data directory names now use plural forms to align with the Rust catalog and Tardis Machine conventions; this ensures data written by the Python `StreamingFeatherWriter` can be read by the Rust catalog
   - `order_book_delta/` → `order_book_deltas/`
   - `order_book_depth10/` → `order_book_depths/`
 
@@ -64,6 +65,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Fixed code scanning security alerts
 
 ### Fixes
+- Fixed `uint64_t` truncation bug in `determine_trade_fill_qty` for trade execution with `high-precision` mode
+- Fixed stop market order fill price in `L1_MBP` mode
 - Fixed cache dropped same-timestamp market data on insert
 - Fixed race condition in InstrumentProvider causing duplicate instrument initialization in shared providers
 - Fixed portfolio statistics various bugs and edge cases
@@ -122,6 +125,8 @@ This release adds support for Python 3.14 with the following limitations:
 - Added DeFi pool discovery service with full Uniswap(V2/V3/V4) support (#3255), thanks @filipmacek
 - Added Deribit HTTP client with instrument support (#3288), thanks @filipmacek
 - Added Deribit account balance and credential management (#3295), thanks @filipmacek
+- Added Deribit WebSocket client with market data support (#3297), thanks @filipmacek
+- Added Deribit WebSocket auth and raw data stream support (#3304), thanks @filipmacek
 - Added dYdX v4 crate (#3138), thanks @nicolad
 - Added dYdX v4 WebSocket in Rust (#3158), thanks @nicolad
 - Added dYdX v4 DataClient in Rust (#3162), thanks @nicolad
@@ -149,11 +154,13 @@ This release adds support for Python 3.14 with the following limitations:
 - Refactored Interactive Brokers `HistoricInteractiveBrokersClient` (#3261), thanks @faysou
 - Refactored IB Historical client (#3276), thanks @faysou
 - Improved trade execution matching with transient bid/ask override for `trade_execution=True` mode, ensuring limit orders fill correctly when trades occur at the limit price
+- Improved Stochastics indicator with additional parameters (#3296), thanks @mahmutf
 - Improved `None` handling in equality and comparison methods
 - Improved `Actor.request_bars` to enforce standard bar types (#3216), thanks @faysou
 - Improved JSON-RPC non-standard rate limit error handling (#3227), thanks @filipmacek
 - Improved Betfair execution error handling and edge cases
 - Improved Betfair order rejection and duplicate fills handling
+- Improved Binance data client with optional authentication
 - Improved Bybit spot borrow repayments (#3223), thanks @vcraciun
 - Improved Databento live connection stability and reconnects
 - Improved dYdX v3 resilience and reliability (#3225), thanks @SarunasSS
@@ -163,6 +170,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Improved dYdX v4 data/exec testers and fix GTT (#3254), thanks @nicolad
 - Improved dYdX v4 WebSocket subscription state management (#3286), thanks @nicolad
 - Improved dYdX v4 enums for type safety and improve WS tests (#3294), thanks @nicolad
+- Improved dYdX v4 model type safety with enums (#3299), thanks @nicolad
 - Improved Polymarket position querying using Gamma API (#3142), thanks @DeirhX
 - Improved Tardis adapter robustness and error handling
 - Standardized dYdX WebSocket architecture (#3173), thanks @nicolad
@@ -186,6 +194,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Optimized build by disabling Cargo incremental compilation when using sccache (#3157), thanks @sunlei
 - Optimized BitMEX submit and cancel broadcasters by removing unnecessary lock on internal transport clients
 - Optimized full math division for DeFi calculations (#3179), thanks @filipmacek
+- Optimized parquet data filtering and streaming initialization performance (#3298), thanks @ReCodeLife
 - Repaired OKX spot margin position reports for borrowing, thanks @sunlei
 - Repaired Bybit docs links in comment (#3125), thanks @sunlei
 - Repaired Bybit HTTP order place (#3127), thanks @sunlei
@@ -197,7 +206,7 @@ This release adds support for Python 3.14 with the following limitations:
 - Repaired Bybit `set_position_mode` (#3220), thanks @sunlei
 - Upgraded implied-vol crate (#3115), thanks @faysou
 - Upgraded Rust (MSRV) to 1.92.0
-- Upgraded Cython to v3.2.2
+- Upgraded Cython to v3.2.3
 - Upgraded `databento` crate to v0.37.0
 - Upgraded `datafusion` crate to v51.0.0
 - Upgraded `msgspec` to 0.20.0
@@ -209,12 +218,13 @@ This release adds support for Python 3.14 with the following limitations:
 - Added Polymarket historical data loading docs
 - Added visualization docs for `bars_with_fills` tearsheet feature
 - Added order state flow diagram with lifecycle documentation
+- Added fee rate sign convention in instruments concept guide
+- Added fill price determination to backtesting concept guide
 - Improved concept docs with Mermaid diagrams replacing ASCII diagrams
 - Improved execution concept guide with overfills explanation
 - Improved backtesting concept guide to clarify bar execution behavior
 - Improved documentation for uv-installed Python environments, thanks to @faysou for investigating and reporting
 - Improved notebook path handling and fix quickstart data loading, thanks for reporting @semihtekten
-- Documented fee rate sign convention in instruments concept guide
 
 ### Deprecations
 None

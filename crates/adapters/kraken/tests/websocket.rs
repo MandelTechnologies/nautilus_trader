@@ -230,8 +230,6 @@ async fn start_test_server(state: Arc<TestServerState>) -> String {
     format!("ws://{addr}/v2")
 }
 
-// Tests
-
 #[rstest]
 #[tokio::test]
 async fn test_websocket_connection() {

@@ -45,7 +45,7 @@ use ustr::Ustr;
 use crate::common::enums::{
     DydxCandleResolution, DydxConditionType, DydxFillType, DydxLiquidity, DydxMarketStatus,
     DydxOrderExecution, DydxOrderStatus, DydxOrderType, DydxPositionSide, DydxPositionStatus,
-    DydxTickerType, DydxTimeInForce, DydxTradeType,
+    DydxTickerType, DydxTimeInForce, DydxTradeType, DydxTransferType,
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -505,7 +505,7 @@ pub struct Transfer {
     pub id: String,
     /// Transfer type (DEPOSIT, WITHDRAWAL, TRANSFER_OUT, TRANSFER_IN).
     #[serde(rename = "type")]
-    pub transfer_type: String,
+    pub transfer_type: DydxTransferType,
     /// Sender address.
     pub sender: TransferAccount,
     /// Recipient address.
@@ -573,7 +573,7 @@ pub struct PlaceOrderRequest {
     /// Client-generated order ID.
     pub client_id: u32,
     /// Order type flags (bitfield for short-term, reduce-only, etc.).
-    pub order_flags: u32,
+    pub order_flags: String,
     /// CLOB pair ID.
     pub clob_pair_id: u32,
     /// Order side.
@@ -617,7 +617,7 @@ pub struct CancelOrderRequest {
     /// CLOB pair ID.
     pub clob_pair_id: u32,
     /// Order flags.
-    pub order_flags: u32,
+    pub order_flags: String,
     /// Good-til-block or good-til-block-time for the cancel.
     pub good_til_block: Option<u32>,
     pub good_til_block_time: Option<u32>,

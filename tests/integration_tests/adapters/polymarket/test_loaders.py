@@ -40,6 +40,16 @@ def markets_list_data():
 
 
 @pytest.fixture
+def market_slug_data():
+    data = pkgutil.get_data(
+        "tests.integration_tests.adapters.polymarket.resources.http_responses",
+        "market_slug.json",
+    )
+    assert data
+    return msgspec.json.decode(data)
+
+
+@pytest.fixture
 def market_details_data():
     data = pkgutil.get_data(
         "tests.integration_tests.adapters.polymarket.resources.http_responses",
@@ -108,41 +118,79 @@ async def test_fetch_markets(markets_list_data):
 
 
 @pytest.mark.asyncio
-async def test_find_market_by_slug(markets_list_data):
+async def test_find_market_by_slug(market_slug_data):
     # Arrange
     mock_http_client = MagicMock(spec=nautilus_pyo3.HttpClient)
     mock_response = Mock()
     mock_response.status = 200
-    mock_response.body = msgspec.json.encode(markets_list_data)
+    mock_response.body = msgspec.json.encode(market_slug_data)
     mock_http_client.get = AsyncMock(return_value=mock_response)
 
     # Act
     market = await PolymarketDataLoader.find_market_by_slug(
-        "btc-price-above-100k",
+        "kamala-harris-divorce-in-2025",
         http_client=mock_http_client,
     )
 
     # Assert
-    assert market["slug"] == "btc-price-above-100k"
-    assert market["conditionId"] == "0xabc123"
+    mock_http_client.get.assert_called_once_with(
+        url="https://gamma-api.polymarket.com/markets/slug/kamala-harris-divorce-in-2025",
+    )
+    assert market["slug"] == "kamala-harris-divorce-in-2025"
+    assert market["conditionId"] == "0x270d5aa3b23be0d4e713361d603b187dd1919c71c74226ad867699f33972c5f2"
     assert market["active"] is True
 
 
 @pytest.mark.asyncio
-async def test_find_market_by_slug_not_found(markets_list_data):
+async def test_find_market_by_slug_not_found():
     # Arrange
     mock_http_client = MagicMock(spec=nautilus_pyo3.HttpClient)
     mock_response = Mock()
-    mock_response.status = 200
-    mock_response.body = msgspec.json.encode(markets_list_data)
+    mock_response.status = 404
+    mock_response.body = b""
     mock_http_client.get = AsyncMock(return_value=mock_response)
 
     # Act & Assert
-    with pytest.raises(ValueError, match="not found in active markets"):
+    with pytest.raises(ValueError, match="Market with slug 'nonexistent-market' not found"):
         await PolymarketDataLoader.find_market_by_slug(
             "nonexistent-market",
             http_client=mock_http_client,
         )
+
+
+@pytest.mark.asyncio
+async def test_from_market_slug_uses_slug_endpoint(
+    market_slug_data,
+    market_details_data,
+):
+    # Arrange
+    mock_http_client = MagicMock(spec=nautilus_pyo3.HttpClient)
+
+    slug_response = Mock()
+    slug_response.status = 200
+    slug_response.body = msgspec.json.encode(market_slug_data)
+
+    details_response = Mock()
+    details_response.status = 200
+    details_response.body = msgspec.json.encode(market_details_data)
+
+    mock_http_client.get = AsyncMock(side_effect=[slug_response, details_response])
+
+    # Act
+    loader = await PolymarketDataLoader.from_market_slug(
+        "kamala-harris-divorce-in-2025",
+        http_client=mock_http_client,
+    )
+
+    # Assert
+    assert loader.token_id == market_details_data["tokens"][0]["token_id"]
+    assert mock_http_client.get.call_args_list[0].kwargs["url"] == (
+        "https://gamma-api.polymarket.com/markets/slug/kamala-harris-divorce-in-2025"
+    )
+    assert mock_http_client.get.call_args_list[1].kwargs["url"] == (
+        "https://clob.polymarket.com/markets/"
+        "0x270d5aa3b23be0d4e713361d603b187dd1919c71c74226ad867699f33972c5f2"
+    )
 
 
 @pytest.mark.asyncio

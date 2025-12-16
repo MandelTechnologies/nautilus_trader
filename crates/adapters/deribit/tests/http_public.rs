@@ -234,10 +234,6 @@ fn create_router(state: TestServerState) -> Router {
         .with_state(state)
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 #[tokio::test]
 async fn test_get_instrument_success() {
     let state = TestServerState::default();

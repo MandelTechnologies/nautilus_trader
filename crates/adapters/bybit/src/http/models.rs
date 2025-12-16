@@ -1465,10 +1465,6 @@ impl BybitAccountDetails {
 /// - <https://bybit-exchange.github.io/docs/v5/user/apikey-info>
 pub type BybitAccountDetailsResponse = BybitResponse<BybitAccountDetails>;
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use nautilus_core::UnixNanos;

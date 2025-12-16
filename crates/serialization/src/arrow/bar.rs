@@ -28,11 +28,9 @@ use nautilus_model::{
 
 use super::{
     DecodeDataFromRecordBatch, EncodingError, KEY_BAR_TYPE, KEY_PRICE_PRECISION,
-    KEY_SIZE_PRECISION, extract_column, get_raw_quantity,
+    KEY_SIZE_PRECISION, extract_column, get_corrected_raw_price, get_corrected_raw_quantity,
 };
-use crate::arrow::{
-    ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch, get_raw_price,
-};
+use crate::arrow::{ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch};
 
 impl ArrowSchemaProvider for Bar {
     fn get_schema(metadata: Option<HashMap<String, String>>) -> Schema {
@@ -176,12 +174,27 @@ impl DecodeFromRecordBatch for Bar {
 
         let result: Result<Vec<Self>, EncodingError> = (0..record_batch.num_rows())
             .map(|i| {
-                let open = Price::from_raw(get_raw_price(open_values.value(i)), price_precision);
-                let high = Price::from_raw(get_raw_price(high_values.value(i)), price_precision);
-                let low = Price::from_raw(get_raw_price(low_values.value(i)), price_precision);
-                let close = Price::from_raw(get_raw_price(close_values.value(i)), price_precision);
-                let volume =
-                    Quantity::from_raw(get_raw_quantity(volume_values.value(i)), size_precision);
+                // Use corrected raw values to handle floating-point precision errors in stored data
+                let open = Price::from_raw(
+                    get_corrected_raw_price(open_values.value(i), price_precision),
+                    price_precision,
+                );
+                let high = Price::from_raw(
+                    get_corrected_raw_price(high_values.value(i), price_precision),
+                    price_precision,
+                );
+                let low = Price::from_raw(
+                    get_corrected_raw_price(low_values.value(i), price_precision),
+                    price_precision,
+                );
+                let close = Price::from_raw(
+                    get_corrected_raw_price(close_values.value(i), price_precision),
+                    price_precision,
+                );
+                let volume = Quantity::from_raw(
+                    get_corrected_raw_quantity(volume_values.value(i), size_precision),
+                    size_precision,
+                );
                 let ts_event = ts_event_values.value(i).into();
                 let ts_init = ts_init_values.value(i).into();
 
@@ -212,9 +225,6 @@ impl DecodeDataFromRecordBatch for Bar {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -224,7 +234,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::arrow::get_raw_price;
+    use crate::arrow::{get_raw_price, get_raw_quantity};
 
     #[rstest]
     fn test_get_schema() {
@@ -372,24 +382,24 @@ mod tests {
         let metadata = Bar::get_metadata(&bar_type, 2, 0);
 
         let open = FixedSizeBinaryArray::from(vec![
-            &(100_100_000_000 as PriceRaw).to_le_bytes(),
-            &(10_000_000_000 as PriceRaw).to_le_bytes(),
+            &((100.10 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
+            &((10.00 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
         ]);
         let high = FixedSizeBinaryArray::from(vec![
-            &(102_000_000_000 as PriceRaw).to_le_bytes(),
-            &(10_000_000_000 as PriceRaw).to_le_bytes(),
+            &((102.00 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
+            &((10.00 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
         ]);
         let low = FixedSizeBinaryArray::from(vec![
-            &(100_000_000_000 as PriceRaw).to_le_bytes(),
-            &(10_000_000_000 as PriceRaw).to_le_bytes(),
+            &((100.00 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
+            &((10.00 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
         ]);
         let close = FixedSizeBinaryArray::from(vec![
-            &(101_000_000_000 as PriceRaw).to_le_bytes(),
-            &(10_010_000_000 as PriceRaw).to_le_bytes(),
+            &((101.00 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
+            &((10.01 * FIXED_SCALAR) as PriceRaw).to_le_bytes(),
         ]);
         let volume = FixedSizeBinaryArray::from(vec![
-            &(11_000_000_000 as QuantityRaw).to_le_bytes(),
-            &(10_000_000_000 as QuantityRaw).to_le_bytes(),
+            &((11.0 * FIXED_SCALAR) as QuantityRaw).to_le_bytes(),
+            &((10.0 * FIXED_SCALAR) as QuantityRaw).to_le_bytes(),
         ]);
         let ts_event = UInt64Array::from(vec![1, 2]);
         let ts_init = UInt64Array::from(vec![3, 4]);

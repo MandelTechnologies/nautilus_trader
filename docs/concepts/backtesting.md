@@ -515,6 +515,130 @@ Combine trade data with book or quote data for best results: book/quote data est
 while trade ticks trigger execution for orders that might be inside the spread or ahead of the quote updates.
 :::
 
+### Fill price determination
+
+The matching engine determines fill prices based on order type, book type, and market state.
+
+#### L2/L3 order book data
+
+With full order book depth, fills are determined by actual book simulation:
+
+| Order Type              | Fill Price                                                    |
+|-------------------------|---------------------------------------------------------------|
+| `MARKET`                | Walks the book, filling at each price level (taker).          |
+| `MARKET_TO_LIMIT`       | Walks the book, filling at each price level (taker).          |
+| `LIMIT`                 | Order's limit price when matched (maker).                     |
+| `STOP_MARKET`           | Walks the book when triggered.                                |
+| `STOP_LIMIT`            | Order's limit price when triggered and matched.               |
+| `MARKET_IF_TOUCHED`     | Walks the book when triggered.                                |
+| `LIMIT_IF_TOUCHED`      | Order's limit price when triggered.                           |
+| `TRAILING_STOP_MARKET`  | Walks the book when activated and triggered.                  |
+| `TRAILING_STOP_LIMIT`   | Order's limit price when activated, triggered, and matched.   |
+
+With L2/L3 data, market-type orders may partially fill across multiple price levels if insufficient liquidity exists at the top of book.
+Limit-type orders act as resting orders after triggering and may remain unfilled if the market doesn't reach the limit price.
+`MARKET_TO_LIMIT` fills as a taker first, then rests any remaining quantity as a limit order at its first fill price.
+
+#### L1 order book data (quotes, trades, bars)
+
+With only top-of-book data, the same book simulation is used with a single-level book:
+
+| Order Type              | BUY Fill Price | SELL Fill Price |
+|-------------------------|----------------|-----------------|
+| `MARKET`                | Best ask       | Best bid        |
+| `MARKET_TO_LIMIT`       | Best ask       | Best bid        |
+| `LIMIT`                 | Limit price    | Limit price     |
+| `STOP_MARKET`           | Best ask       | Best bid        |
+| `STOP_LIMIT`            | Limit price    | Limit price     |
+| `MARKET_IF_TOUCHED`     | Best ask       | Best bid        |
+| `LIMIT_IF_TOUCHED`      | Limit price    | Limit price     |
+| `TRAILING_STOP_MARKET`  | Best ask       | Best bid        |
+| `TRAILING_STOP_LIMIT`   | Limit price    | Limit price     |
+
+With L1 data, if order quantity exceeds available size at the top of book and a residual remains, market-type orders will slip by one tick to fill the remainder, simulating crossing into the next price level.
+
+For bar data specifically, `STOP_MARKET` and `TRAILING_STOP_MARKET` orders may fill at the trigger price rather than best ask/bid when the bar moves through the trigger during its high/low processing. See [Stop order fill behavior with bar data](#stop-order-fill-behavior-with-bar-data) for details.
+
+:::note
+Fill models can alter these fill prices. See the [Fill model](#fill-model) section for details on `prob_slippage` and `prob_fill_on_limit` parameters.
+:::
+
+#### Order type semantics
+
+- **Market execution**: Fill at current market price (bid/ask). This models real exchange behavior where these orders execute at the best available price after triggering. Exception: with bar data, `STOP_MARKET` and `TRAILING_STOP_MARKET` orders triggered during H/L processing fill at the trigger price (see below).
+- **Limit execution**: Fill at the order's limit price when matched. Provides price guarantee but may not fill if the market doesn't reach the limit.
+
+#### Stop order fill behavior with bar data
+
+When backtesting with bar data only (no tick data), the matching engine distinguishes between two scenarios for `STOP_MARKET` and `TRAILING_STOP_MARKET` orders:
+
+**Gap scenario** (bar opens past trigger):
+When a bar's open price gaps past the trigger price, the stop triggers immediately and fills at the market price (the open). This models real exchange behavior where stop-market orders provide no price guarantee during gaps.
+
+Example - SELL `STOP_MARKET` with trigger at 100:
+
+- Previous bar closes at 105
+- Next bar opens at 90 (overnight gap down)
+- Stop triggers at open and fills at 90
+
+**Move-through scenario** (bar moves through trigger):
+When a bar opens normally and then its high or low moves through the trigger price, the stop fills at the trigger price. Since we only have OHLC data, we assume the market moved smoothly through the trigger and the order would have filled there.
+
+Example - SELL `STOP_MARKET` with trigger at 100:
+
+- Bar opens at 102 (no gap)
+- Bar low reaches 98, moving through trigger at 100
+- Stop fills at 100 (the trigger price)
+
+This behavior caps potential slippage during orderly market moves while still modeling gap slippage accurately. For tick-level precision, use quote or trade tick data instead of bars.
+
+### Precision requirements and invariants
+
+The matching engine enforces strict precision invariants to ensure data integrity throughout the fill pipeline.
+All prices and quantities must match the instrument's configured precision (`price_precision` and `size_precision`).
+Mismatches raise a `RuntimeError` immediately, preventing silent corruption of fill quantities.
+
+| Data/Operation | Field                          | Required Precision           | Validation Location          |
+|----------------|--------------------------------|------------------------------|------------------------------|
+| `QuoteTick`    | `bid_price`, `ask_price`       | `instrument.price_precision` | `process_quote_tick`         |
+| `QuoteTick`    | `bid_size`, `ask_size`         | `instrument.size_precision`  | `process_quote_tick`         |
+| `TradeTick`    | `price`                        | `instrument.price_precision` | `process_trade_tick`         |
+| `TradeTick`    | `size`                         | `instrument.size_precision`  | `process_trade_tick`         |
+| `Bar`          | `open`, `high`, `low`, `close` | `instrument.price_precision` | `process_bar`                |
+| `Bar`          | `volume` (base units)          | `instrument.size_precision`  | `process_bar`                |
+| `Order`        | `quantity`                     | `instrument.size_precision`  | `process_order`              |
+| `Order`        | `price`                        | `instrument.price_precision` | `process_order`              |
+| `Order`        | `trigger_price`                | `instrument.price_precision` | `process_order`              |
+| `Order`        | `activation_price`*            | `instrument.price_precision` | `process_order`              |
+| Order update   | `quantity`                     | `instrument.size_precision`  | `update_order`               |
+| Order update   | `price`, `trigger_price`       | `instrument.price_precision` | `update_order`               |
+| Fill           | `fill_qty`                     | `instrument.size_precision`  | `apply_fills`, `fill_order`  |
+| Fill           | `fill_px`                      | `instrument.price_precision` | `apply_fills`                |
+
+*`activation_price` is immutable after order submission.
+
+:::warning
+`Bar.volume` must be in **base currency units**. Some data providers report quote-currency volume;
+convert to base units before loading (divide by price or use provider-specific fields).
+:::
+
+:::tip
+If you encounter a precision mismatch error, align your data to the instrument:
+
+```python
+# Align price/quantity to instrument precision
+price = instrument.make_price(raw_price)
+qty = instrument.make_qty(raw_qty)
+```
+
+Also verify that:
+
+1. The instrument definition matches your data source's precision.
+2. Data was not inadvertently rounded or truncated during loading.
+3. Custom data loaders preserve the original precision metadata.
+
+:::
+
 ### Slippage and spread handling
 
 When backtesting with different types of data, Nautilus implements specific handling for slippage and spread simulation:

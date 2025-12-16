@@ -4872,33 +4872,44 @@ enum OrderBookOperation {
 }
 
 fn price_strategy() -> impl Strategy<Value = Price> {
-    use crate::types::price::PriceRaw;
+    use crate::types::{fixed::FIXED_PRECISION, price::PriceRaw};
+
+    // For precision P, raw values must be multiples of 10^(FIXED_PRECISION - P)
+    // Generate a base value and multiply by the scale to ensure valid raw values
+    let scale_prec2 = 10i64.pow(u32::from(FIXED_PRECISION - 2)) as PriceRaw; // 10^7
+    let scale_prec8 = 10i64.pow(u32::from(FIXED_PRECISION - 8)) as PriceRaw; // 10^1
+
     prop_oneof![
-        // Normal positive prices
-        (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw as PriceRaw, 2)),
-        // Edge case: very small prices
-        (1i64..=100i64).prop_map(|raw| Price::from_raw(raw as PriceRaw, 8)),
-        // Edge case: large prices
-        (1000000i64..=10000000i64).prop_map(|raw| Price::from_raw(raw as PriceRaw, 2)),
-        // Financial edge case: negative prices (options, spreads)
-        prop::num::i64::ANY.prop_filter_map("valid negative price", |raw| {
-            if raw < 0 && raw > i64::MIN + 1000000 {
-                Some(Price::from_raw(raw as PriceRaw, 2))
-            } else {
-                None
-            }
-        }),
+        // Normal positive prices (precision 2): 0.01 to 100.00
+        (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec2, 2)),
+        // Very small prices (precision 8): 0.00000001 to 0.00000100
+        (1i64..=100i64).prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec8, 8)),
+        // Large prices (precision 2): 100.00 to 10000.00
+        (10000i64..=1000000i64)
+            .prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec2, 2)),
+        // Negative prices for options/spreads (precision 2)
+        (-10000i64..=-1i64)
+            .prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec2, 2)),
     ]
 }
 
 fn quantity_strategy() -> impl Strategy<Value = Quantity> {
+    use crate::types::{fixed::FIXED_PRECISION, quantity::QuantityRaw};
+
+    // For precision P, raw values must be multiples of 10^(FIXED_PRECISION - P)
+    let scale_prec2 = 10u64.pow(u32::from(FIXED_PRECISION - 2)) as QuantityRaw; // 10^7
+    let scale_prec8 = 10u64.pow(u32::from(FIXED_PRECISION - 8)) as QuantityRaw; // 10^1
+
     prop_oneof![
-        // Normal quantities
-        (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
-        // Small quantities
-        (1u64..=100u64).prop_map(|raw| Quantity::from_raw(raw.into(), 8)),
-        // Large quantities
-        (1000000u64..=100000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
+        // Normal quantities (precision 2): 0.01 to 100.00
+        (1u64..=10000u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2)),
+        // Small quantities (precision 8): 0.00000001 to 0.00000100
+        (1u64..=100u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec8, 8)),
+        // Large quantities (precision 2): 100.00 to 10000.00
+        (10000u64..=1000000u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2)),
     ]
 }
 
@@ -4928,19 +4939,24 @@ fn positive_book_order_strategy() -> impl Strategy<Value = BookOrder> {
 }
 
 fn positive_quantity_strategy() -> impl Strategy<Value = Quantity> {
-    use crate::types::quantity::QuantityRaw;
+    use crate::types::{fixed::FIXED_PRECISION, quantity::QuantityRaw};
+
+    // For precision P, raw values must be multiples of 10^(FIXED_PRECISION - P)
+    let scale_prec2 = 10u64.pow(u32::from(FIXED_PRECISION - 2)) as QuantityRaw;
+    let scale_prec3 = 10u64.pow(u32::from(FIXED_PRECISION - 3)) as QuantityRaw;
+
     prop_oneof![
-        // Small positive quantities
+        // Small positive quantities (precision 2): 0.01 to 10.00
         (1u64..=1000u64)
-            .prop_map(|raw| Quantity::from_raw(raw as QuantityRaw, 2))
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2))
             .prop_filter("quantity must be positive", |q| q.is_positive()),
-        // Medium positive quantities
+        // Medium positive quantities (precision 3): 1.000 to 100.000
         (1000u64..=100000u64)
-            .prop_map(|raw| Quantity::from_raw(raw as QuantityRaw, 3))
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec3, 3))
             .prop_filter("quantity must be positive", |q| q.is_positive()),
-        // Large positive quantities
-        (100000u64..=10000000u64)
-            .prop_map(|raw| Quantity::from_raw(raw as QuantityRaw, 2))
+        // Large positive quantities (precision 2): 100.00 to 10000.00
+        (10000u64..=1000000u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2))
             .prop_filter("quantity must be positive", |q| q.is_positive()),
     ]
 }
@@ -5526,21 +5542,27 @@ enum L1Operation {
 }
 
 fn l1_operation_strategy() -> impl Strategy<Value = L1Operation> {
+    use crate::types::{fixed::FIXED_PRECISION, price::PriceRaw, quantity::QuantityRaw};
+
+    // For precision 2, raw values must be multiples of 10^(FIXED_PRECISION - 2)
+    let price_scale = 10i64.pow(u32::from(FIXED_PRECISION - 2)) as PriceRaw;
+    let qty_scale = 10u64.pow(u32::from(FIXED_PRECISION - 2)) as QuantityRaw;
+
     prop_oneof![
         7 => {
-            // Use consistent precision for quotes
+            // Use consistent precision for quotes: 0.01 to 100.00
             (
-                (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw.into(), 2)),
-                (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
-                (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw.into(), 2)),
-                (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
+                (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * price_scale, 2)),
+                (1u64..=10000u64).prop_map(move |base| Quantity::from_raw(base as QuantityRaw * qty_scale, 2)),
+                (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * price_scale, 2)),
+                (1u64..=10000u64).prop_map(move |base| Quantity::from_raw(base as QuantityRaw * qty_scale, 2)),
             ).prop_map(|(bid_price, bid_size, ask_price, ask_size)| {
                 L1Operation::QuoteUpdate(bid_price, bid_size, ask_price, ask_size)
             })
         },
         3 => (
-            (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw.into(), 2)),
-            (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
+            (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * price_scale, 2)),
+            (1u64..=10000u64).prop_map(move |base| Quantity::from_raw(base as QuantityRaw * qty_scale, 2)),
             prop::sample::select(vec![AggressorSide::Buyer, AggressorSide::Seller])
         ).prop_map(|(price, size, aggressor)| {
             L1Operation::TradeUpdate(price, size, aggressor)

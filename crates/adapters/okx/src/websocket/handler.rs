@@ -219,7 +219,7 @@ pub(super) struct OKXWsFeedHandler {
     pending_messages: VecDeque<NautilusWsMessage>,
     active_client_orders: Arc<DashMap<ClientOrderId, (TraderId, StrategyId, InstrumentId)>>,
     client_id_aliases: Arc<DashMap<ClientOrderId, ClientOrderId>>,
-    emitted_order_accepted: Arc<DashMap<VenueOrderId, ()>>,
+    emitted_order_accepted: AHashMap<VenueOrderId, ()>,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     fee_cache: AHashMap<Ustr, Money>,           // Key is order ID
     filled_qty_cache: AHashMap<Ustr, Quantity>, // Key is order ID
@@ -240,7 +240,6 @@ impl OKXWsFeedHandler {
         out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
         active_client_orders: Arc<DashMap<ClientOrderId, (TraderId, StrategyId, InstrumentId)>>,
         client_id_aliases: Arc<DashMap<ClientOrderId, ClientOrderId>>,
-        emitted_order_accepted: Arc<DashMap<VenueOrderId, ()>>,
         auth_tracker: AuthTracker,
         subscriptions_state: SubscriptionState,
     ) -> Self {
@@ -262,7 +261,7 @@ impl OKXWsFeedHandler {
             pending_messages: VecDeque::new(),
             active_client_orders,
             client_id_aliases,
-            emitted_order_accepted,
+            emitted_order_accepted: AHashMap::new(),
             instruments_cache: AHashMap::new(),
             fee_cache: AHashMap::new(),
             filled_qty_cache: AHashMap::new(),
@@ -274,7 +273,7 @@ impl OKXWsFeedHandler {
     }
 
     pub(super) fn is_stopped(&self) -> bool {
-        self.signal.load(std::sync::atomic::Ordering::Relaxed)
+        self.signal.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(super) fn send(&self, msg: NautilusWsMessage) -> Result<(), ()> {
@@ -340,6 +339,7 @@ impl OKXWsFeedHandler {
                         HandlerCommand::Disconnect => {
                             tracing::debug!("Handler disconnecting WebSocket client");
                             self.inner = None;
+                            return None;
                         }
                         HandlerCommand::Authenticate { payload } => {
                             if let Err(e) = self.send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()])).await {
@@ -492,7 +492,7 @@ impl OKXWsFeedHandler {
                 }
 
                 _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    if self.signal.load(std::sync::atomic::Ordering::Relaxed) {
+                    if self.signal.load(std::sync::atomic::Ordering::Acquire) {
                         tracing::debug!("Stop signal received during idle period");
                         return None;
                     }
@@ -1008,6 +1008,13 @@ impl OKXWsFeedHandler {
                                 return None;
                             };
 
+                            // Check if already emitted from orders channel push
+                            if self.emitted_order_accepted.contains_key(&v_order_id) {
+                                tracing::debug!(
+                                    "Skipping duplicate OrderAccepted from operation response for venue_order_id={v_order_id}"
+                                );
+                                return None;
+                            }
                             self.emitted_order_accepted.insert(v_order_id, ());
 
                             let accepted = OrderAccepted::new(
@@ -2514,10 +2521,6 @@ fn create_okx_timeout_error(msg: String) -> OKXWsError {
     OKXWsError::ClientError(msg)
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, atomic::AtomicBool};
@@ -2542,7 +2545,6 @@ mod tests {
         tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>,
         Arc<DashMap<ClientOrderId, (TraderId, StrategyId, InstrumentId)>>,
         Arc<DashMap<ClientOrderId, ClientOrderId>>,
-        Arc<DashMap<VenueOrderId, ()>>,
     ) {
         let account_id = AccountId::new("OKX-001");
         let signal = Arc::new(AtomicBool::new(false));
@@ -2551,7 +2553,6 @@ mod tests {
         let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
         let active_client_orders = Arc::new(DashMap::new());
         let client_id_aliases = Arc::new(DashMap::new());
-        let emitted_order_accepted = Arc::new(DashMap::new());
         let auth_tracker = AuthTracker::new();
         let subscriptions_state = SubscriptionState::new(OKX_WS_TOPIC_DELIMITER);
 
@@ -2563,18 +2564,11 @@ mod tests {
             out_tx,
             active_client_orders.clone(),
             client_id_aliases.clone(),
-            emitted_order_accepted.clone(),
             auth_tracker,
             subscriptions_state,
         );
 
-        (
-            handler,
-            out_rx,
-            active_client_orders,
-            client_id_aliases,
-            emitted_order_accepted,
-        )
+        (handler, out_rx, active_client_orders, client_id_aliases)
     }
 
     #[rstest]
@@ -2742,7 +2736,7 @@ mod tests {
 
     #[rstest]
     fn test_handler_register_client_order_aliases_with_parent() {
-        let (handler, _out_rx, _active, client_id_aliases, _emitted) = create_test_handler();
+        let (handler, _out_rx, _active, client_id_aliases) = create_test_handler();
 
         let child = Some(ClientOrderId::new("CHILD-001"));
         let parent = Some(ClientOrderId::new("PARENT-001"));
@@ -2762,7 +2756,7 @@ mod tests {
 
     #[rstest]
     fn test_handler_register_client_order_aliases_without_parent() {
-        let (handler, _out_rx, _active, client_id_aliases, _emitted) = create_test_handler();
+        let (handler, _out_rx, _active, client_id_aliases) = create_test_handler();
 
         let child = Some(ClientOrderId::new("ORDER-001"));
         let parent: Option<ClientOrderId> = None;
@@ -2781,8 +2775,7 @@ mod tests {
 
     #[rstest]
     fn test_handler_cleanup_terminal_order_removes_all_state() {
-        let (mut handler, _out_rx, active_client_orders, client_id_aliases, emitted_order_accepted) =
-            create_test_handler();
+        let (mut handler, _out_rx, active_client_orders, client_id_aliases) = create_test_handler();
 
         let canonical = ClientOrderId::new("PARENT-001");
         let child = ClientOrderId::new("CHILD-001");
@@ -2794,7 +2787,6 @@ mod tests {
         active_client_orders.insert(canonical, (trader_id, strategy_id, instrument_id));
         client_id_aliases.insert(canonical, canonical);
         client_id_aliases.insert(child, canonical);
-        emitted_order_accepted.insert(venue_id, ());
         handler
             .fee_cache
             .insert(venue_id.inner(), Money::from("0.001 USDT"));
@@ -2815,7 +2807,6 @@ mod tests {
         assert!(!active_client_orders.contains_key(&canonical));
         assert!(!client_id_aliases.contains_key(&canonical));
         assert!(!client_id_aliases.contains_key(&child));
-        assert!(!emitted_order_accepted.contains_key(&venue_id));
         assert!(!handler.fee_cache.contains_key(&venue_id.inner()));
         assert!(!handler.filled_qty_cache.contains_key(&venue_id.inner()));
         assert!(!handler.order_state_cache.contains_key(&canonical));
@@ -2823,7 +2814,7 @@ mod tests {
 
     #[rstest]
     fn test_handler_cleanup_terminal_order_removes_multiple_children() {
-        let (mut handler, _out_rx, _active, client_id_aliases, _emitted) = create_test_handler();
+        let (mut handler, _out_rx, _active, client_id_aliases) = create_test_handler();
 
         let canonical = ClientOrderId::new("PARENT-001");
         let child1 = ClientOrderId::new("CHILD-001");
@@ -2847,8 +2838,7 @@ mod tests {
 
     #[rstest]
     fn test_handler_cleanup_does_not_affect_other_orders() {
-        let (mut handler, _out_rx, active_client_orders, client_id_aliases, emitted_order_accepted) =
-            create_test_handler();
+        let (mut handler, _out_rx, active_client_orders, client_id_aliases) = create_test_handler();
 
         let canonical1 = ClientOrderId::new("PARENT-001");
         let child1 = ClientOrderId::new("CHILD-001");
@@ -2868,20 +2858,24 @@ mod tests {
         client_id_aliases.insert(child1, canonical1);
         client_id_aliases.insert(canonical2, canonical2);
         client_id_aliases.insert(child2, canonical2);
-        emitted_order_accepted.insert(venue_id1, ());
-        emitted_order_accepted.insert(venue_id2, ());
+        handler
+            .fee_cache
+            .insert(venue_id1.inner(), Money::from("0.001 USDT"));
+        handler
+            .fee_cache
+            .insert(venue_id2.inner(), Money::from("0.002 USDT"));
 
         handler.cleanup_terminal_order(&canonical1, &venue_id1);
 
         assert!(!active_client_orders.contains_key(&canonical1));
         assert!(!client_id_aliases.contains_key(&canonical1));
         assert!(!client_id_aliases.contains_key(&child1));
-        assert!(!emitted_order_accepted.contains_key(&venue_id1));
+        assert!(!handler.fee_cache.contains_key(&venue_id1.inner()));
 
         assert!(active_client_orders.contains_key(&canonical2));
         assert!(client_id_aliases.contains_key(&canonical2));
         assert!(client_id_aliases.contains_key(&child2));
-        assert!(emitted_order_accepted.contains_key(&venue_id2));
+        assert!(handler.fee_cache.contains_key(&venue_id2.inner()));
     }
 
     // ==================================================================================
@@ -2963,7 +2957,7 @@ mod tests {
         }
 
         fn create_handler_with_instruments(instruments: Vec<InstrumentAny>) -> OKXWsFeedHandler {
-            let (mut handler, _, _, _, _) = create_test_handler();
+            let (mut handler, _, _, _) = create_test_handler();
             for inst in instruments {
                 handler
                     .instruments_cache

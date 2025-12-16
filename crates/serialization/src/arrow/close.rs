@@ -30,11 +30,9 @@ use nautilus_model::{
 
 use super::{
     DecodeDataFromRecordBatch, EncodingError, KEY_INSTRUMENT_ID, KEY_PRICE_PRECISION,
-    extract_column,
+    extract_column, get_corrected_raw_price,
 };
-use crate::arrow::{
-    ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch, get_raw_price,
-};
+use crate::arrow::{ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch};
 
 impl ArrowSchemaProvider for InstrumentClose {
     fn get_schema(metadata: Option<HashMap<String, String>>) -> Schema {
@@ -149,10 +147,11 @@ impl DecodeFromRecordBatch for InstrumentClose {
                         )
                     })?;
 
+                // Use corrected raw value to handle floating-point precision errors in stored data
                 Ok(Self {
                     instrument_id,
                     close_price: Price::from_raw(
-                        get_raw_price(close_price_values.value(row)),
+                        get_corrected_raw_price(close_price_values.value(row), price_precision),
                         price_precision,
                     ),
                     close_type,
@@ -176,9 +175,6 @@ impl DecodeDataFromRecordBatch for InstrumentClose {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -298,10 +294,10 @@ mod tests {
             (KEY_PRICE_PRECISION.to_string(), "2".to_string()),
         ]);
 
-        let close_price = FixedSizeBinaryArray::from(vec![
-            &(15050 as PriceRaw).to_le_bytes(),
-            &(15125 as PriceRaw).to_le_bytes(),
-        ]);
+        let raw_price1 = (150.50 * FIXED_SCALAR) as PriceRaw;
+        let raw_price2 = (151.25 * FIXED_SCALAR) as PriceRaw;
+        let close_price =
+            FixedSizeBinaryArray::from(vec![&raw_price1.to_le_bytes(), &raw_price2.to_le_bytes()]);
         let close_type = UInt8Array::from(vec![
             InstrumentCloseType::EndOfSession as u8,
             InstrumentCloseType::ContractExpired as u8,
@@ -324,7 +320,7 @@ mod tests {
 
         assert_eq!(decoded_data.len(), 2);
         assert_eq!(decoded_data[0].instrument_id, instrument_id);
-        assert_eq!(decoded_data[0].close_price, Price::from_raw(15050, 2));
+        assert_eq!(decoded_data[0].close_price, Price::from_raw(raw_price1, 2));
         assert_eq!(
             decoded_data[0].close_type,
             InstrumentCloseType::EndOfSession
@@ -333,7 +329,7 @@ mod tests {
         assert_eq!(decoded_data[0].ts_init.as_u64(), 3);
 
         assert_eq!(decoded_data[1].instrument_id, instrument_id);
-        assert_eq!(decoded_data[1].close_price, Price::from_raw(15125, 2));
+        assert_eq!(decoded_data[1].close_price, Price::from_raw(raw_price2, 2));
         assert_eq!(
             decoded_data[1].close_type,
             InstrumentCloseType::ContractExpired

@@ -110,3 +110,8 @@ path = "bin/http_private.rs"
 [[bin]]
 name = "deribit-ws-data"
 path = "bin/ws_data.rs"
+
+# Run with `cargo bench -p nautilus-deribit --bench websocket`
+[[bench]]
+name = "websocket"
+harness = false

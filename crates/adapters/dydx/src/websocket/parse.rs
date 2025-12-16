@@ -137,15 +137,15 @@ fn convert_ws_order_to_http(
         .parse()
         .context("Failed to parse created_at_height")?;
 
-    let order_flags: u32 = ws_order
-        .order_flags
-        .parse()
-        .context("Failed to parse order_flags")?;
-
     let client_metadata: u32 = ws_order
         .client_metadata
         .parse()
         .context("Failed to parse client_metadata")?;
+
+    let order_flags: u32 = ws_order
+        .order_flags
+        .parse()
+        .context("Failed to parse order_flags")?;
 
     // Parse optional fields
     let good_til_block = ws_order
@@ -431,10 +431,6 @@ fn convert_ws_position_to_http(
         closed_at,
     })
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -1009,7 +1005,7 @@ mod tests {
             time_in_force: DydxTimeInForce::Gtt,
             post_only: false,
             reduce_only: true,
-            order_flags: "32".to_string(), // Conditional flag
+            order_flags: "32".to_string(),
             good_til_block: None,
             good_til_block_time: Some("2024-12-31T23:59:59Z".to_string()),
             created_at_height: "1000".to_string(),

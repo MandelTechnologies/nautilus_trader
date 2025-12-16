@@ -155,7 +155,6 @@ pub struct OKXWebSocketClient {
     subscriptions_state: SubscriptionState,
     request_id_counter: Arc<AtomicU64>,
     active_client_orders: Arc<DashMap<ClientOrderId, (TraderId, StrategyId, InstrumentId)>>,
-    emitted_order_accepted: Arc<DashMap<VenueOrderId, ()>>, // Track orders we've already emitted OrderAccepted for
     client_id_aliases: Arc<DashMap<ClientOrderId, ClientOrderId>>,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     cancellation_token: CancellationToken,
@@ -239,7 +238,6 @@ impl OKXWebSocketClient {
             subscriptions_state,
             request_id_counter: Arc::new(AtomicU64::new(1)),
             active_client_orders: Arc::new(DashMap::new()),
-            emitted_order_accepted: Arc::new(DashMap::new()),
             client_id_aliases: Arc::new(DashMap::new()),
             instruments_cache: Arc::new(DashMap::new()),
             cancellation_token: CancellationToken::new(),
@@ -327,14 +325,14 @@ impl OKXWebSocketClient {
     pub fn is_active(&self) -> bool {
         let connection_mode_arc = self.connection_mode.load();
         ConnectionMode::from_atomic(&connection_mode_arc).is_active()
-            && !self.signal.load(Ordering::Relaxed)
+            && !self.signal.load(Ordering::Acquire)
     }
 
     /// Returns a value indicating whether the client is closed.
     pub fn is_closed(&self) -> bool {
         let connection_mode_arc = self.connection_mode.load();
         ConnectionMode::from_atomic(&connection_mode_arc).is_closed()
-            || self.signal.load(Ordering::Relaxed)
+            || self.signal.load(Ordering::Acquire)
     }
 
     /// Caches multiple instruments.
@@ -463,7 +461,6 @@ impl OKXWebSocketClient {
 
         let signal = self.signal.clone();
         let active_client_orders = self.active_client_orders.clone();
-        let emitted_order_accepted = self.emitted_order_accepted.clone();
         let auth_tracker = self.auth_tracker.clone();
         let subscriptions_state = self.subscriptions_state.clone();
         let client_id_aliases = self.client_id_aliases.clone();
@@ -488,7 +485,6 @@ impl OKXWebSocketClient {
                     msg_tx,
                     active_client_orders,
                     client_id_aliases,
-                    emitted_order_accepted,
                     auth_tracker.clone(),
                     subscriptions_state.clone(),
                 );
@@ -558,7 +554,7 @@ impl OKXWebSocketClient {
                 loop {
                     match handler.next().await {
                         Some(NautilusWsMessage::Reconnected) => {
-                            if signal.load(Ordering::Relaxed) {
+                            if signal.load(Ordering::Acquire) {
                                 continue;
                             }
 
@@ -655,7 +651,7 @@ impl OKXWebSocketClient {
                                 );
                                 break;
                             }
-                            tracing::warn!("WebSocket stream ended unexpectedly");
+                            tracing::debug!("WebSocket stream closed");
                             break;
                         }
                     }
@@ -796,7 +792,7 @@ impl OKXWebSocketClient {
     pub async fn close(&mut self) -> Result<(), Error> {
         log::debug!("Starting close process");
 
-        self.signal.store(true, Ordering::Relaxed);
+        self.signal.store(true, Ordering::Release);
 
         if let Err(e) = self.cmd_tx.read().await.send(HandlerCommand::Disconnect) {
             log::warn!("Failed to send disconnect command to handler: {e}");
@@ -2460,10 +2456,6 @@ impl OKXWebSocketClient {
             .map_err(|e| OKXWsError::ClientError(format!("Handler not available: {e}")))
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

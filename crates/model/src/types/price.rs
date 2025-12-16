@@ -200,6 +200,21 @@ impl Price {
         )
         .expect(FAILED);
         check_fixed_precision(precision).expect(FAILED);
+
+        // TODO: Enforce spurious bits validation in v2
+        // Validate raw value has no spurious bits beyond the precision scale
+        // if raw != PRICE_UNDEF
+        //     && raw != PRICE_ERROR
+        //     && raw != PRICE_RAW_MAX
+        //     && raw != PRICE_RAW_MIN
+        //     && raw != 0
+        // {
+        //     #[cfg(feature = "high-precision")]
+        //     super::fixed::check_fixed_raw_i128(raw, precision).expect(FAILED);
+        //     #[cfg(not(feature = "high-precision"))]
+        //     super::fixed::check_fixed_raw_i64(raw, precision).expect(FAILED);
+        // }
+
         Self { raw, precision }
     }
 
@@ -265,7 +280,7 @@ impl Price {
     ///
     /// # Panics
     ///
-    /// Panics if precision is beyond [`MAX_FLOAT_PRECISION`] (16).
+    /// Panics if precision is beyond `MAX_FLOAT_PRECISION` (16).
     #[must_use]
     pub fn as_f64(&self) -> f64 {
         #[cfg(feature = "defi")]
@@ -281,7 +296,7 @@ impl Price {
     ///
     /// # Panics
     ///
-    /// Panics if precision is beyond [`MAX_FLOAT_PRECISION`] (16).
+    /// Panics if precision is beyond `MAX_FLOAT_PRECISION` (16).
     #[must_use]
     pub fn as_f64(&self) -> f64 {
         #[cfg(feature = "defi")]
@@ -648,9 +663,6 @@ pub fn decode_raw_price_i64(value: i64) -> PriceRaw {
     value
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use nautilus_core::approx_eq;
@@ -1179,12 +1191,21 @@ mod property_tests {
         prop_oneof![Just(upper), Just(FIXED_PRECISION.max(1)), 1u8..=upper,]
     }
 
-    fn price_raw_strategy() -> impl Strategy<Value = PriceRaw> {
-        prop_oneof![
-            Just(PRICE_RAW_MIN),
-            Just(PRICE_RAW_MAX),
-            PRICE_RAW_MIN..=PRICE_RAW_MAX,
-        ]
+    /// Strategy to generate a valid (precision, raw) pair where raw is properly scaled.
+    ///
+    /// Raw values must be multiples of 10^(FIXED_PRECISION - precision) to pass validation.
+    fn valid_precision_raw_strategy() -> impl Strategy<Value = (u8, PriceRaw)> {
+        precision_strategy().prop_flat_map(|precision| {
+            let scale: PriceRaw = if precision >= FIXED_PRECISION {
+                1
+            } else {
+                (10 as PriceRaw).pow(u32::from(FIXED_PRECISION - precision))
+            };
+            // Generate a base value, then multiply by scale to ensure valid raw
+            let max_base = PRICE_RAW_MAX / scale;
+            let min_base = PRICE_RAW_MIN / scale;
+            (min_base..=max_base).prop_map(move |base| (precision, base * scale))
+        })
     }
 
     /// Strategy to generate valid precision values for float-based constructors.
@@ -1357,11 +1378,10 @@ mod property_tests {
     }
 
     proptest! {
-        /// Property: constructing from raw bounds preserves raw/precision fields
+        /// Property: constructing from valid raw values preserves raw/precision fields
         #[rstest]
         fn prop_price_from_raw_round_trip(
-            raw in price_raw_strategy(),
-            precision in precision_strategy()
+            (precision, raw) in valid_precision_raw_strategy()
         ) {
             let price = Price::from_raw(raw, precision);
             prop_assert_eq!(price.raw, raw);

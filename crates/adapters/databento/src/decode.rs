@@ -1405,9 +1405,6 @@ pub fn decode_statistics_msg(
     ))
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -1515,7 +1512,11 @@ mod tests {
     #[rstest]
     #[case(0, 2, Price::new(0.01, 2))] // Default for 0
     #[case(i64::MAX, 2, Price::new(0.01, 2))] // Default for i64::MAX
-    #[case(1000000, 2, Price::from_raw(decode_raw_price_i64(1000000), 2))] // Arbitrary valid price
+    #[case(
+        10_000_000_000,
+        2,
+        Price::from_raw(decode_raw_price_i64(10_000_000_000), 2)
+    )]
     fn test_decode_price(#[case] value: i64, #[case] precision: u8, #[case] expected: Price) {
         let actual = decode_price_increment(value, precision);
         assert_eq!(actual, expected);
@@ -1524,7 +1525,11 @@ mod tests {
     #[rstest]
     #[case(i64::MAX, 2, None)] // None for i64::MAX
     #[case(0, 2, Some(Price::from_raw(0, 2)))] // 0 is valid here
-    #[case(1000000, 2, Some(Price::from_raw(decode_raw_price_i64(1000000), 2)))] // Arbitrary valid price
+    #[case(
+        10_000_000_000,
+        2,
+        Some(Price::from_raw(decode_raw_price_i64(10_000_000_000), 2))
+    )]
     fn test_decode_optional_price(
         #[case] value: i64,
         #[case] precision: u8,
@@ -1583,7 +1588,11 @@ mod tests {
     #[rstest]
     #[case(0, 2, Price::new(0.01, 2))] // Default for 0
     #[case(i64::MAX, 2, Price::new(0.01, 2))] // Default for i64::MAX
-    #[case(1000000, 2, Price::from_raw(decode_raw_price_i64(1000000), 2))] // Arbitrary valid price
+    #[case(
+        10_000_000_000,
+        2,
+        Price::from_raw(decode_raw_price_i64(10_000_000_000), 2)
+    )]
     fn test_decode_price_increment(
         #[case] value: i64,
         #[case] precision: u8,

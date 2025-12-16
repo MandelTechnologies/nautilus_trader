@@ -20,6 +20,7 @@ from unittest.mock import patch
 import msgspec
 import pytest
 
+import nautilus_trader.backtest.node as node
 from nautilus_trader.adapters.tardis.loaders import TardisCSVDataLoader
 from nautilus_trader.backtest.engine import BacktestEngineConfig
 from nautilus_trader.backtest.node import BacktestNode
@@ -38,6 +39,52 @@ from nautilus_trader.test_kit.mocks.data import setup_catalog
 from nautilus_trader.test_kit.providers import TestDataProvider
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.providers import get_test_data_large_path
+
+
+class DummyStreamingSession:
+    def __init__(self, chunk_size=None):
+        self.chunk_size = chunk_size
+
+    def to_query_result(self):
+        return []
+
+
+class DummyStreamingCatalog:
+    def __init__(self, path: str, protocol: str | None):
+        self.path = path
+        self.fs_protocol = protocol
+        self.calls = 0
+
+    def get_file_list_from_data_cls(self, data_cls: type):
+        self.calls += 1
+        return [f"{self.path}/{data_cls.__name__}.parquet"]
+
+    def filter_files(
+        self,
+        data_cls: type,
+        file_paths: list[str],
+        identifiers=None,
+        start=None,
+        end=None,
+    ):
+        return file_paths
+
+    def backend_session(self, data_cls, identifiers, start, end, session, files):
+        return session
+
+
+class DummyStreamingEngine:
+    def add_data(self, data, validate=True, sort=True):
+        return None
+
+    def run(self, start=None, end=None, run_config_id=None, streaming=None):
+        return None
+
+    def clear_data(self):
+        return None
+
+    def end(self):
+        return None
 
 
 _AUDUSD_SIM = TestInstrumentProvider.default_fx_ccy("AUD/USD")
@@ -608,3 +655,70 @@ class TestBacktestNodeStreaming:
             f"Position count mismatch: streaming={streaming_result.total_positions}, "
             f"oneshot={oneshot_result.total_positions}"
         )
+
+    def test_run_streaming_caches_per_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(node, "DataBackendSession", DummyStreamingSession)
+
+        catalog_instances: dict[str, DummyStreamingCatalog] = {}
+        instrument_id = InstrumentId.from_str("AUD/USD.SIM")
+
+        def fake_load_catalog(_self, config):
+            catalog = DummyStreamingCatalog(config.catalog_path, config.catalog_fs_protocol)
+            catalog_instances[config.catalog_path] = catalog
+            return catalog
+
+        monkeypatch.setattr(BacktestNode, "load_catalog", fake_load_catalog)
+
+        data_config_a = BacktestDataConfig(
+            catalog_path=(tmp_path / "catalog_a").as_posix(),
+            catalog_fs_protocol="file",
+            data_cls=QuoteTick,
+            instrument_id=instrument_id,
+            start_time=None,
+            end_time=None,
+        )
+
+        data_config_b = BacktestDataConfig(
+            catalog_path=(tmp_path / "catalog_b").as_posix(),
+            catalog_fs_protocol="file",
+            data_cls=QuoteTick,
+            instrument_id=instrument_id,
+            start_time=None,
+            end_time=None,
+        )
+
+        run_config = BacktestRunConfig(
+            engine=BacktestEngineConfig(
+                strategies=self.strategies,
+                logging=LoggingConfig(bypass_logging=True),
+            ),
+            venues=[self.venue_config],
+            data=[data_config_a, data_config_b],
+            chunk_size=1_000,
+        )
+
+        node_instance = BacktestNode(configs=[run_config])
+
+        class DummyEngine:
+            def add_data(self, data, validate=True, sort=True):
+                return None
+
+            def run(self, start=None, end=None, run_config_id=None, streaming=None):
+                return None
+
+            def clear_data(self):
+                return None
+
+            def end(self):
+                return None
+
+        node_instance._run_streaming(
+            run_config_id=run_config.id,
+            engine=DummyStreamingEngine(),
+            data_configs=run_config.data,
+            chunk_size=run_config.chunk_size,
+        )
+
+        assert len(catalog_instances) == 2
+        assert catalog_instances[data_config_a.catalog_path].calls == 1
+        assert catalog_instances[data_config_b.catalog_path].calls == 1

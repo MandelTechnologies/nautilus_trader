@@ -15,6 +15,8 @@
 
 //! BitMEX-specific enumerations shared by HTTP and WebSocket components.
 
+use std::borrow::Cow;
+
 use nautilus_model::enums::{
     ContingencyType, LiquiditySide, OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce,
 };
@@ -701,16 +703,16 @@ pub enum BitmexProductType {
 }
 
 impl BitmexProductType {
-    /// Converts the product type to its websocket subscription string
+    /// Converts the product type to its websocket subscription string.
     #[must_use]
-    pub fn to_subscription(&self) -> String {
+    pub fn to_subscription(&self) -> Cow<'static, str> {
         match self {
-            Self::All => "instrument".to_string(),
-            Self::Specific(symbol) => format!("instrument:{symbol}"),
-            Self::Contracts => "CONTRACTS".to_string(),
-            Self::Indices => "INDICES".to_string(),
-            Self::Derivatives => "DERIVATIVES".to_string(),
-            Self::Spot => "SPOT".to_string(),
+            Self::All => Cow::Borrowed("instrument"),
+            Self::Specific(symbol) => Cow::Owned(format!("instrument:{symbol}")),
+            Self::Contracts => Cow::Borrowed("CONTRACTS"),
+            Self::Indices => Cow::Borrowed("INDICES"),
+            Self::Derivatives => Cow::Borrowed("DERIVATIVES"),
+            Self::Spot => Cow::Borrowed("SPOT"),
         }
     }
 }
@@ -806,10 +808,6 @@ pub enum BitmexMarkMethod {
     /// Composite index.
     CompositeIndex,
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

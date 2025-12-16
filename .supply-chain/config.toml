@@ -597,7 +597,7 @@ version = "0.7.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.cmake]]
-version = "0.1.54"
+version = "0.1.56"
 criteria = "safe-to-deploy"
 
 [[exemptions.coins-bip32]]
@@ -1917,7 +1917,7 @@ version = "0.4.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.reqwest]]
-version = "0.12.25"
+version = "0.12.26"
 criteria = "safe-to-deploy"
 
 [[exemptions.reqwest-eventsource]]

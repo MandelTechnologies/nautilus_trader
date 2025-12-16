@@ -703,9 +703,18 @@ fn test_bid_ask_initialized(instrument_es: InstrumentAny) {
     let mut engine_l2 = get_order_matching_engine_l2(instrument_es.clone(), None, None, None, None);
     // Create bid and ask orderbook delta and check if
     // bid and ask are initialized in order matching core
-    let book_order_buy = BookOrder::new(OrderSide::Buy, Price::from("100"), Quantity::from("1"), 0);
-    let book_order_sell =
-        BookOrder::new(OrderSide::Sell, Price::from("101"), Quantity::from("1"), 0);
+    let book_order_buy = BookOrder::new(
+        OrderSide::Buy,
+        Price::from("100.00"),
+        Quantity::from("1"),
+        0,
+    );
+    let book_order_sell = BookOrder::new(
+        OrderSide::Sell,
+        Price::from("101.00"),
+        Quantity::from("1"),
+        0,
+    );
     let orderbook_delta_buy = OrderBookDeltaTestBuilder::new(instrument_es.id())
         .book_action(BookAction::Add)
         .book_order(book_order_buy)
@@ -718,7 +727,7 @@ fn test_bid_ask_initialized(instrument_es: InstrumentAny) {
     engine_l2
         .process_order_book_delta(&orderbook_delta_buy)
         .unwrap();
-    assert_eq!(engine_l2.core.bid, Some(Price::from("100")));
+    assert_eq!(engine_l2.core.bid, Some(Price::from("100.00")));
     assert!(engine_l2.core.is_bid_initialized);
     assert_eq!(engine_l2.core.ask, None);
     assert!(!engine_l2.core.is_ask_initialized);
@@ -726,9 +735,9 @@ fn test_bid_ask_initialized(instrument_es: InstrumentAny) {
     engine_l2
         .process_order_book_delta(&orderbook_delta_sell)
         .unwrap();
-    assert_eq!(engine_l2.core.bid, Some(Price::from("100")));
+    assert_eq!(engine_l2.core.bid, Some(Price::from("100.00")));
     assert!(engine_l2.core.is_bid_initialized);
-    assert_eq!(engine_l2.core.ask, Some(Price::from("101")));
+    assert_eq!(engine_l2.core.ask, Some(Price::from("101.00")));
     assert!(engine_l2.core.is_ask_initialized);
 }
 
@@ -1378,6 +1387,7 @@ fn test_process_cancel_command_valid(
         VenueOrderId::from("V1"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
 
@@ -1429,6 +1439,7 @@ fn test_process_cancel_command_order_not_found(
         VenueOrderId::from("V1"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
 
@@ -1544,6 +1555,7 @@ fn test_process_cancel_all_command(
         OrderSide::Buy,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_cancel_all(&cancel_all_command, account_id);
@@ -1648,6 +1660,7 @@ fn test_process_batch_cancel_command(
         VenueOrderId::from("V1"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     let cancel_2 = CancelOrder::new(
@@ -1659,6 +1672,7 @@ fn test_process_batch_cancel_command(
         VenueOrderId::from("V2"),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     let batch_cancel_command = BatchCancelOrders::new(
@@ -1669,6 +1683,7 @@ fn test_process_batch_cancel_command(
         vec![cancel_1, cancel_2],
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
 
@@ -1820,6 +1835,7 @@ fn test_process_modify_order_rejected_not_found(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -1889,6 +1905,7 @@ fn test_update_limit_order_post_only_matched(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -1970,6 +1987,7 @@ fn test_update_limit_order_valid(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -2056,6 +2074,7 @@ fn test_update_stop_market_order_valid(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2119,6 +2138,7 @@ fn test_update_stop_limit_order_valid_update_not_triggered(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2234,6 +2254,7 @@ fn test_update_market_if_touched_order_valid(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2380,6 +2401,7 @@ fn test_update_limit_if_touched_order_valid(
         Some(new_trigger_price),
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -2722,6 +2744,7 @@ fn test_updating_of_contingent_orders(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     );
     engine_l2.process_modify(&modify_order_command.unwrap(), account_id);
 
@@ -3001,7 +3024,7 @@ fn test_process_monthly_bar_not_skipped(instrument_eth_usdt: InstrumentAny) {
         high: Price::from("1510.00"),
         low: Price::from("1490.00"),
         close: Price::from("1505.00"),
-        volume: Quantity::from("100000"),
+        volume: Quantity::from("100000.000"),
         ts_event: UnixNanos::from(1_000_000_000),
         ts_init: UnixNanos::from(1_000_000_000),
     };
@@ -3032,7 +3055,7 @@ fn test_process_yearly_bar_not_skipped(instrument_eth_usdt: InstrumentAny) {
         high: Price::from("1510.00"),
         low: Price::from("1490.00"),
         close: Price::from("1505.00"),
-        volume: Quantity::from("100000"),
+        volume: Quantity::from("100000.000"),
         ts_event: UnixNanos::from(1_000_000_000),
         ts_init: UnixNanos::from(1_000_000_000),
     };
@@ -3119,6 +3142,7 @@ fn test_modify_partially_filled_order_quantity_below_filled_rejected(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);
@@ -3248,6 +3272,7 @@ fn test_ouo_child_cancelled_when_parent_leaves_zero(
         None,
         UUID4::new(),
         UnixNanos::default(),
+        None,
     )
     .unwrap();
     engine_l2.process_modify(&modify_order_command, account_id);

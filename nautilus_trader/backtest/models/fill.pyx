@@ -165,7 +165,7 @@ cdef class FillModel:
             return probability >= random.random()
 
 
-class BestPriceFillModel(FillModel):
+cdef class BestPriceFillModel(FillModel):
     """
     Fill model that executes all orders at the best available price.
 
@@ -174,17 +174,21 @@ class BestPriceFillModel(FillModel):
 
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with unlimited liquidity at best prices.
         """
-        UNLIMITED = 1_000_000  # Large enough to fill any order
+        cdef:
+            uint64_t UNLIMITED = 1_000_000  # Large enough to fill any order
+            OrderBook book
+            BookOrder bid_order
+            BookOrder ask_order
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -211,7 +215,7 @@ class BestPriceFillModel(FillModel):
         return book
 
 
-class OneTickSlippageFillModel(FillModel):
+cdef class OneTickSlippageFillModel(FillModel):
     """
     Fill model that forces exactly one tick of slippage for all orders.
 
@@ -220,18 +224,22 @@ class OneTickSlippageFillModel(FillModel):
 
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with no volume at best prices, unlimited volume one tick away.
         """
-        tick = instrument.price_increment
-        UNLIMITED = 1_000_000
+        cdef:
+            Price tick = instrument.price_increment
+            uint64_t UNLIMITED = 1_000_000
+            OrderBook book
+            BookOrder bid_order
+            BookOrder ask_order
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -259,7 +267,7 @@ class OneTickSlippageFillModel(FillModel):
         return book
 
 
-class TwoTierFillModel(FillModel):
+cdef class TwoTierFillModel(FillModel):
     """
     Fill model with two-tier pricing: first 10 contracts at best price, remainder one tick worse.
 
@@ -267,18 +275,24 @@ class TwoTierFillModel(FillModel):
     of basic market impact for small to medium orders.
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with two-tier liquidity structure.
         """
-        tick = instrument.price_increment
-        UNLIMITED = 1_000_000
+        cdef:
+            Price tick = instrument.price_increment
+            uint64_t UNLIMITED = 1_000_000
+            OrderBook book
+            BookOrder bid_order_tier1
+            BookOrder ask_order_tier1
+            BookOrder bid_order_tier2
+            BookOrder ask_order_tier2
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -321,7 +335,7 @@ class TwoTierFillModel(FillModel):
         return book
 
 
-class ProbabilisticFillModel(FillModel):
+cdef class ProbabilisticFillModel(FillModel):
     """
     Fill model that replicates the current probabilistic behavior.
 
@@ -331,18 +345,22 @@ class ProbabilisticFillModel(FillModel):
 
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook based on probabilistic logic.
         """
-        tick = instrument.price_increment
-        UNLIMITED = 1_000_000
+        cdef:
+            Price tick = instrument.price_increment
+            uint64_t UNLIMITED = 1_000_000
+            OrderBook book
+            BookOrder bid_order
+            BookOrder ask_order
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -384,7 +402,7 @@ class ProbabilisticFillModel(FillModel):
         return book
 
 
-class SizeAwareFillModel(FillModel):
+cdef class SizeAwareFillModel(FillModel):
     """
     Fill model that applies different execution models based on order size.
 
@@ -393,17 +411,27 @@ class SizeAwareFillModel(FillModel):
 
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with size-dependent liquidity.
         """
-        tick = instrument.price_increment
+        cdef:
+            Price tick = instrument.price_increment
+            OrderBook book
+            Quantity threshold_qty
+            Quantity remaining_qty
+            BookOrder bid_order
+            BookOrder ask_order
+            BookOrder bid_order_tier1
+            BookOrder ask_order_tier1
+            BookOrder bid_order_tier2
+            BookOrder ask_order_tier2
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -470,7 +498,7 @@ class SizeAwareFillModel(FillModel):
         return book
 
 
-class LimitOrderPartialFillModel(FillModel):
+cdef class LimitOrderPartialFillModel(FillModel):
     """
     Fill model that simulates partial fills for limit orders.
 
@@ -479,18 +507,24 @@ class LimitOrderPartialFillModel(FillModel):
 
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with limited fills at limit prices.
         """
-        tick = instrument.price_increment
-        UNLIMITED = 1_000_000
+        cdef:
+            Price tick = instrument.price_increment
+            uint64_t UNLIMITED = 1_000_000
+            OrderBook book
+            BookOrder bid_order_tier1
+            BookOrder ask_order_tier1
+            BookOrder bid_order_tier2
+            BookOrder ask_order_tier2
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -533,7 +567,7 @@ class LimitOrderPartialFillModel(FillModel):
         return book
 
 
-class ThreeTierFillModel(FillModel):
+cdef class ThreeTierFillModel(FillModel):
     """
     Fill model with three-tier pricing for realistic market depth simulation.
 
@@ -544,17 +578,26 @@ class ThreeTierFillModel(FillModel):
 
     """
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with three-tier liquidity structure.
         """
-        tick = instrument.price_increment
+        cdef:
+            Price tick = instrument.price_increment
+            Price two_ticks
+            OrderBook book
+            BookOrder bid_order_tier1
+            BookOrder ask_order_tier1
+            BookOrder bid_order_tier2
+            BookOrder ask_order_tier2
+            BookOrder bid_order_tier3
+            BookOrder ask_order_tier3
 
         book = OrderBook(
             instrument_id=instrument.id,
@@ -614,7 +657,7 @@ class ThreeTierFillModel(FillModel):
         return book
 
 
-class MarketHoursFillModel(FillModel):
+cdef class MarketHoursFillModel(FillModel):
     """
     Fill model that simulates varying market conditions based on time.
 
@@ -625,16 +668,16 @@ class MarketHoursFillModel(FillModel):
 
     def __init__(
         self,
-        prob_fill_on_limit=1.0,
-        prob_fill_on_stop=1.0,
-        prob_slippage=0.0,
-        random_seed=None,
+        double prob_fill_on_limit = 1.0,
+        double prob_fill_on_stop = 1.0,
+        double prob_slippage = 0.0,
+        random_seed = None,
     ):
         super().__init__(prob_fill_on_limit, prob_fill_on_stop, prob_slippage, random_seed)
         # In a real implementation, you would track market hours
         self._is_low_liquidity = False  # Simplified for example
 
-    def is_low_liquidity_period(self) -> bool:
+    cpdef bint is_low_liquidity_period(self):
         """
         Check if current time is during low liquidity period.
         """
@@ -642,31 +685,35 @@ class MarketHoursFillModel(FillModel):
         # For demo purposes, we'll use a simple flag
         return self._is_low_liquidity
 
-    def set_low_liquidity_period(self, is_low_liquidity: bool):
+    cpdef void set_low_liquidity_period(self, bint is_low_liquidity):
         """
         Set the liquidity period for testing purposes.
         """
         self._is_low_liquidity = is_low_liquidity
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with time-dependent liquidity.
         """
-        tick = instrument.price_increment
-        NORMAL_VOLUME = 500
+        cdef:
+            Price tick = instrument.price_increment
+            uint64_t NORMAL_VOLUME = 500
+            OrderBook book
+            BookOrder bid_order
+            BookOrder ask_order
 
         book = OrderBook(
             instrument_id=instrument.id,
             book_type=BookType.L2_MBP,
         )
 
-        if self.is_low_liquidity_period():
+        if self._is_low_liquidity:
             # During low liquidity: wider spreads (1 tick worse)
             bid_order = BookOrder(
                 side=OrderSide.BUY,
@@ -701,7 +748,7 @@ class MarketHoursFillModel(FillModel):
         return book
 
 
-class VolumeSensitiveFillModel(FillModel):
+cdef class VolumeSensitiveFillModel(FillModel):
     """
     Fill model that adjusts liquidity based on recent trading volume.
 
@@ -712,40 +759,47 @@ class VolumeSensitiveFillModel(FillModel):
 
     def __init__(
         self,
-        prob_fill_on_limit=1.0,
-        prob_fill_on_stop=1.0,
-        prob_slippage=0.0,
-        random_seed=None,
+        double prob_fill_on_limit = 1.0,
+        double prob_fill_on_stop = 1.0,
+        double prob_slippage = 0.0,
+        random_seed = None,
     ):
         super().__init__(prob_fill_on_limit, prob_fill_on_stop, prob_slippage, random_seed)
         self._recent_volume = 1000.0  # Default volume for demo
 
-    def set_recent_volume(self, volume: float):
+    cpdef void set_recent_volume(self, double volume):
         """
         Set recent volume for testing purposes.
         """
         self._recent_volume = volume
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with volume-based liquidity.
         """
-        tick = instrument.price_increment
-        UNLIMITED = 1_000_000
+        cdef:
+            Price tick = instrument.price_increment
+            uint64_t UNLIMITED = 1_000_000
+            uint64_t available_volume
+            OrderBook book
+            BookOrder bid_order_tier1
+            BookOrder ask_order_tier1
+            BookOrder bid_order_tier2
+            BookOrder ask_order_tier2
 
         book = OrderBook(
             instrument_id=instrument.id,
             book_type=BookType.L2_MBP,
         )
 
-        # Available liquidity is 25% of recent average volume
-        available_volume = int(self._recent_volume * 0.25)
+        # Minimum 1 to avoid zero-size orders being silently dropped by OrderBook
+        available_volume = max(<uint64_t>1, <uint64_t>(self._recent_volume * 0.25))
 
         bid_order_tier1 = BookOrder(
             side=OrderSide.BUY,
@@ -760,7 +814,6 @@ class VolumeSensitiveFillModel(FillModel):
             order_id=2,
         )
 
-        # Unlimited volume one tick worse
         bid_order_tier2 = BookOrder(
             side=OrderSide.BUY,
             price=best_bid.sub(tick),
@@ -782,7 +835,7 @@ class VolumeSensitiveFillModel(FillModel):
         return book
 
 
-class CompetitionAwareFillModel(FillModel):
+cdef class CompetitionAwareFillModel(FillModel):
     """
     Fill model that simulates market competition effects.
 
@@ -793,32 +846,37 @@ class CompetitionAwareFillModel(FillModel):
 
     def __init__(
         self,
-        prob_fill_on_limit=1.0,
-        prob_fill_on_stop=1.0,
-        prob_slippage=0.0,
-        random_seed=None,
-        liquidity_factor=0.3,
+        double prob_fill_on_limit = 1.0,
+        double prob_fill_on_stop = 1.0,
+        double prob_slippage = 0.0,
+        random_seed = None,
+        double liquidity_factor = 0.3,
     ):
         super().__init__(prob_fill_on_limit, prob_fill_on_stop, prob_slippage, random_seed)
-        self.liquidity_factor = liquidity_factor  # Can access 30% of visible liquidity by default
+        self.liquidity_factor = liquidity_factor
 
-    def get_orderbook_for_fill_simulation(
+    cpdef OrderBook get_orderbook_for_fill_simulation(
         self,
-        instrument: Instrument,
-        order: Order,
-        best_bid: Price,
-        best_ask: Price,
-    ) -> OrderBook | None:
+        Instrument instrument,
+        Order order,
+        Price best_bid,
+        Price best_ask,
+    ):
         """
         Return OrderBook with competition-adjusted liquidity.
         """
-        # In a real implementation, you would get the actual current orderbook
-        # For demo purposes, we'll simulate typical market depth
-        typical_bid_volume = 1000.0
-        typical_ask_volume = 1000.0
+        cdef:
+            double typical_bid_volume = 1000.0
+            double typical_ask_volume = 1000.0
+            uint64_t available_bid
+            uint64_t available_ask
+            OrderBook book
+            BookOrder bid_order
+            BookOrder ask_order
 
-        available_bid = int(typical_bid_volume * self.liquidity_factor)
-        available_ask = int(typical_ask_volume * self.liquidity_factor)
+        # Minimum 1 to avoid zero-size orders being silently dropped by OrderBook
+        available_bid = max(<uint64_t>1, <uint64_t>(typical_bid_volume * self.liquidity_factor))
+        available_ask = max(<uint64_t>1, <uint64_t>(typical_ask_volume * self.liquidity_factor))
 
         book = OrderBook(
             instrument_id=instrument.id,

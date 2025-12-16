@@ -669,6 +669,66 @@ class BinanceFuturesAlgoOrderHttp(BinanceHttpEndpoint):
         return self._post_resp_decoder.decode(raw)
 
 
+class BinanceFuturesOpenAlgoOrdersHttp(BinanceHttpEndpoint):
+    """
+    Endpoint for fetching all open algo (conditional) orders.
+
+    `GET /fapi/v1/openAlgoOrders`
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Current-All-Algo-Open-Orders
+
+    """
+
+    def __init__(
+        self,
+        client: BinanceHttpClient,
+        base_endpoint: str,
+    ):
+        methods = {
+            HttpMethod.GET: BinanceSecurityType.USER_DATA,
+        }
+        url_path = base_endpoint + "openAlgoOrders"
+        super().__init__(
+            client,
+            methods,
+            url_path,
+        )
+
+        self._get_resp_decoder = msgspec.json.Decoder(list[BinanceFuturesAlgoOrder])
+
+    class GetParameters(msgspec.Struct, omit_defaults=True, frozen=True):
+        """
+        Parameters for open algo orders GET request.
+
+        Parameters
+        ----------
+        timestamp : str
+            The millisecond timestamp of the request.
+        algoType : str, optional
+            Filter by algo type.
+        symbol : BinanceSymbol, optional
+            Filter by symbol. If omitted, orders for all symbols returned.
+        algoId : int, optional
+            Filter by specific algo order ID.
+        recvWindow : str, optional
+            The response receive window for the request (cannot be greater than 60000).
+
+        """
+
+        timestamp: str
+        algoType: str | None = None
+        symbol: BinanceSymbol | None = None
+        algoId: int | None = None
+        recvWindow: str | None = None
+
+    async def get(self, params: GetParameters) -> list[BinanceFuturesAlgoOrder]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
+        return self._get_resp_decoder.decode(raw)
+
+
 class BinanceFuturesAccountHttpAPI(BinanceAccountHttpAPI):
     """
     Provides access to the Binance Futures Account/Trade HTTP REST API.
@@ -731,6 +791,10 @@ class BinanceFuturesAccountHttpAPI(BinanceAccountHttpAPI):
             self.base_endpoint,
         )
         self._endpoint_futures_algo_order = BinanceFuturesAlgoOrderHttp(
+            client,
+            self.base_endpoint,
+        )
+        self._endpoint_futures_open_algo_orders = BinanceFuturesOpenAlgoOrdersHttp(
             client,
             self.base_endpoint,
         )
@@ -989,6 +1053,34 @@ class BinanceFuturesAccountHttpAPI(BinanceAccountHttpAPI):
                 timestamp=self._timestamp(),
                 algoId=algo_id,
                 clientAlgoId=client_algo_id,
+                recvWindow=recv_window,
+            ),
+        )
+
+    async def query_open_algo_orders(
+        self,
+        symbol: str | None = None,
+        recv_window: str | None = None,
+    ) -> list[BinanceFuturesAlgoOrder]:
+        """
+        Query all currently open algo orders.
+
+        Parameters
+        ----------
+        symbol : str, optional
+            Filter by symbol. If omitted, orders for all symbols returned.
+        recv_window : str, optional
+            The response receive window for the request.
+
+        Returns
+        -------
+        list[BinanceFuturesAlgoOrder]
+
+        """
+        return await self._endpoint_futures_open_algo_orders.get(
+            params=self._endpoint_futures_open_algo_orders.GetParameters(
+                timestamp=self._timestamp(),
+                symbol=BinanceSymbol(symbol) if symbol else None,
                 recvWindow=recv_window,
             ),
         )

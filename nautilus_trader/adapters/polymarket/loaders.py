@@ -254,6 +254,7 @@ class PolymarketDataLoader:
         closed: bool = False,
         archived: bool = False,
         limit: int = 100,
+        offset: int = 0,
         http_client: nautilus_pyo3.HttpClient | None = None,
     ) -> list[dict]:
         """
@@ -269,6 +270,8 @@ class PolymarketDataLoader:
             Include archived markets.
         limit : int, default 100
             Maximum number of markets to return.
+        offset : int, default 0
+            Offset for pagination.
         http_client : nautilus_pyo3.HttpClient, optional
             The HTTP client to use for requests. If not provided, a new client will be created.
 
@@ -284,6 +287,7 @@ class PolymarketDataLoader:
             "closed": str(closed).lower(),
             "archived": str(archived).lower(),
             "limit": str(limit),
+            "offset": str(offset),
         }
         response = await client.get(
             url="https://gamma-api.polymarket.com/markets",
@@ -296,6 +300,63 @@ class PolymarketDataLoader:
             )
 
         return msgspec.json.decode(response.body)
+
+    @staticmethod
+    async def fetch_market_by_slug(
+        slug: str,
+        http_client: nautilus_pyo3.HttpClient | None = None,
+    ) -> dict[str, Any]:
+        """
+        Fetch a single market by slug using the Polymarket Gamma API slug endpoint.
+
+        Parameters
+        ----------
+        slug : str
+            The market slug to fetch.
+        http_client : nautilus_pyo3.HttpClient, optional
+            The HTTP client to use for requests. If not provided, a new client will be created.
+
+        Returns
+        -------
+        dict[str, Any]
+            Market data dictionary.
+
+        Raises
+        ------
+        ValueError
+            If market with the given slug is not found.
+        RuntimeError
+            If HTTP requests fail.
+
+        """
+        client = http_client or nautilus_pyo3.HttpClient()
+        response = await client.get(
+            url=f"https://gamma-api.polymarket.com/markets/slug/{slug}",
+        )
+
+        if response.status == 404:
+            raise ValueError(f"Market with slug '{slug}' not found")
+
+        if response.status != 200:
+            raise RuntimeError(
+                f"HTTP request failed with status {response.status}: {response.body.decode('utf-8')}",
+            )
+
+        data = msgspec.json.decode(response.body)
+
+        if isinstance(data, list):
+            if not data:
+                raise ValueError(f"Market with slug '{slug}' not found")
+            market = data[0]
+        else:
+            market = data
+
+        if not isinstance(market, dict):
+            raise RuntimeError(
+                f"Unexpected response type for slug '{slug}': {type(market).__name__}",
+            )
+
+        return market
 
     @staticmethod
     async def find_market_by_slug(
@@ -323,15 +384,10 @@ class PolymarketDataLoader:
             If market with the given slug is not found.
 
         """
-        markets = await PolymarketDataLoader.fetch_markets(
-            limit=100,
+        return await PolymarketDataLoader.fetch_market_by_slug(
+            slug=slug,
             http_client=http_client,
         )
-        for market in markets:
-            if market.get("slug") == slug:
-                return market
-
-        raise ValueError(f"Market with slug '{slug}' not found in active markets")
 
     @staticmethod
     async def fetch_market_details(

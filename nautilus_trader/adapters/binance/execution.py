@@ -241,6 +241,9 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         self._instrument_ids: dict[str, InstrumentId] = {}
         self._generate_order_status_retries: dict[ClientOrderId, int] = {}
 
+        # Track triggered algo orders - these need to be cancelled via regular endpoint
+        self._triggered_algo_order_ids: set[ClientOrderId] = set()
+
         self._retry_manager_pool = RetryManagerPool[None](
             pool_size=100,
             max_retries=config.max_retries or 0,
@@ -591,12 +594,15 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             if command.open_only:
                 binance_orders = binance_open_orders
             else:
-                for symbol in active_symbols:
+                for active_symbol in active_symbols:
                     # Here we don't pass a `start_time` or `end_time` as order reports appear to go
                     # randomly missing when these are specified. We filter on the Nautilus side below.
                     # Explicitly setting limit to the max lookback of 1000, in the future we should
                     # add pagination.
-                    response = await self._http_account.query_all_orders(symbol=symbol, limit=1_000)
+                    response = await self._http_account.query_all_orders(
+                        symbol=active_symbol,
+                        limit=1_000,
+                    )
                     binance_orders.extend(response)
         except BinanceError as e:
             self._log.exception(f"Cannot generate OrderStatusReport: {e.message}", e)
@@ -605,6 +611,30 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         start_ms = secs_to_millis(command.start.timestamp()) if command.start is not None else None
         end_ms = secs_to_millis(command.end.timestamp()) if command.end is not None else None
 
+        reports = self._parse_order_status_reports(binance_orders, start_ms, end_ms)
+
+        # For futures accounts, also fetch open algo orders (conditional orders)
+        if self._binance_account_type.is_futures:
+            try:
+                algo_reports = await self._generate_algo_order_status_reports(symbol)
+                reports.extend(algo_reports)
+            except BinanceError as e:
+                self._log.warning(f"Cannot generate algo OrderStatusReports: {e.message}")
+
+        self._log_report_receipt(
+            len(reports),
+            "OrderStatusReport",
+            command.log_receipt_level,
+        )
+
+        return reports
+
+    def _parse_order_status_reports(
+        self,
+        binance_orders: list[BinanceOrder],
+        start_ms: int | None,
+        end_ms: int | None,
+    ) -> list[OrderStatusReport]:
         reports: list[OrderStatusReport] = []
         for order in binance_orders:
             if start_ms is not None and order.time < start_ms:
@@ -623,12 +653,51 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             )
             self._log.debug(f"Received {report}")
             reports.append(report)
+        return reports
 
-        self._log_report_receipt(
-            len(reports),
-            "OrderStatusReport",
-            command.log_receipt_level,
-        )
+    async def _generate_algo_order_status_reports(
+        self,
+        symbol: str | None,
+    ) -> list[OrderStatusReport]:
+        reports: list[OrderStatusReport] = []
+
+        # Import here to avoid circular import
+        from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesEnumParser
+        from nautilus_trader.adapters.binance.futures.http.account import BinanceFuturesAccountHttpAPI
+
+        if not isinstance(self._http_account, BinanceFuturesAccountHttpAPI):
+            return reports
+
+        # This method only runs for futures, so enum_parser is BinanceFuturesEnumParser
+        assert isinstance(self._enum_parser, BinanceFuturesEnumParser)
+
+        open_algo_orders = await self._http_account.query_open_algo_orders(symbol)
+        self._log.debug(f"Fetched {len(open_algo_orders)} open algo orders")
+
+        for algo_order in open_algo_orders:
+            try:
+                report = algo_order.parse_to_order_status_report(
+                    account_id=self.account_id,
+                    instrument_id=self._get_cached_instrument_id(algo_order.symbol),
+                    report_id=UUID4(),
+                    enum_parser=self._enum_parser,
+                    ts_init=self._clock.timestamp_ns(),
+                )
+            except ValueError as e:
+                # Close-position orders don't have quantity, skip them
+                self._log.warning(f"Skipping algo order during reconciliation: {e}")
+                continue
+
+            self._log.debug(f"Received algo {report}")
+            reports.append(report)
+
+            # Track triggered algo orders so cancel uses correct endpoint
+            if algo_order.actualOrderId and report.client_order_id:
+                self._triggered_algo_order_ids.add(report.client_order_id)
+                self._log.debug(
+                    f"Added {report.client_order_id} to triggered algo order set "
+                    f"(actualOrderId={algo_order.actualOrderId})",
+                )
 
         return reports
 
@@ -1216,8 +1285,15 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
     async def _modify_order(self, command: ModifyOrder) -> None:
         if self._binance_account_type.is_spot_or_margin:
-            self._log.error(
-                "Cannot modify order: only supported for `USDT_FUTURES` and `COIN_FUTURES` account types",
+            reason = "only supported for `USDT_FUTURES` and `COIN_FUTURES` account types"
+            self._log.error(f"Cannot modify order: {reason}")
+            self.generate_order_modify_rejected(
+                command.strategy_id,
+                command.instrument_id,
+                command.client_order_id,
+                command.venue_order_id,
+                reason,
+                self._clock.timestamp_ns(),
             )
             return
 
@@ -1226,10 +1302,25 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             self._log.error(f"{command.client_order_id!r} not found to modify")
             return
 
-        if order.order_type != OrderType.LIMIT:
-            self._log.error(
-                "Cannot modify order: "
-                f"only LIMIT orders supported by the venue (was {order.type_string()})",
+        # Check if order can be modified via regular endpoint
+        # - LIMIT orders can always be modified
+        # - Triggered STOP_LIMIT/LIMIT_IF_TOUCHED become LIMIT orders in matching engine
+        is_limit = order.order_type == OrderType.LIMIT
+        is_triggered_limit_algo = (
+            order.order_type in (OrderType.STOP_LIMIT, OrderType.LIMIT_IF_TOUCHED)
+            and command.client_order_id in self._triggered_algo_order_ids
+        )
+
+        if not is_limit and not is_triggered_limit_algo:
+            reason = f"only LIMIT orders supported by the venue (was {order.type_string()})"
+            self._log.error(f"Cannot modify order: {reason}")
+            self.generate_order_modify_rejected(
+                command.strategy_id,
+                command.instrument_id,
+                command.client_order_id,
+                command.venue_order_id,
+                reason,
+                self._clock.timestamp_ns(),
             )
             return
 
@@ -1404,7 +1495,10 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             and order.order_type in BINANCE_FUTURES_ALGO_ORDER_TYPES
         )
 
-        if is_algo_order:
+        # Check if algo order has been triggered - use regular endpoint in that case
+        is_triggered = client_order_id in self._triggered_algo_order_ids
+
+        if is_algo_order and not is_triggered:
             response = await self._http_account.cancel_algo_order(  # type: ignore [attr-defined]
                 algo_id=int(venue_order_id.value) if venue_order_id else None,
                 client_algo_id=client_order_id.value if client_order_id else None,
@@ -1414,6 +1508,11 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
                 f"code={response.code}, msg={response.msg}",
             )
         else:
+            if is_triggered:
+                self._log.debug(
+                    f"Algo order {client_order_id} has been triggered, "
+                    f"using regular cancel endpoint with venue_order_id={venue_order_id}",
+                )
             await self._http_account.cancel_order(
                 symbol=instrument_id.symbol.value,
                 order_id=int(venue_order_id.value) if venue_order_id else None,

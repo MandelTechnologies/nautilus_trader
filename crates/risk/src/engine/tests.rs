@@ -599,7 +599,7 @@ fn test_given_random_command_then_logs_and_continues(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(100, 0))
+        .price(Price::new(100.0, 0))
         .quantity(Quantity::from("1000"))
         .build();
 
@@ -665,7 +665,7 @@ fn test_submit_order_with_default_settings_then_sends_to_client(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(100, 0))
+        .price(Price::new(100.0, 0))
         .quantity(Quantity::from("1000"))
         .build();
 
@@ -720,7 +720,7 @@ fn test_submit_order_when_risk_bypassed_sends_to_execution_engine(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(100, 0))
+        .price(Price::new(100.0, 0))
         .quantity(Quantity::from("1000"))
         .build();
 
@@ -1060,7 +1060,7 @@ fn test_submit_order_reduce_only_order_with_custom_position_id_not_open_then_den
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(100, 0))
+        .price(Price::new(100.0, 0))
         .quantity(Quantity::from("1000"))
         .reduce_only(true)
         .build();
@@ -1256,7 +1256,7 @@ fn test_submit_order_when_instrument_not_in_cache_then_denies(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(100, 0))
+        .price(Price::new(100.0, 0))
         .quantity(Quantity::from("1000"))
         .build();
 
@@ -1400,7 +1400,7 @@ fn test_submit_order_when_invalid_negative_price_and_not_option_then_denies(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(-1, 1)) // <- Invalid price
+        .price(Price::new(-0.1, 1)) // <- Invalid price (negative)
         .quantity(Quantity::from("1000"))
         .build();
 
@@ -1431,7 +1431,7 @@ fn test_submit_order_when_invalid_negative_price_and_not_option_then_denies(
     );
     assert_eq!(
         saved_process_messages.first().unwrap().message().unwrap(),
-        Ustr::from("price 0.0 invalid (<= 0)")
+        Ustr::from("price -0.1 invalid (<= 0)")
     );
 }
 
@@ -1467,7 +1467,7 @@ fn test_submit_order_when_negative_price_for_futures_spread_then_allows(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_futures_spread.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(-17, 0)) // Negative price is valid for spreads
+        .price(Price::new(-17.0, 2)) // Negative price is valid for spreads
         .quantity(Quantity::from("1"))
         .build();
 
@@ -1529,7 +1529,7 @@ fn test_submit_order_when_negative_price_for_option_spread_then_allows(
     let order = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_option_spread.id())
         .side(OrderSide::Buy)
-        .price(Price::from_raw(-250, 2)) // Negative price -2.50 is valid for spreads
+        .price(Price::new(-2.50, 2)) // Negative price -2.50 is valid for spreads
         .quantity(Quantity::from("1"))
         .build();
 
@@ -1595,7 +1595,7 @@ fn test_submit_order_when_invalid_trigger_price_then_denies(
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("1000").unwrap())
-        .price(Price::from_raw(1, 1))
+        .price(Price::new(0.1, 1))
         .trigger_price(Price::from_raw(1_000_000_000_000_000, FIXED_PRECISION)) // <- Invalid price
         .build();
 
@@ -2723,14 +2723,14 @@ fn test_submit_order_list_when_trading_halted_then_denies_orders(
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .trigger_price(Price::from_raw(1, 1))
+        .trigger_price(Price::new(0.1, 1))
         .build();
 
     let take_profit = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .price(Price::from_raw(11, 2))
+        .price(Price::new(0.11, 2))
         .build();
 
     let bracket = OrderList::new(
@@ -2862,7 +2862,7 @@ fn test_submit_order_list_buys_when_trading_reducing_then_denies_orders(
         .instrument_id(instrument_xbtusd_bitmex.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .trigger_price(Price::from_raw(11, 1))
+        .trigger_price(Price::new(1.1, 1))
         .build();
 
     // TODO: attempt to add with overflow
@@ -2870,7 +2870,7 @@ fn test_submit_order_list_buys_when_trading_reducing_then_denies_orders(
     //     .instrument_id(instrument_xbtusd_bitmex.id())
     //     .side(OrderSide::Buy)
     //     .quantity(Quantity::from_str("100").unwrap())
-    //     .price(Price::from_raw(12, 1))
+    //     .price(Price::new(1.2, 1))
     //     .build();
 
     let bracket = OrderList::new(
@@ -2995,14 +2995,14 @@ fn test_submit_order_list_sells_when_trading_reducing_then_denies_orders(
         .instrument_id(instrument_xbtusd_bitmex.id())
         .side(OrderSide::Sell)
         .quantity(Quantity::from_str("100").unwrap())
-        .trigger_price(Price::from_raw(11, 1))
+        .trigger_price(Price::new(1.1, 1))
         .build();
 
     let take_profit = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_xbtusd_bitmex.id())
         .side(OrderSide::Sell)
         .quantity(Quantity::from_str("100").unwrap())
-        .price(Price::from_raw(12, 1))
+        .price(Price::new(1.2, 1))
         .build();
 
     let bracket = OrderList::new(
@@ -3084,14 +3084,14 @@ fn test_submit_bracket_order_when_instrument_not_in_cache_then_denies(
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .trigger_price(Price::from_raw(1, 1))
+        .trigger_price(Price::new(0.1, 1))
         .build();
 
     let take_profit = OrderTestBuilder::new(OrderType::Limit)
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .price(Price::from_raw(1001, 4))
+        .price(Price::new(0.1001, 4))
         .build();
 
     let bracket = OrderList::new(
@@ -3186,6 +3186,7 @@ fn test_modify_order_when_no_order_found_logs_error(
         None,
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
+        None,
     )
     .unwrap();
 
@@ -3227,7 +3228,7 @@ fn test_modify_order_beyond_rate_limit_then_rejects(
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .trigger_price(Price::from_raw(10001, 4))
+        .trigger_price(Price::new(1.0001, 4))
         .build();
 
     simple_cache
@@ -3245,10 +3246,11 @@ fn test_modify_order_beyond_rate_limit_then_rejects(
             client_order_id,
             venue_order_id,
             Some(Quantity::from_str("100").unwrap()),
-            Some(Price::from_raw(100011 + i, 5)),
+            Some(Price::new(1.00011 + (i as f64) * 0.00001, 5)),
             None,
             UUID4::new(),
             risk_engine.clock.borrow().timestamp_ns(),
+            None,
         )
         .unwrap();
 
@@ -3305,7 +3307,7 @@ fn test_modify_order_with_default_settings_then_sends_to_client(
         .instrument_id(instrument_audusd.id())
         .side(OrderSide::Buy)
         .quantity(Quantity::from_str("100").unwrap())
-        .trigger_price(Price::from_raw(10001, 4))
+        .trigger_price(Price::new(1.0001, 4))
         .build();
 
     simple_cache
@@ -3338,10 +3340,11 @@ fn test_modify_order_with_default_settings_then_sends_to_client(
         client_order_id,
         venue_order_id,
         Some(Quantity::from_str("100").unwrap()),
-        Some(Price::from_raw(100011, 5)),
+        Some(Price::new(1.00011, 5)),
         None,
         UUID4::new(),
         risk_engine.clock.borrow().timestamp_ns(),
+        None,
     )
     .unwrap();
 

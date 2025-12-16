@@ -36,12 +36,17 @@ use arrow::{
     ipc::writer::StreamWriter,
     record_batch::RecordBatch,
 };
+// Only the i64/u64 or i128/u128 variants are used depending on high-precision feature
+#[allow(unused_imports)]
+use nautilus_model::types::fixed::{
+    correct_raw_i64, correct_raw_i128, correct_raw_u64, correct_raw_u128,
+};
 use nautilus_model::{
     data::{
         Data, IndexPriceUpdate, MarkPriceUpdate, bar::Bar, close::InstrumentClose,
         delta::OrderBookDelta, depth::OrderBookDepth10, quote::QuoteTick, trade::TradeTick,
     },
-    types::{price::PriceRaw, quantity::QuantityRaw},
+    types::{PRICE_ERROR, PRICE_UNDEF, QUANTITY_UNDEF, price::PriceRaw, quantity::QuantityRaw},
 };
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -95,6 +100,58 @@ fn get_raw_quantity(bytes: &[u8]) -> QuantityRaw {
             .try_into()
             .expect("Quantity raw bytes must be exactly the size of QuantityRaw"),
     )
+}
+
+/// Gets raw price bytes and corrects for floating-point precision errors in stored data.
+///
+/// Data from catalogs may have been created with `int(value * FIXED_SCALAR)` which
+/// introduces floating-point errors. This corrects the raw value to the nearest valid
+/// multiple of the scale factor for the given precision.
+///
+/// Sentinel values (`PRICE_UNDEF`, `PRICE_ERROR`) are preserved unchanged.
+#[inline]
+fn get_corrected_raw_price(bytes: &[u8], precision: u8) -> PriceRaw {
+    let raw = get_raw_price(bytes);
+
+    // Preserve sentinel values unchanged
+    if raw == PRICE_UNDEF || raw == PRICE_ERROR {
+        return raw;
+    }
+
+    #[cfg(feature = "high-precision")]
+    {
+        correct_raw_i128(raw, precision)
+    }
+    #[cfg(not(feature = "high-precision"))]
+    {
+        correct_raw_i64(raw, precision)
+    }
+}
+
+/// Gets raw quantity bytes and corrects for floating-point precision errors in stored data.
+///
+/// Data from catalogs may have been created with `int(value * FIXED_SCALAR)` which
+/// introduces floating-point errors. This corrects the raw value to the nearest valid
+/// multiple of the scale factor for the given precision.
+///
+/// Sentinel values (`QUANTITY_UNDEF`) are preserved unchanged.
+#[inline]
+fn get_corrected_raw_quantity(bytes: &[u8], precision: u8) -> QuantityRaw {
+    let raw = get_raw_quantity(bytes);
+
+    // Preserve sentinel values unchanged
+    if raw == QUANTITY_UNDEF {
+        return raw;
+    }
+
+    #[cfg(feature = "high-precision")]
+    {
+        correct_raw_u128(raw, precision)
+    }
+    #[cfg(not(feature = "high-precision"))]
+    {
+        correct_raw_u64(raw, precision)
+    }
 }
 
 /// Provides Apache Arrow schema definitions for data types.

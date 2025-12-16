@@ -33,7 +33,7 @@ use nautilus_model::{
 
 use super::{
     DecodeDataFromRecordBatch, EncodingError, KEY_INSTRUMENT_ID, KEY_PRICE_PRECISION,
-    KEY_SIZE_PRECISION, extract_column, get_raw_price, get_raw_quantity,
+    KEY_SIZE_PRECISION, extract_column, get_corrected_raw_price, get_corrected_raw_quantity,
 };
 use crate::arrow::{ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch};
 
@@ -180,10 +180,15 @@ impl DecodeFromRecordBatch for TradeTick {
 
         let result: Result<Vec<Self>, EncodingError> = (0..record_batch.num_rows())
             .map(|i| {
-                let price = Price::from_raw(get_raw_price(price_values.value(i)), price_precision);
-
-                let size =
-                    Quantity::from_raw(get_raw_quantity(size_values.value(i)), size_precision);
+                // Use corrected raw values to handle floating-point precision errors in stored data
+                let price = Price::from_raw(
+                    get_corrected_raw_price(price_values.value(i), price_precision),
+                    price_precision,
+                );
+                let size = Quantity::from_raw(
+                    get_corrected_raw_quantity(size_values.value(i), size_precision),
+                    size_precision,
+                );
                 let aggressor_side_value = aggressor_side_values.value(i);
                 let aggressor_side = AggressorSide::from_repr(aggressor_side_value as usize)
                     .ok_or_else(|| {
@@ -222,9 +227,6 @@ impl DecodeDataFromRecordBatch for TradeTick {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -369,10 +371,10 @@ mod tests {
         let instrument_id = InstrumentId::from("AAPL.XNAS");
         let metadata = TradeTick::get_metadata(&instrument_id, 2, 0);
 
-        let price = FixedSizeBinaryArray::from(vec![
-            &(1_000_000_000_000 as PriceRaw).to_le_bytes(),
-            &(1_010_000_000_000 as PriceRaw).to_le_bytes(),
-        ]);
+        let raw_price1 = (100.00 * FIXED_SCALAR) as PriceRaw;
+        let raw_price2 = (101.00 * FIXED_SCALAR) as PriceRaw;
+        let price =
+            FixedSizeBinaryArray::from(vec![&raw_price1.to_le_bytes(), &raw_price2.to_le_bytes()]);
 
         let size = FixedSizeBinaryArray::from(vec![
             &((1000.0 * FIXED_SCALAR) as QuantityRaw).to_le_bytes(),
@@ -398,7 +400,7 @@ mod tests {
 
         let decoded_data = TradeTick::decode_batch(&metadata, record_batch).unwrap();
         assert_eq!(decoded_data.len(), 2);
-        assert_eq!(decoded_data[0].price, Price::from_raw(1_000_000_000_000, 2));
-        assert_eq!(decoded_data[1].price, Price::from_raw(1_010_000_000_000, 2));
+        assert_eq!(decoded_data[0].price, Price::from_raw(raw_price1, 2));
+        assert_eq!(decoded_data[1].price, Price::from_raw(raw_price2, 2));
     }
 }

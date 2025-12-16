@@ -35,12 +35,9 @@ use nautilus_model::{
 
 use super::{
     DecodeDataFromRecordBatch, EncodingError, KEY_INSTRUMENT_ID, KEY_PRICE_PRECISION,
-    KEY_SIZE_PRECISION, extract_column,
+    KEY_SIZE_PRECISION, extract_column, get_corrected_raw_price, get_corrected_raw_quantity,
 };
-use crate::arrow::{
-    ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch, get_raw_price,
-    get_raw_quantity,
-};
+use crate::arrow::{ArrowSchemaProvider, Data, DecodeFromRecordBatch, EncodeToRecordBatch};
 
 fn get_field_data() -> Vec<(&'static str, DataType)> {
     vec![
@@ -339,21 +336,28 @@ impl DecodeFromRecordBatch for OrderBookDepth10 {
                 let mut bid_count_arr = [0u32; DEPTH10_LEN];
                 let mut ask_count_arr = [0u32; DEPTH10_LEN];
 
+                // Use corrected raw values to handle floating-point precision errors in stored data
                 for i in 0..DEPTH10_LEN {
                     bids[i] = BookOrder::new(
                         OrderSide::Buy,
-                        Price::from_raw(get_raw_price(bid_prices[i].value(row)), price_precision),
+                        Price::from_raw(
+                            get_corrected_raw_price(bid_prices[i].value(row), price_precision),
+                            price_precision,
+                        ),
                         Quantity::from_raw(
-                            get_raw_quantity(bid_sizes[i].value(row)),
+                            get_corrected_raw_quantity(bid_sizes[i].value(row), size_precision),
                             size_precision,
                         ),
                         0, // Order id always zero
                     );
                     asks[i] = BookOrder::new(
                         OrderSide::Sell,
-                        Price::from_raw(get_raw_price(ask_prices[i].value(row)), price_precision),
+                        Price::from_raw(
+                            get_corrected_raw_price(ask_prices[i].value(row), price_precision),
+                            price_precision,
+                        ),
                         Quantity::from_raw(
-                            get_raw_quantity(ask_sizes[i].value(row)),
+                            get_corrected_raw_quantity(ask_sizes[i].value(row), size_precision),
                             size_precision,
                         ),
                         0, // Order id always zero
@@ -390,9 +394,6 @@ impl DecodeDataFromRecordBatch for OrderBookDepth10 {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use arrow::datatypes::{DataType, Field};
@@ -404,6 +405,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+    use crate::arrow::{get_raw_price, get_raw_quantity};
 
     #[rstest]
     fn test_get_schema() {

@@ -26,7 +26,7 @@ use std::{
     collections::HashMap,
     num::NonZeroU32,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -102,6 +102,13 @@ const BITMEX_DEFAULT_RATE_LIMIT_PER_MINUTE_UNAUTHENTICATED: u32 = 30;
 
 const BITMEX_GLOBAL_RATE_KEY: &str = "bitmex:global";
 const BITMEX_MINUTE_RATE_KEY: &str = "bitmex:minute";
+
+static RATE_LIMIT_KEYS: LazyLock<Vec<Ustr>> = LazyLock::new(|| {
+    vec![
+        Ustr::from(BITMEX_GLOBAL_RATE_KEY),
+        Ustr::from(BITMEX_MINUTE_RATE_KEY),
+    ]
+});
 
 /// Represents a BitMEX HTTP response.
 #[derive(Debug, Serialize, Deserialize)]
@@ -295,10 +302,7 @@ impl BitmexRawHttpClient {
     }
 
     fn rate_limit_keys() -> Vec<Ustr> {
-        vec![
-            Ustr::from(BITMEX_GLOBAL_RATE_KEY),
-            Ustr::from(BITMEX_MINUTE_RATE_KEY),
-        ]
+        RATE_LIMIT_KEYS.clone()
     }
 
     /// Cancel all pending HTTP requests.
@@ -376,14 +380,9 @@ impl BitmexRawHttpClient {
             None
         };
 
-        let full_endpoint = if let Some(ref query) = params_str {
-            if query.is_empty() {
-                endpoint.clone()
-            } else {
-                format!("{endpoint}?{query}")
-            }
-        } else {
-            endpoint.clone()
+        let full_endpoint = match params_str {
+            Some(ref query) if !query.is_empty() => format!("{endpoint}?{query}"),
+            _ => endpoint.clone(),
         };
 
         let url = format!("{}{}", self.base_url, full_endpoint);
@@ -2197,10 +2196,6 @@ impl BitmexHttpClient {
         parse_position_report(response, &instrument, ts_init)
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

@@ -48,6 +48,7 @@ class BinanceFuturesContractType(Enum):
     NEXT_QUARTER = "NEXT_QUARTER"
     PERPETUAL_DELIVERING = "PERPETUAL_DELIVERING"
     CURRENT_QUARTER_DELIVERING = "CURRENT_QUARTER DELIVERING"  # Underscore omission intentional
+    TRADIFI_PERPETUAL = "TRADIFI_PERPETUAL"  # TradFi-Perps (stock/commodity perpetuals)
 
 
 @unique

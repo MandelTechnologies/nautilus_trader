@@ -1058,6 +1058,7 @@ mod tests {
                     venue_order_id: venue_order_id1,
                     command_id: Default::default(),
                     ts_init: UnixNanos::default(),
+                    params: None,
                 },
                 CancelOrder {
                     trader_id,
@@ -1068,10 +1069,12 @@ mod tests {
                     venue_order_id: venue_order_id2,
                     command_id: Default::default(),
                     ts_init: UnixNanos::default(),
+                    params: None,
                 },
             ],
             command_id: Default::default(),
             ts_init: UnixNanos::default(),
+            params: None,
         };
 
         // Verify we can build the payload structure
@@ -1103,6 +1106,7 @@ mod tests {
             cancels: vec![],
             command_id: Default::default(),
             ts_init: UnixNanos::default(),
+            params: None,
         };
 
         let payload: Vec<(InstrumentId, Option<ClientOrderId>, Option<VenueOrderId>)> =

@@ -16,6 +16,7 @@
 use std::{env, fmt::Debug, time::Duration};
 
 use nautilus_core::{UnixNanos, consts::NAUTILUS_USER_AGENT};
+use nautilus_cryptography::providers::install_cryptographic_provider;
 use nautilus_model::instruments::InstrumentAny;
 use reqwest::Response;
 
@@ -85,6 +86,7 @@ impl TardisHttpClient {
         let base_url = base_url.map_or_else(|| TARDIS_BASE_URL.to_string(), ToString::to_string);
         let timeout = timeout_secs.map_or_else(|| Duration::from_secs(60), Duration::from_secs);
 
+        install_cryptographic_provider();
         let client = reqwest::Client::builder()
             .user_agent(NAUTILUS_USER_AGENT)
             .timeout(timeout)

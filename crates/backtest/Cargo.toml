@@ -21,7 +21,7 @@ name = "nautilus_backtest"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-default = []
+default = ["streaming"]
 streaming = ["nautilus-persistence", "nautilus-system/streaming"]
 extension-module = [
   "nautilus-common/extension-module",

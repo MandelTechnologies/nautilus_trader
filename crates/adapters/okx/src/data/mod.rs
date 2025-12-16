@@ -315,20 +315,20 @@ impl DataClient for OKXDataClient {
             is_demo = self.config.is_demo,
             http_proxy_url = ?self.config.http_proxy_url,
             ws_proxy_url = ?self.config.ws_proxy_url,
-            "Starting OKX data client"
+            "Started"
         );
         Ok(())
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
-        tracing::info!("Stopping OKX data client {id}", id = self.client_id);
+        tracing::info!("Stopping {id}", id = self.client_id);
         self.cancellation_token.cancel();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
     }
 
     fn reset(&mut self) -> anyhow::Result<()> {
-        tracing::debug!("Resetting OKX data client {id}", id = self.client_id);
+        tracing::debug!("Resetting {id}", id = self.client_id);
         self.is_connected.store(false, Ordering::Relaxed);
         self.cancellation_token = CancellationToken::new();
         self.tasks.clear();
@@ -340,7 +340,7 @@ impl DataClient for OKXDataClient {
     }
 
     fn dispose(&mut self) -> anyhow::Result<()> {
-        tracing::debug!("Disposing OKX data client {id}", id = self.client_id);
+        tracing::debug!("Disposing {id}", id = self.client_id);
         self.stop()
     }
 

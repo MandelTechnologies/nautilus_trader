@@ -44,6 +44,8 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use super::models::PerpetualMarket;
+#[cfg(test)]
+use crate::common::enums::DydxTransferType;
 use crate::{
     common::{
         enums::{DydxMarketStatus, DydxOrderExecution, DydxOrderType, DydxTimeInForce},
@@ -315,10 +317,6 @@ pub fn parse_instrument_any(
 
     Ok(InstrumentAny::CryptoPerpetual(instrument))
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -792,9 +790,37 @@ mod tests {
         assert_eq!(response.transfers.len(), 1);
 
         let deposit = &response.transfers[0];
-        assert_eq!(deposit.transfer_type, "DEPOSIT");
+        assert_eq!(deposit.transfer_type, DydxTransferType::Deposit);
         assert_eq!(deposit.asset, "USDC");
         assert_eq!(deposit.amount.to_string(), "45.334703");
+    }
+
+    #[rstest]
+    fn test_transfer_type_enum_serde() {
+        // Test all transfer type variants serialize/deserialize correctly
+        let test_cases = vec![
+            (DydxTransferType::Deposit, "\"DEPOSIT\""),
+            (DydxTransferType::Withdrawal, "\"WITHDRAWAL\""),
+            (DydxTransferType::TransferIn, "\"TRANSFER_IN\""),
+            (DydxTransferType::TransferOut, "\"TRANSFER_OUT\""),
+        ];
+
+        for (variant, expected_json) in test_cases {
+            // Test serialization
+            let serialized = serde_json::to_string(&variant).expect("Failed to serialize");
+            assert_eq!(
+                serialized, expected_json,
+                "Serialization failed for {variant:?}"
+            );
+
+            // Test deserialization
+            let deserialized: DydxTransferType =
+                serde_json::from_str(&serialized).expect("Failed to deserialize");
+            assert_eq!(
+                deserialized, variant,
+                "Deserialization failed for {variant:?}"
+            );
+        }
     }
 }
 

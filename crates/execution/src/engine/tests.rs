@@ -1101,6 +1101,7 @@ fn test_cancel_order_for_already_closed_order_logs_and_does_nothing(
         venue_order_id: VenueOrderId::from("V-001"),
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
+        params: None,
     };
 
     execution_engine.execute(&TradingCommand::CancelOrder(cancel_order));
@@ -1565,6 +1566,7 @@ fn test_modify_order_for_already_closed_order_logs_and_does_nothing(
         trigger_price: order.trigger_price(),    // Keep same trigger price
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
+        params: None,
     };
     execution_engine.execute(&TradingCommand::ModifyOrder(modify_order));
     let cache = execution_engine.cache.borrow();
@@ -5487,6 +5489,7 @@ fn test_cancel_order_removes_from_own_book() {
         venue_order_id: VenueOrderId::from("V-001"),
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
+        params: None,
     };
 
     let cancel_order_ask = CancelOrder {
@@ -5498,6 +5501,7 @@ fn test_cancel_order_removes_from_own_book() {
         venue_order_id: VenueOrderId::from("V-002"),
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
+        params: None,
     };
 
     execution_engine.execute(&TradingCommand::CancelOrder(cancel_order_bid));
@@ -5651,6 +5655,7 @@ fn test_own_book_status_filtering() {
         venue_order_id: VenueOrderId::from("V-001"),
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
+        params: None,
     };
 
     let cancel_order_ask = CancelOrder {
@@ -5662,6 +5667,7 @@ fn test_own_book_status_filtering() {
         venue_order_id: VenueOrderId::from("V-002"),
         command_id: UUID4::new(),
         ts_init: UnixNanos::default(),
+        params: None,
     };
 
     execution_engine.execute(&TradingCommand::CancelOrder(cancel_order_bid));

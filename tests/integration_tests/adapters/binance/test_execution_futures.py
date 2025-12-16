@@ -13,6 +13,8 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import asyncio
+import json
 from decimal import Decimal
 
 import pytest
@@ -32,6 +34,9 @@ from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.engine import DataEngine
 from nautilus_trader.execution.engine import ExecutionEngine
+from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.messages import SubmitOrderList
 from nautilus_trader.model.enums import OrderSide
@@ -39,6 +44,8 @@ from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.enums import TrailingOffsetType
 from nautilus_trader.model.enums import TriggerType
 from nautilus_trader.model.identifiers import AccountId
+from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.portfolio.portfolio import Portfolio
@@ -46,6 +53,7 @@ from nautilus_trader.risk.engine import RiskEngine
 from nautilus_trader.test_kit.functions import eventually
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 from nautilus_trader.trading.strategy import Strategy
 
@@ -1430,3 +1438,550 @@ class TestBinanceFuturesExecutionClient:
         call_args = mock_account.set_leverage.call_args
         assert call_args[0][0] == ETHUSDT_PERP_BINANCE.id
         assert call_args[0][1] == Decimal(20)
+
+    # -------------------------------------------------------------------------
+    # Algo Order Cancellation Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_cancel_non_triggered_algo_order_uses_algo_endpoint(self, mocker):
+        """
+        Test that canceling an algo order that has NOT been triggered uses the algo
+        cancel endpoint (/fapi/v1/algoOrder).
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+        )
+
+        order = self.strategy.order_factory.stop_market(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(10),
+            trigger_price=Price.from_str("10099.00"),
+        )
+
+        # Drive order through lifecycle to ACCEPTED state
+        order.apply(TestEventStubs.order_submitted(order))
+        order.apply(TestEventStubs.order_accepted(order))
+        self.cache.add_order(order, None)
+
+        venue_order_id = VenueOrderId("1000000033225453")  # Algo ID format
+
+        # Order is NOT in triggered set
+        assert order.client_order_id not in self.exec_client._triggered_algo_order_ids
+
+        cancel_order = CancelOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=venue_order_id,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        self.exec_client.cancel_order(cancel_order)
+        await eventually(lambda: mock_send_request.call_args)
+
+        # Assert - must use algo cancel endpoint
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.DELETE
+        assert request[0][1] == "/fapi/v1/algoOrder"
+        assert request[1]["payload"]["clientAlgoId"] == order.client_order_id.value
+
+    @pytest.mark.asyncio
+    async def test_cancel_triggered_algo_order_uses_regular_endpoint(self, mocker):
+        """
+        Test that canceling an algo order that HAS been triggered uses the regular
+        cancel endpoint (/fapi/v1/order).
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+        )
+
+        order = self.strategy.order_factory.stop_limit(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(10),
+            price=Price.from_str("10050.00"),
+            trigger_price=Price.from_str("10099.00"),
+        )
+
+        # Drive order through lifecycle to ACCEPTED state
+        order.apply(TestEventStubs.order_submitted(order))
+        order.apply(TestEventStubs.order_accepted(order))
+        self.cache.add_order(order, None)
+
+        # Matching engine order ID (after trigger)
+        matching_engine_order_id = VenueOrderId("88937381063")
+
+        # Add to triggered set - this is what happens when TRIGGERED status is received
+        self.exec_client._triggered_algo_order_ids.add(order.client_order_id)
+
+        cancel_order = CancelOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=matching_engine_order_id,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        self.exec_client.cancel_order(cancel_order)
+        await eventually(lambda: mock_send_request.call_args)
+
+        # Assert - must use regular cancel endpoint with matching engine order ID
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.DELETE
+        assert request[0][1] == "/fapi/v1/order"
+        assert request[1]["payload"]["symbol"] == "ETHUSDT"
+        assert request[1]["payload"]["orderId"] == 88937381063
+
+    @pytest.mark.asyncio
+    async def test_query_open_algo_orders(self, mocker):
+        """
+        Test that query_open_algo_orders endpoint is called correctly.
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=b"[]",  # Empty list
+        )
+
+        # Act
+        result = await self.exec_client._futures_http_account.query_open_algo_orders()
+
+        # Assert
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.GET
+        assert request[0][1] == "/fapi/v1/openAlgoOrders"
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_query_open_algo_orders_with_symbol(self, mocker):
+        """
+        Test that query_open_algo_orders endpoint is called with symbol filter.
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=b"[]",
+        )
+
+        # Act
+        await self.exec_client._futures_http_account.query_open_algo_orders(symbol="ETHUSDT")
+
+        # Assert
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.GET
+        assert request[0][1] == "/fapi/v1/openAlgoOrders"
+        assert request[1]["payload"]["symbol"] == "ETHUSDT"
+
+    @pytest.mark.asyncio
+    async def test_reconciliation_populates_triggered_set_for_triggered_algo_orders(self, mocker):
+        """
+        Test that reconciliation populates _triggered_algo_order_ids for algo orders
+        that have actualOrderId (i.e., have been triggered).
+        """
+        # Arrange - Mock response with a triggered algo order (has actualOrderId)
+        triggered_algo_order = {
+            "algoId": 1000000033225453,
+            "clientAlgoId": "O-20251211-053131-TEST-000-1",
+            "algoType": "CONDITIONAL",
+            "orderType": "STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "BUY",
+            "positionSide": "BOTH",
+            "quantity": "38",
+            "algoStatus": "TRIGGERED",
+            "triggerPrice": "0.13855",
+            "workingType": "CONTRACT_PRICE",
+            "actualOrderId": "88937381063",  # This indicates triggered
+        }
+
+        mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps([triggered_algo_order]).encode(),
+        )
+
+        # Clear the triggered set
+        self.exec_client._triggered_algo_order_ids.clear()
+
+        # Act
+        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+
+        # Assert - ClientOrderId should be in triggered set
+        assert len(reports) == 1
+        client_order_id = ClientOrderId("O-20251211-053131-TEST-000-1")
+        assert client_order_id in self.exec_client._triggered_algo_order_ids
+
+    @pytest.mark.asyncio
+    async def test_reconciliation_does_not_populate_triggered_set_for_non_triggered_algo_orders(
+        self,
+        mocker,
+    ):
+        """
+        Test that reconciliation does NOT populate _triggered_algo_order_ids for algo
+        orders without actualOrderId (i.e., not yet triggered).
+        """
+        # Arrange - Mock response with a non-triggered algo order (no actualOrderId)
+        non_triggered_algo_order = {
+            "algoId": 1000000033225454,
+            "clientAlgoId": "O-20251211-053131-TEST-000-2",
+            "algoType": "CONDITIONAL",
+            "orderType": "STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "positionSide": "BOTH",
+            "quantity": "10",
+            "algoStatus": "NEW",
+            "triggerPrice": "5000.00",
+            "workingType": "CONTRACT_PRICE",
+            # No actualOrderId - not triggered yet
+        }
+
+        mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps([non_triggered_algo_order]).encode(),
+        )
+
+        # Clear the triggered set
+        self.exec_client._triggered_algo_order_ids.clear()
+
+        # Act
+        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+
+        # Assert - ClientOrderId should NOT be in triggered set
+        assert len(reports) == 1
+        client_order_id = ClientOrderId("O-20251211-053131-TEST-000-2")
+        assert client_order_id not in self.exec_client._triggered_algo_order_ids
+
+    @pytest.mark.asyncio
+    async def test_algo_order_trailing_offset_converts_percent_to_basis_points(self, mocker):
+        """
+        Test that callbackRate from Binance (in percent) is converted to basis points.
+
+        Binance sends 1.0 for 1%, which should become 100 basis points.
+
+        """
+        # Arrange - Mock response with trailing stop order with 1.5% callback rate
+        trailing_stop_order = {
+            "algoId": 1000000033225455,
+            "clientAlgoId": "O-20251211-053131-TEST-000-3",
+            "algoType": "CONDITIONAL",
+            "orderType": "TRAILING_STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "positionSide": "BOTH",
+            "quantity": "10",
+            "algoStatus": "NEW",
+            "activatePrice": "5000.00",
+            "callbackRate": "1.5",  # 1.5% from Binance
+            "workingType": "CONTRACT_PRICE",
+        }
+
+        mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps([trailing_stop_order]).encode(),
+        )
+
+        # Act
+        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+
+        # Assert - trailing_offset should be 150 basis points (1.5% * 100)
+        assert len(reports) == 1
+        report = reports[0]
+        assert report.trailing_offset_type == TrailingOffsetType.BASIS_POINTS
+        assert report.trailing_offset == 150  # 1.5% = 150 basis points
+
+    @pytest.mark.asyncio
+    async def test_algo_order_uses_activate_price_as_trigger_price_fallback(self, mocker):
+        """
+        Test that activatePrice is used as trigger_price when triggerPrice is absent.
+
+        Trailing stop orders use activatePrice instead of triggerPrice.
+
+        """
+        # Arrange - Mock response with trailing stop order with activatePrice but no triggerPrice
+        trailing_stop_order = {
+            "algoId": 1000000033225456,
+            "clientAlgoId": "O-20251211-053131-TEST-000-4",
+            "algoType": "CONDITIONAL",
+            "orderType": "TRAILING_STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "positionSide": "BOTH",
+            "quantity": "10",
+            "algoStatus": "NEW",
+            "activatePrice": "4500.00",  # No triggerPrice, only activatePrice
+            "callbackRate": "1.0",
+            "workingType": "CONTRACT_PRICE",
+        }
+
+        mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps([trailing_stop_order]).encode(),
+        )
+
+        # Act
+        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+
+        # Assert - trigger_price should come from activatePrice
+        assert len(reports) == 1
+        report = reports[0]
+        assert report.trigger_price == Price.from_str("4500.00")
+
+    @pytest.mark.asyncio
+    async def test_close_position_algo_order_skipped_during_reconciliation(self, mocker):
+        """
+        Test that close-position algo orders without quantity are skipped during
+        reconciliation (logged warning) instead of crashing.
+        """
+        # Arrange - Mock response with close-position order (no quantity)
+        close_position_order = {
+            "algoId": 1000000033225457,
+            "clientAlgoId": "O-20251211-053131-TEST-000-5",
+            "algoType": "CONDITIONAL",
+            "orderType": "STOP_MARKET",
+            "symbol": "ETHUSDT",
+            "side": "SELL",
+            "positionSide": "BOTH",
+            "algoStatus": "NEW",
+            "closePosition": True,  # No quantity for close-position orders
+            "triggerPrice": "4000.00",
+            "workingType": "CONTRACT_PRICE",
+        }
+
+        mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps([close_position_order]).encode(),
+        )
+
+        # Act - should not raise, just skip the order
+        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+
+        # Assert - order is skipped, no reports returned
+        assert len(reports) == 0
+
+    # -------------------------------------------------------------------------
+    # Algo Order Modification Tests
+    # -------------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_modify_non_triggered_stop_limit_order_rejected(self, mocker):
+        """
+        Test that modifying a non-triggered STOP_LIMIT order is rejected since Binance
+        doesn't have an algo order modify endpoint.
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+        )
+
+        order = self.strategy.order_factory.stop_limit(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(10),
+            price=Price.from_str("10050.00"),
+            trigger_price=Price.from_str("10099.00"),
+        )
+
+        # Drive order through lifecycle to ACCEPTED state
+        order.apply(TestEventStubs.order_submitted(order))
+        order.apply(TestEventStubs.order_accepted(order))
+        self.cache.add_order(order, None)
+
+        # Order NOT in triggered set
+        assert order.client_order_id not in self.exec_client._triggered_algo_order_ids
+
+        modify_order = ModifyOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("1000000033225453"),
+            price=Price.from_str("10060.00"),
+            quantity=None,
+            trigger_price=None,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        self.exec_client.modify_order(modify_order)
+        await asyncio.sleep(0.1)  # Allow async processing
+
+        # Assert - should NOT call send_request (rejected before HTTP)
+        mock_send_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_modify_triggered_stop_limit_order_allowed(self, mocker):
+        """
+        Test that modifying a TRIGGERED STOP_LIMIT order is allowed since it becomes a
+        regular LIMIT order in the matching engine.
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+        )
+
+        order = self.strategy.order_factory.stop_limit(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(10),
+            price=Price.from_str("10050.00"),
+            trigger_price=Price.from_str("10099.00"),
+        )
+
+        # Drive order through lifecycle to ACCEPTED state
+        order.apply(TestEventStubs.order_submitted(order))
+        order.apply(TestEventStubs.order_accepted(order))
+        self.cache.add_order(order, None)
+
+        # Add to triggered set - simulating that the order has been triggered
+        self.exec_client._triggered_algo_order_ids.add(order.client_order_id)
+
+        modify_order = ModifyOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("88937381063"),  # Matching engine order ID
+            price=Price.from_str("10060.00"),
+            quantity=None,
+            trigger_price=None,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        self.exec_client.modify_order(modify_order)
+        await eventually(lambda: mock_send_request.call_args)
+
+        # Assert - should call modify endpoint
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.PUT
+        assert request[0][1] == "/fapi/v1/order"
+        assert request[1]["payload"]["symbol"] == "ETHUSDT"
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_reports_passes_correct_symbol_to_algo_orders(
+        self,
+        mocker,
+    ):
+        """
+        Test that generate_order_status_reports passes the correct symbol parameter to
+        _generate_algo_order_status_reports.
+        """
+        # Arrange
+        mock_open_orders = [
+            mocker.Mock(symbol="ETHUSDT"),
+            mocker.Mock(symbol="BTCUSDT"),
+            mocker.Mock(symbol="XRPUSDT"),
+        ]
+        mocker.patch.object(
+            self.exec_client._http_account,
+            "query_open_orders",
+            return_value=mock_open_orders,
+        )
+        mocker.patch.object(
+            self.exec_client._http_account,
+            "query_all_orders",
+            return_value=[],
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_binance_active_position_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_cache_active_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_parse_order_status_reports",
+            return_value=[],
+        )
+        mock_algo_reports = mocker.patch.object(
+            self.exec_client,
+            "_generate_algo_order_status_reports",
+            return_value=[],
+        )
+
+        # open_only=False forces iteration through active_symbols loop
+        command = GenerateOrderStatusReports(
+            instrument_id=None,
+            start=None,
+            end=None,
+            open_only=False,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client.generate_order_status_reports(command)
+
+        # Assert
+        mock_algo_reports.assert_called_once_with(None)
+
+    @pytest.mark.asyncio
+    async def test_generate_order_status_reports_with_instrument_filter_passes_symbol(
+        self,
+        mocker,
+    ):
+        """
+        Test that generate_order_status_reports passes the instrument's symbol to
+        _generate_algo_order_status_reports when a specific instrument is requested.
+        """
+        # Arrange
+        mock_open_orders = [
+            mocker.Mock(symbol="ETHUSDT"),
+            mocker.Mock(symbol="BTCUSDT"),
+            mocker.Mock(symbol="XRPUSDT"),
+        ]
+        mocker.patch.object(
+            self.exec_client._http_account,
+            "query_open_orders",
+            return_value=mock_open_orders,
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_binance_active_position_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_get_cache_active_symbols",
+            return_value=set(),
+        )
+        mocker.patch.object(
+            self.exec_client,
+            "_parse_order_status_reports",
+            return_value=[],
+        )
+        mock_algo_reports = mocker.patch.object(
+            self.exec_client,
+            "_generate_algo_order_status_reports",
+            return_value=[],
+        )
+        command = GenerateOrderStatusReports(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            start=None,
+            end=None,
+            open_only=True,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        # Act
+        await self.exec_client.generate_order_status_reports(command)
+
+        # Assert
+        mock_algo_reports.assert_called_once_with("ETHUSDT-PERP")

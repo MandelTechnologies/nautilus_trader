@@ -509,6 +509,8 @@ class BinanceFuturesOrderData(msgspec.Struct, kw_only=True, frozen=True):
                 elif self.X == BinanceOrderStatus.CANCELED or (
                     exec_client.treat_expired_as_canceled and self.x == BinanceExecutionType.EXPIRED
                 ):
+                    # Clean up triggered algo order tracking if applicable
+                    exec_client._triggered_algo_order_ids.discard(client_order_id)
                     exec_client.generate_order_canceled(
                         strategy_id=strategy_id,
                         instrument_id=instrument_id,
@@ -573,6 +575,8 @@ class BinanceFuturesOrderData(msgspec.Struct, kw_only=True, frozen=True):
         elif self.x == BinanceExecutionType.CANCELED or (
             exec_client.treat_expired_as_canceled and self.x == BinanceExecutionType.EXPIRED
         ):
+            # Clean up triggered algo order tracking if applicable
+            exec_client._triggered_algo_order_ids.discard(client_order_id)
             exec_client.generate_order_canceled(
                 strategy_id=strategy_id,
                 instrument_id=instrument_id,
@@ -843,6 +847,7 @@ class BinanceFuturesAlgoOrderData(msgspec.Struct, kw_only=True, frozen=True):
                 ts_event=ts_event,
             )
         elif self.X == BinanceOrderStatus.CANCELED:
+            exec_client._triggered_algo_order_ids.discard(client_order_id)
             exec_client.generate_order_canceled(
                 strategy_id=strategy_id,
                 instrument_id=instrument_id,
@@ -851,6 +856,7 @@ class BinanceFuturesAlgoOrderData(msgspec.Struct, kw_only=True, frozen=True):
                 ts_event=ts_event,
             )
         elif self.X == BinanceOrderStatus.EXPIRED:
+            exec_client._triggered_algo_order_ids.discard(client_order_id)
             self._handle_algo_expired(
                 exec_client,
                 order,
@@ -861,6 +867,7 @@ class BinanceFuturesAlgoOrderData(msgspec.Struct, kw_only=True, frozen=True):
                 ts_event,
             )
         elif self.X == BinanceOrderStatus.REJECTED:
+            exec_client._triggered_algo_order_ids.discard(client_order_id)
             exec_client.generate_order_rejected(
                 strategy_id=strategy_id,
                 instrument_id=instrument_id,
@@ -917,6 +924,9 @@ class BinanceFuturesAlgoOrderData(msgspec.Struct, kw_only=True, frozen=True):
             f"Algo order {client_order_id} triggered, "
             f"algo_id={self.aid} -> order_id={self.ai}",
         )
+
+        # Track triggered state to use correct cancel endpoint
+        exec_client._triggered_algo_order_ids.add(client_order_id)
 
         exec_client.generate_order_updated(
             strategy_id=strategy_id,
@@ -982,6 +992,9 @@ class BinanceFuturesAlgoOrderData(msgspec.Struct, kw_only=True, frozen=True):
         venue_order_id: VenueOrderId,
         ts_event: int,
     ) -> None:
+        # Clean up triggered tracking set
+        exec_client._triggered_algo_order_ids.discard(client_order_id)
+
         order_status, filled_qty, avg_px = self._resolve_finished_status()
 
         exec_client._log.info(

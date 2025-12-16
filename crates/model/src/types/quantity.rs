@@ -196,6 +196,16 @@ impl Quantity {
         )
         .expect(FAILED);
         check_fixed_precision(precision).expect(FAILED);
+
+        // TODO: Enforce spurious bits validation in v2
+        // Validate raw value has no spurious bits beyond the precision scale
+        // if raw != QUANTITY_UNDEF && raw > 0 {
+        //     #[cfg(feature = "high-precision")]
+        //     super::fixed::check_fixed_raw_u128(raw, precision).expect(FAILED);
+        //     #[cfg(not(feature = "high-precision"))]
+        //     super::fixed::check_fixed_raw_u64(raw, precision).expect(FAILED);
+        // }
+
         Self { raw, precision }
     }
 
@@ -264,7 +274,7 @@ impl Quantity {
     ///
     /// # Panics
     ///
-    /// Panics if precision is beyond [`MAX_FLOAT_PRECISION`] (16).
+    /// Panics if precision is beyond `MAX_FLOAT_PRECISION` (16).
     #[must_use]
     pub fn as_f64(&self) -> f64 {
         #[cfg(feature = "defi")]
@@ -280,7 +290,7 @@ impl Quantity {
     ///
     /// # Panics
     ///
-    /// Panics if precision is beyond [`MAX_FLOAT_PRECISION`] (16).
+    /// Panics if precision is beyond `MAX_FLOAT_PRECISION` (16).
     #[must_use]
     pub fn as_f64(&self) -> f64 {
         #[cfg(feature = "defi")]
@@ -735,9 +745,6 @@ pub fn check_positive_quantity(value: Quantity, param: &str) -> anyhow::Result<(
     Ok(())
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -1274,14 +1281,20 @@ mod tests {
 
     #[rstest]
     fn test_saturating_sub_overflow_bug() {
-        // Reproduces original bug: subtracting 80 from 79
-        let peak_qty = Quantity::from_raw(79_000, 3);
-        let order_qty = Quantity::from_raw(80_000, 3);
+        // Reproduces original bug: subtracting a larger quantity from a smaller one
+        // Raw values must be multiples of 10^(FIXED_PRECISION - precision)
+        use crate::types::fixed::FIXED_PRECISION;
+        let precision = 3;
+        let scale = 10u64.pow(u32::from(FIXED_PRECISION - precision)) as QuantityRaw;
+
+        // 79 * scale represents 0.079, 80 * scale represents 0.080
+        let peak_qty = Quantity::from_raw(79 * scale, precision);
+        let order_qty = Quantity::from_raw(80 * scale, precision);
 
         // This would have caused panic before fix due to underflow
         let result = peak_qty.saturating_sub(order_qty);
         assert_eq!(result.raw, 0);
-        assert_eq!(result, Quantity::zero(3));
+        assert_eq!(result, Quantity::zero(precision));
     }
 
     #[rstest]

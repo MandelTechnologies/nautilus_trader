@@ -113,8 +113,8 @@ impl OrderBook {
     pub fn add(&mut self, order: BookOrder, flags: u8, sequence: u64, ts_event: UnixNanos) {
         let order = pre_process_order(self.book_type, order, flags);
         match order.side.as_specified() {
-            OrderSideSpecified::Buy => self.bids.add(order),
-            OrderSideSpecified::Sell => self.asks.add(order),
+            OrderSideSpecified::Buy => self.bids.add(order, flags),
+            OrderSideSpecified::Sell => self.asks.add(order, flags),
         }
 
         self.increment(sequence, ts_event);
@@ -124,8 +124,8 @@ impl OrderBook {
     pub fn update(&mut self, order: BookOrder, flags: u8, sequence: u64, ts_event: UnixNanos) {
         let order = pre_process_order(self.book_type, order, flags);
         match order.side.as_specified() {
-            OrderSideSpecified::Buy => self.bids.update(order),
-            OrderSideSpecified::Sell => self.asks.update(order),
+            OrderSideSpecified::Buy => self.bids.update(order, flags),
+            OrderSideSpecified::Sell => self.asks.update(order, flags),
         }
 
         self.increment(sequence, ts_event);
@@ -344,7 +344,7 @@ impl OrderBook {
     ///
     /// Returns an error if:
     /// - The deltas' instrument ID does not match this book's instrument ID.
-    /// - Any individual delta application fails (see [`apply_delta`]).
+    /// - Any individual delta application fails (see [`Self::apply_delta`]).
     pub fn apply_deltas(&mut self, deltas: &OrderBookDeltas) -> Result<(), BookIntegrityError> {
         if deltas.instrument_id != self.instrument_id {
             return Err(BookIntegrityError::InstrumentMismatch(
@@ -357,7 +357,7 @@ impl OrderBook {
 
     /// Applies multiple order book delta operations without instrument ID validation.
     ///
-    /// See [`apply_delta_unchecked`] for details on why this function exists.
+    /// See [`Self::apply_delta_unchecked`] for details on why this function exists.
     ///
     /// # Errors
     ///
@@ -389,7 +389,7 @@ impl OrderBook {
 
     /// Replaces current book state with a depth snapshot without instrument ID validation.
     ///
-    /// See [`apply_delta_unchecked`] for details on why this function exists.
+    /// See [`Self::apply_delta_unchecked`] for details on why this function exists.
     ///
     /// # Errors
     ///
@@ -415,7 +415,7 @@ impl OrderBook {
             );
 
             let order = pre_process_order(self.book_type, order, depth.flags);
-            self.bids.add(order);
+            self.bids.add(order, depth.flags);
         }
 
         for order in depth.asks {
@@ -432,7 +432,7 @@ impl OrderBook {
             );
 
             let order = pre_process_order(self.book_type, order, depth.flags);
-            self.asks.add(order);
+            self.asks.add(order, depth.flags);
         }
 
         self.increment(depth.sequence, depth.ts_event);
@@ -854,7 +854,7 @@ impl OrderBook {
         {
             self.bids.remove_order(top_bid.order_id, 0, ts_event);
         }
-        self.bids.add(order);
+        self.bids.add(order, 0); // Internal replacement, no F_MBP flags
     }
 
     fn update_book_ask(&mut self, order: BookOrder, ts_event: UnixNanos) {
@@ -863,7 +863,7 @@ impl OrderBook {
         {
             self.asks.remove_order(top_ask.order_id, 0, ts_event);
         }
-        self.asks.add(order);
+        self.asks.add(order, 0); // Internal replacement, no F_MBP flags
     }
 }
 

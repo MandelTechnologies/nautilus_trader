@@ -343,7 +343,6 @@ fn get_close_position(position: &Position) -> PositionClosed {
     }
 }
 
-// Tests
 #[rstest]
 fn test_account_when_account_returns_the_account_facade(mut portfolio: Portfolio) {
     let account_id = "BINANCE-1513111";
