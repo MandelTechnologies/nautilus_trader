@@ -613,10 +613,16 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
 
         reports = self._parse_order_status_reports(binance_orders, start_ms, end_ms)
 
-        # For futures accounts, also fetch open algo orders (conditional orders)
+        # For futures accounts, also fetch algo orders (conditional orders)
         if self._binance_account_type.is_futures:
             try:
-                algo_reports = await self._generate_algo_order_status_reports(symbol)
+                algo_reports = await self._generate_algo_order_status_reports(
+                    symbol=symbol,
+                    active_symbols=active_symbols,
+                    open_only=command.open_only,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                )
                 reports.extend(algo_reports)
             except BinanceError as e:
                 self._log.warning(f"Cannot generate algo OrderStatusReports: {e.message}")
@@ -658,6 +664,10 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
     async def _generate_algo_order_status_reports(
         self,
         symbol: str | None,
+        active_symbols: set[str],
+        open_only: bool,
+        start_ms: int | None,
+        end_ms: int | None,
     ) -> list[OrderStatusReport]:
         reports: list[OrderStatusReport] = []
 
@@ -671,10 +681,29 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
         # This method only runs for futures, so enum_parser is BinanceFuturesEnumParser
         assert isinstance(self._enum_parser, BinanceFuturesEnumParser)
 
-        open_algo_orders = await self._http_account.query_open_algo_orders(symbol)
-        self._log.debug(f"Fetched {len(open_algo_orders)} open algo orders")
+        algo_orders: list = []
 
-        for algo_order in open_algo_orders:
+        if open_only:
+            algo_orders = await self._http_account.query_open_algo_orders(symbol)
+            self._log.debug(f"Fetched {len(algo_orders)} open algo orders")
+        else:
+            for active_symbol in active_symbols:
+                response = await self._http_account.query_all_algo_orders(
+                    symbol=active_symbol,
+                    start_time=start_ms,
+                    end_time=end_ms,
+                    limit=1000,
+                )
+                algo_orders.extend(response)
+            self._log.debug(f"Fetched {len(algo_orders)} historical algo orders")
+
+        for algo_order in algo_orders:
+            # Filter by time range on the Nautilus side
+            if start_ms is not None and algo_order.createTime < start_ms:
+                continue
+            if end_ms is not None and algo_order.createTime > end_ms:
+                continue
+
             try:
                 report = algo_order.parse_to_order_status_report(
                     account_id=self.account_id,
@@ -1432,6 +1461,43 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             finally:
                 await self._retry_manager_pool.release(retry_manager)
 
+    async def _cancel_algo_orders_batch(
+        self,
+        instrument_id: InstrumentId,
+        orders: list[Order],
+    ) -> None:
+        retry_manager = await self._retry_manager_pool.acquire()
+        try:
+            await retry_manager.run(
+                "cancel_all_open_algo_orders",
+                [instrument_id],
+                self._http_account.cancel_all_open_algo_orders,  # type: ignore [attr-defined]
+                symbol=instrument_id.symbol.value,
+            )
+            if not retry_manager.result:
+                if (
+                    retry_manager.message is not None
+                    and "Unknown order sent" in retry_manager.message
+                ):
+                    self._log.info(
+                        "No open algo orders to cancel according to Binance",
+                        LogColor.GREEN,
+                    )
+                else:
+                    for order in orders:
+                        if order.is_closed:
+                            continue
+                        self.generate_order_cancel_rejected(
+                            order.strategy_id,
+                            order.instrument_id,
+                            order.client_order_id,
+                            order.venue_order_id,
+                            retry_manager.message,
+                            self._clock.timestamp_ns(),
+                        )
+        finally:
+            await self._retry_manager_pool.release(retry_manager)
+
     async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
         if command.order_side != OrderSide.NO_ORDER_SIDE:
             self._log.warning(
@@ -1455,17 +1521,21 @@ class BinanceCommonExecutionClient(LiveExecutionClient):
             if self._binance_account_type.is_futures:
                 for order in open_orders_strategy:
                     if order.order_type in BINANCE_FUTURES_ALGO_ORDER_TYPES:
-                        algo_orders.append(order)
+                        # Triggered algo orders become regular orders and need regular cancel
+                        if order.client_order_id in self._triggered_algo_order_ids:
+                            regular_orders.append(order)
+                        else:
+                            algo_orders.append(order)
                     else:
                         regular_orders.append(order)
             else:
                 regular_orders = open_orders_strategy
 
+            if algo_orders:
+                await self._cancel_algo_orders_batch(command.instrument_id, algo_orders)
+
             if regular_orders:
                 await self._cancel_orders_batch(command.instrument_id, regular_orders)
-
-            if algo_orders:
-                await self._cancel_orders_individual(algo_orders)
             return
 
         # Not every strategy order is included in all orders - so must cancel individually

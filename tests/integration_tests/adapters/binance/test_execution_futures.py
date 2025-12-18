@@ -16,6 +16,7 @@
 import asyncio
 import json
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1613,7 +1614,13 @@ class TestBinanceFuturesExecutionClient:
         self.exec_client._triggered_algo_order_ids.clear()
 
         # Act
-        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols=set(),
+            open_only=True,
+            start_ms=None,
+            end_ms=None,
+        )
 
         # Assert - ClientOrderId should be in triggered set
         assert len(reports) == 1
@@ -1654,7 +1661,13 @@ class TestBinanceFuturesExecutionClient:
         self.exec_client._triggered_algo_order_ids.clear()
 
         # Act
-        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols=set(),
+            open_only=True,
+            start_ms=None,
+            end_ms=None,
+        )
 
         # Assert - ClientOrderId should NOT be in triggered set
         assert len(reports) == 1
@@ -1691,7 +1704,13 @@ class TestBinanceFuturesExecutionClient:
         )
 
         # Act
-        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols=set(),
+            open_only=True,
+            start_ms=None,
+            end_ms=None,
+        )
 
         # Assert - trailing_offset should be 150 basis points (1.5% * 100)
         assert len(reports) == 1
@@ -1729,7 +1748,13 @@ class TestBinanceFuturesExecutionClient:
         )
 
         # Act
-        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols=set(),
+            open_only=True,
+            start_ms=None,
+            end_ms=None,
+        )
 
         # Assert - trigger_price should come from activatePrice
         assert len(reports) == 1
@@ -1763,7 +1788,13 @@ class TestBinanceFuturesExecutionClient:
         )
 
         # Act - should not raise, just skip the order
-        reports = await self.exec_client._generate_algo_order_status_reports(symbol=None)
+        reports = await self.exec_client._generate_algo_order_status_reports(
+            symbol=None,
+            active_symbols=set(),
+            open_only=True,
+            start_ms=None,
+            end_ms=None,
+        )
 
         # Assert - order is skipped, no reports returned
         assert len(reports) == 0
@@ -1929,7 +1960,10 @@ class TestBinanceFuturesExecutionClient:
         await self.exec_client.generate_order_status_reports(command)
 
         # Assert
-        mock_algo_reports.assert_called_once_with(None)
+        mock_algo_reports.assert_called_once()
+        call_kwargs = mock_algo_reports.call_args.kwargs
+        assert call_kwargs["symbol"] is None
+        assert call_kwargs["open_only"] is False
 
     @pytest.mark.asyncio
     async def test_generate_order_status_reports_with_instrument_filter_passes_symbol(
@@ -1984,4 +2018,109 @@ class TestBinanceFuturesExecutionClient:
         await self.exec_client.generate_order_status_reports(command)
 
         # Assert
-        mock_algo_reports.assert_called_once_with("ETHUSDT-PERP")
+        mock_algo_reports.assert_called_once()
+        call_kwargs = mock_algo_reports.call_args.kwargs
+        assert call_kwargs["symbol"] == "ETHUSDT-PERP"
+        assert call_kwargs["open_only"] is True
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_open_algo_orders_endpoint(self, mocker):
+        """
+        Test that cancel_all_open_algo_orders endpoint is called correctly.
+        """
+        # Arrange
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=b'{"code": 200, "msg": "The operation of cancel all open algo orders is done."}',
+        )
+
+        # Act
+        result = await self.exec_client._futures_http_account.cancel_all_open_algo_orders(
+            symbol="ETHUSDT",
+        )
+
+        # Assert
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.DELETE
+        assert request[0][1] == "/fapi/v1/algoOpenOrders"
+        assert request[1]["payload"]["symbol"] == "ETHUSDT"
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_cancel_algo_orders_batch_calls_http_endpoint(self, mocker):
+        """
+        Test that _cancel_algo_orders_batch calls the correct HTTP endpoint.
+        """
+        # Arrange
+        mock_cancel_all_algo = mocker.patch.object(
+            self.exec_client._futures_http_account,
+            "cancel_all_open_algo_orders",
+            new_callable=AsyncMock,
+            return_value=True,
+        )
+        algo_order = self.strategy.order_factory.stop_market(
+            instrument_id=ETHUSDT_PERP_BINANCE.id,
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(10),
+            trigger_price=Price.from_str("10099.00"),
+        )
+        algo_order.apply(TestEventStubs.order_submitted(algo_order))
+        algo_order.apply(TestEventStubs.order_accepted(algo_order))
+        self.cache.add_order(algo_order, None)
+
+        # Act
+        await self.exec_client._cancel_algo_orders_batch(
+            ETHUSDT_PERP_BINANCE.id,
+            [algo_order],
+        )
+
+        # Assert
+        mock_cancel_all_algo.assert_called_once_with(symbol="ETHUSDT-PERP")
+
+    @pytest.mark.asyncio
+    async def test_query_all_algo_orders(self, mocker):
+        response_data = [
+            {
+                "algoId": 12345,
+                "clientAlgoId": "test-order-id",
+                "algoType": "VP",
+                "orderType": "TRAILING_STOP_MARKET",
+                "symbol": "ETHUSDT",
+                "side": "SELL",
+                "positionSide": "BOTH",
+                "timeInForce": "GTC",
+                "quantity": "0.1",
+                "algoStatus": "CANCELLED",
+                "triggerPrice": "0",
+                "price": "0",
+                "workingType": "CONTRACT_PRICE",
+                "activatePrice": "3000.0",
+                "callbackRate": "1.0",
+                "reduceOnly": False,
+                "closePosition": False,
+                "priceProtect": False,
+                "selfTradePreventionMode": "NONE",
+            },
+        ]
+        mock_send_request = mocker.patch(
+            target="nautilus_trader.adapters.binance.http.client.BinanceHttpClient.send_request",
+            return_value=json.dumps(response_data).encode(),
+        )
+
+        # Act
+        result = await self.exec_client._futures_http_account.query_all_algo_orders(
+            symbol="ETHUSDT",
+            start_time=1700000000000,
+            end_time=1700100000000,
+        )
+
+        # Assert
+        request = mock_send_request.call_args
+        assert request[0][0] == HttpMethod.GET
+        assert request[0][1] == "/fapi/v1/allAlgoOrders"
+        assert request[1]["payload"]["symbol"] == "ETHUSDT"
+        assert request[1]["payload"]["startTime"] == "1700000000000"
+        assert request[1]["payload"]["endTime"] == "1700100000000"
+        assert len(result) == 1
+        assert result[0].algoId == 12345
+        assert result[0].algoStatus == "CANCELLED"

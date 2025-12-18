@@ -20,6 +20,7 @@ use std::{
     fmt::{Debug, Display},
     num::NonZeroU64,
     rc::Rc,
+    sync::Arc,
 };
 
 use nautilus_core::{
@@ -129,10 +130,40 @@ impl Ord for ScheduledTimeEvent {
 }
 
 /// Callback type for time events.
+///
+/// # Variants
+///
+/// - `Python`: For Python callbacks (requires `python` feature).
+/// - `Rust`: Thread-safe callbacks using `Arc`. Use when the closure is `Send + Sync`.
+/// - `RustLocal`: Single-threaded callbacks using `Rc`. Use when capturing `Rc<RefCell<...>>`.
+///
+/// # Choosing between `Rust` and `RustLocal`
+///
+/// Use `Rust` (thread-safe) when:
+/// - The callback doesn't capture `Rc<RefCell<...>>` or other non-`Send` types.
+/// - The closure is `Send + Sync` (most simple closures qualify).
+///
+/// Use `RustLocal` when:
+/// - The callback captures `Rc<RefCell<...>>` for shared mutable state.
+/// - Thread safety constraints prevent using `Arc`.
+///
+/// Both variants work with `TestClock` and `LiveClock`. The `RustLocal` variant is safe
+/// with `LiveClock` because callbacks are sent through a channel and executed on the
+/// originating thread's event loop - they never actually cross thread boundaries.
+///
+/// # Automatic conversion
+///
+/// - Closures that are `Fn + Send + Sync + 'static` automatically convert to `Rust`.
+/// - `Rc<dyn Fn(TimeEvent)>` converts to `RustLocal`.
+/// - `Arc<dyn Fn(TimeEvent) + Send + Sync>` converts to `Rust`.
 pub enum TimeEventCallback {
+    /// Python callable for use from Python via PyO3.
     #[cfg(feature = "python")]
     Python(Py<PyAny>),
-    Rust(Rc<dyn Fn(TimeEvent)>),
+    /// Thread-safe Rust callback using `Arc` (`Send + Sync`).
+    Rust(Arc<dyn Fn(TimeEvent) + Send + Sync>),
+    /// Local Rust callback using `Rc` (not `Send`/`Sync`).
+    RustLocal(Rc<dyn Fn(TimeEvent)>),
 }
 
 impl Clone for TimeEventCallback {
@@ -141,6 +172,7 @@ impl Clone for TimeEventCallback {
             #[cfg(feature = "python")]
             Self::Python(obj) => Self::Python(nautilus_core::python::clone_py_object(obj)),
             Self::Rust(cb) => Self::Rust(cb.clone()),
+            Self::RustLocal(cb) => Self::RustLocal(cb.clone()),
         }
     }
 }
@@ -150,19 +182,26 @@ impl Debug for TimeEventCallback {
         match self {
             #[cfg(feature = "python")]
             Self::Python(_) => f.write_str("Python callback"),
-            Self::Rust(_) => f.write_str("Rust callback"),
+            Self::Rust(_) => f.write_str("Rust callback (thread-safe)"),
+            Self::RustLocal(_) => f.write_str("Rust callback (local)"),
         }
     }
 }
 
 impl TimeEventCallback {
-    /// Returns `true` if this is a Rust callback.
-    ///
-    /// Rust callbacks use `Rc` internally and are NOT thread-safe.
-    /// They must only be used with `TestClock`, never with `LiveClock`.
+    /// Returns `true` if this is a thread-safe Rust callback.
     #[must_use]
     pub const fn is_rust(&self) -> bool {
         matches!(self, Self::Rust(_))
+    }
+
+    /// Returns `true` if this is a local (non-thread-safe) Rust callback.
+    ///
+    /// Local callbacks use `Rc` internally. They work with both `TestClock` and
+    /// `LiveClock` since callbacks are executed on the originating thread.
+    #[must_use]
+    pub const fn is_local(&self) -> bool {
+        matches!(self, Self::RustLocal(_))
     }
 
     /// Invokes the callback for the given `TimeEvent`.
@@ -179,22 +218,29 @@ impl TimeEventCallback {
                 });
             }
             Self::Rust(callback) => callback(event),
+            Self::RustLocal(callback) => callback(event),
         }
     }
 }
 
 impl<F> From<F> for TimeEventCallback
 where
-    F: Fn(TimeEvent) + 'static,
+    F: Fn(TimeEvent) + Send + Sync + 'static,
 {
     fn from(value: F) -> Self {
-        Self::Rust(Rc::new(value))
+        Self::Rust(Arc::new(value))
+    }
+}
+
+impl From<Arc<dyn Fn(TimeEvent) + Send + Sync>> for TimeEventCallback {
+    fn from(value: Arc<dyn Fn(TimeEvent) + Send + Sync>) -> Self {
+        Self::Rust(value)
     }
 }
 
 impl From<Rc<dyn Fn(TimeEvent)>> for TimeEventCallback {
     fn from(value: Rc<dyn Fn(TimeEvent)>) -> Self {
-        Self::Rust(value)
+        Self::RustLocal(value)
     }
 }
 
@@ -205,15 +251,12 @@ impl From<Py<PyAny>> for TimeEventCallback {
     }
 }
 
-// SAFETY: TimeEventCallback implements Send + Sync with the following invariants:
-// - Python variant: Uses Py<PyAny> which is inherently Send + Sync (GIL acquired when needed)
-// - Rust variant: Uses Rc<dyn Fn> which is NOT Send/Sync. This is only safe because:
-//   * Rust callbacks are ONLY used with TestClock (single-threaded backtesting)
-//   * LiveClock/LiveTimer MUST NOT use Rust callbacks - they will panic at runtime
-//   * Python callbacks are used for all live/async timer contexts
-//
-// WARNING: Using TimeEventCallback::Rust with LiveClock is undefined behavior.
-// The runtime check in LiveTimer enforces this invariant.
+// SAFETY: TimeEventCallback is Send + Sync with the following invariants:
+// - Python variant: Py<PyAny> is inherently Send + Sync (GIL acquired when needed).
+// - Rust variant: Arc<dyn Fn + Send + Sync> is inherently Send + Sync.
+// - RustLocal variant: Uses Rc<dyn Fn> which is NOT Send/Sync. This is safe because
+//   callbacks are never shared across threads - they are sent through a channel and
+//   executed on the originating thread's event loop.
 #[allow(unsafe_code)]
 unsafe impl Send for TimeEventCallback {}
 #[allow(unsafe_code)]

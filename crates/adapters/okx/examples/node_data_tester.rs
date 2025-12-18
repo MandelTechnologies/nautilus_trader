@@ -15,7 +15,7 @@
 
 //! Example demonstrating live data testing with the OKX adapter.
 //!
-//! Run with: `cargo run --example node_data_tester`
+//! Run with: `cargo run --example okx-data-tester --package nautilus-okx`
 
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
@@ -54,7 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_data_client(None, Box::new(client_factory), Box::new(okx_config))?
         .build()?;
 
-    let tester_config = DataTesterConfig::new(client_id, instrument_ids, true, true);
+    let tester_config = DataTesterConfig::new(client_id, instrument_ids)
+        .with_subscribe_book_deltas(true) // TODO: Should be implicit with subscribe at interval
+        .with_subscribe_book_at_interval(true);
     let tester = DataTester::new(tester_config);
 
     node.add_actor(tester)?;

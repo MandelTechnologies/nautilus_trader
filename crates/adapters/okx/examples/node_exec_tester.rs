@@ -15,7 +15,7 @@
 
 //! Example demonstrating live execution testing with the OKX adapter.
 //!
-//! Run with: `cargo run --example node_exec_tester`
+//! Run with: `cargo run --example okx-exec-tester --package nautilus-okx`
 
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;

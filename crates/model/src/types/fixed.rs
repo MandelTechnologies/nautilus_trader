@@ -62,6 +62,8 @@ use std::fmt::Display;
 
 use nautilus_core::correctness::FAILED;
 
+use crate::types::{price::PriceRaw, quantity::QuantityRaw};
+
 /// Indicates if high-precision mode is enabled.
 ///
 /// # Safety
@@ -502,6 +504,42 @@ pub fn correct_raw_i64(raw: i64, precision: u8) -> i64 {
         } else {
             raw - remainder
         }
+    }
+}
+
+/// Rounds a raw price value to the nearest valid multiple of the scale for the given precision.
+///
+/// This is a type-aliased wrapper that calls the appropriate underlying function based on
+/// whether the `high-precision` feature is enabled. Use this when working with `PriceRaw` values
+/// to ensure consistent feature-flag handling.
+#[must_use]
+#[inline]
+pub fn correct_price_raw(raw: PriceRaw, precision: u8) -> PriceRaw {
+    #[cfg(feature = "high-precision")]
+    {
+        correct_raw_i128(raw, precision)
+    }
+    #[cfg(not(feature = "high-precision"))]
+    {
+        correct_raw_i64(raw, precision)
+    }
+}
+
+/// Rounds a raw quantity value to the nearest valid multiple of the scale for the given precision.
+///
+/// This is a type-aliased wrapper that calls the appropriate underlying function based on
+/// whether the `high-precision` feature is enabled. Use this when working with `QuantityRaw` values
+/// to ensure consistent feature-flag handling.
+#[must_use]
+#[inline]
+pub fn correct_quantity_raw(raw: QuantityRaw, precision: u8) -> QuantityRaw {
+    #[cfg(feature = "high-precision")]
+    {
+        correct_raw_u128(raw, precision)
+    }
+    #[cfg(not(feature = "high-precision"))]
+    {
+        correct_raw_u64(raw, precision)
     }
 }
 

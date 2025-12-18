@@ -109,18 +109,11 @@ pub struct DataTesterConfig {
 impl DataTesterConfig {
     /// Creates a new [`DataTesterConfig`] instance with minimal settings.
     ///
-    /// For subscribing to quotes and trades on specified instruments.
-    ///
     /// # Panics
     ///
     /// Panics if `NonZeroUsize::new(1000)` fails (which should never happen).
     #[must_use]
-    pub fn new(
-        client_id: ClientId,
-        instrument_ids: Vec<InstrumentId>,
-        subscribe_quotes: bool,
-        subscribe_trades: bool,
-    ) -> Self {
+    pub fn new(client_id: ClientId, instrument_ids: Vec<InstrumentId>) -> Self {
         Self {
             base: DataActorConfig::default(),
             instrument_ids,
@@ -129,8 +122,8 @@ impl DataTesterConfig {
             subscribe_book_deltas: false,
             subscribe_book_depth: false,
             subscribe_book_at_interval: false,
-            subscribe_quotes,
-            subscribe_trades,
+            subscribe_quotes: false,
+            subscribe_trades: false,
             subscribe_mark_prices: false,
             subscribe_index_prices: false,
             subscribe_funding_rates: false,
@@ -147,7 +140,7 @@ impl DataTesterConfig {
             book_depth: None,
             book_interval_ms: NonZeroUsize::new(1000).unwrap(),
             book_levels_to_print: 10,
-            manage_book: false,
+            manage_book: true,
             log_data: true,
             stats_interval_secs: 5,
         }
@@ -174,6 +167,18 @@ impl DataTesterConfig {
     #[must_use]
     pub fn with_subscribe_book_at_interval(mut self, subscribe: bool) -> Self {
         self.subscribe_book_at_interval = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_quotes(mut self, subscribe: bool) -> Self {
+        self.subscribe_quotes = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_trades(mut self, subscribe: bool) -> Self {
+        self.subscribe_trades = subscribe;
         self
     }
 
@@ -546,6 +551,17 @@ impl DataActor for DataTester {
         Ok(())
     }
 
+    fn on_book(&mut self, book: &OrderBook) -> anyhow::Result<()> {
+        if self.config.log_data {
+            let levels = self.config.book_levels_to_print;
+            let instrument_id = book.instrument_id;
+            let book_str = book.pprint(levels, None);
+            log_info!("\n{instrument_id}\n{book_str}", color = LogColor::Cyan);
+        }
+
+        Ok(())
+    }
+
     fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
         if self.config.manage_book {
             if let Some(book) = self.books.get_mut(&deltas.instrument_id) {
@@ -655,14 +671,17 @@ mod tests {
             InstrumentId::from("BTC-USDT.TEST"),
             InstrumentId::from("ETH-USDT.TEST"),
         ];
-        DataTesterConfig::new(client_id, instrument_ids, true, true)
+        DataTesterConfig::new(client_id, instrument_ids)
+            .with_subscribe_quotes(true)
+            .with_subscribe_trades(true)
     }
 
     #[rstest]
     fn test_config_creation() {
         let client_id = ClientId::new("TEST");
         let instrument_ids = vec![InstrumentId::from("BTC-USDT.TEST")];
-        let config = DataTesterConfig::new(client_id, instrument_ids.clone(), true, false);
+        let config =
+            DataTesterConfig::new(client_id, instrument_ids.clone()).with_subscribe_quotes(true);
 
         assert_eq!(config.client_id, Some(client_id));
         assert_eq!(config.instrument_ids, instrument_ids);

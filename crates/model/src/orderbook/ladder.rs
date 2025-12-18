@@ -95,6 +95,23 @@ impl Display for BookPrice {
     }
 }
 
+/// Tracks the type of L1 batch currently being accumulated.
+///
+/// Separating MBP and snapshot batches prevents cross-contamination where
+/// stale MBP data could pollute a new snapshot. Without this distinction,
+/// an incomplete MBP stream (missing F_LAST) would leave batch state that
+/// incorrectly affects subsequent snapshot processing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum L1BatchState {
+    /// Not in any batch.
+    #[default]
+    None,
+    /// Accumulating an F_MBP batch (final two deltas accumulate).
+    MbpBatch,
+    /// Accumulating an F_SNAPSHOT batch (all deltas accumulate).
+    SnapshotBatch,
+}
+
 /// Represents a ladder of price levels for one side of an order book.
 #[derive(Clone, Debug)]
 pub(crate) struct BookLadder {
@@ -102,7 +119,7 @@ pub(crate) struct BookLadder {
     pub book_type: BookType,
     pub levels: BTreeMap<BookPrice, BookLevel>,
     pub cache: HashMap<u64, BookPrice>,
-    in_l1_batch: bool,
+    batch_state: L1BatchState,
 }
 
 impl BookLadder {
@@ -114,7 +131,7 @@ impl BookLadder {
             book_type,
             levels: BTreeMap::new(),
             cache: HashMap::new(),
-            in_l1_batch: false,
+            batch_state: L1BatchState::None,
         }
     }
 
@@ -131,26 +148,21 @@ impl BookLadder {
         self.levels.is_empty()
     }
 
-    #[allow(dead_code)]
-    /// Adds multiple orders to the ladder.
-    pub fn add_bulk(&mut self, orders: Vec<BookOrder>) {
-        for order in orders {
-            self.add(order, 0);
-        }
-    }
-
     /// Removes all orders and price levels from the ladder.
+    ///
+    /// Also resets the batch state to ensure clean handling of subsequent batches.
     pub fn clear(&mut self) {
         self.levels.clear();
         self.cache.clear();
+        self.batch_state = L1BatchState::None;
     }
 
     /// Adds an order to the ladder at its price level.
     ///
     /// For L1_MBP books, behavior depends on flags:
-    /// - F_MBP (multi-level batch): Retains best after each add to prevent
+    /// - F_MBP or F_SNAPSHOT (multi-level batch): Retains best after each add to prevent
     ///   accumulation even if F_LAST is never sent.
-    /// - F_TOB or no F_MBP (single replacement): Clears existing levels first,
+    /// - F_TOB or no batch flags (single replacement): Clears existing levels first,
     ///   allowing price to degrade.
     pub fn add(&mut self, order: BookOrder, flags: u8) {
         if self.book_type == BookType::L1_MBP && !self.handle_l1_add(&order, flags) {
@@ -179,12 +191,13 @@ impl BookLadder {
             }
         }
 
-        // For L1_MBP with F_MBP, always retain best to prevent unbounded
+        // For L1_MBP with F_MBP or F_SNAPSHOT, always retain best to prevent unbounded
         // accumulation if F_LAST is never sent
-        if self.book_type == BookType::L1_MBP && RecordFlag::F_MBP.matches(flags) {
+        let is_batch = RecordFlag::F_MBP.matches(flags) || RecordFlag::F_SNAPSHOT.matches(flags);
+        if self.book_type == BookType::L1_MBP && is_batch {
             self.retain_best_only();
             if RecordFlag::F_LAST.matches(flags) {
-                self.in_l1_batch = false;
+                self.batch_state = L1BatchState::None;
             }
         }
     }
@@ -194,39 +207,53 @@ impl BookLadder {
     /// Returns `true` to continue with normal add flow, `false` to abort.
     ///
     /// Behavior depends on flags:
-    /// - F_MBP with F_LAST: Accumulates levels within batch, retains best at end.
-    ///   Multi-delta batches REQUIRE F_LAST on the final message.
-    /// - F_MBP without F_LAST: Treated as single-message snapshot (clears first)
-    ///   to prevent stale prices when streams omit F_LAST.
-    /// - F_TOB or no F_MBP: Single replacement (clears first).
+    /// - F_SNAPSHOT with F_LAST: End of snapshot batch. If in snapshot batch, accumulate;
+    ///   otherwise clear (single-delta snapshot or cross-contamination from MBP).
+    /// - F_SNAPSHOT without F_LAST: Start/continue snapshot batch. Clears if not already
+    ///   in a snapshot batch (handles stale MBP data).
+    /// - F_MBP with F_LAST: End of MBP batch. If in MBP batch, accumulate final two;
+    ///   otherwise clear.
+    /// - F_MBP without F_LAST: Always clear (streaming mode, prevents stale prices).
+    /// - F_TOB or no batch flags: Single replacement (clears first).
     ///
     /// Zero-size orders clear the entire L1 ladder.
     fn handle_l1_add(&mut self, order: &BookOrder, flags: u8) -> bool {
         if !order.size.is_positive() {
             self.clear();
-            self.in_l1_batch = false;
             let side = self.side;
             log::debug!("L1 zero-size add cleared ladder: side={side:?}");
             return false;
         }
 
         let is_mbp = RecordFlag::F_MBP.matches(flags);
+        let is_snapshot = RecordFlag::F_SNAPSHOT.matches(flags);
         let is_last = RecordFlag::F_LAST.matches(flags);
 
-        if is_mbp && is_last {
-            // F_MBP | F_LAST: End of batch - accumulate if mid-batch, else clear
-            if !self.in_l1_batch {
+        if is_snapshot && is_last {
+            // F_SNAPSHOT|F_LAST: end of snapshot batch
+            // Only accumulate if we're in a snapshot batch; otherwise clear to prevent
+            // cross-contamination from stale MBP data
+            if self.batch_state != L1BatchState::SnapshotBatch {
+                self.clear();
+            }
+        } else if is_snapshot {
+            // F_SNAPSHOT without F_LAST: start/continue snapshot batch
+            if self.batch_state != L1BatchState::SnapshotBatch {
+                self.clear();
+                self.batch_state = L1BatchState::SnapshotBatch;
+            }
+        } else if is_mbp && is_last {
+            // F_MBP|F_LAST: end of MBP batch, accumulate if already in MBP batch
+            if self.batch_state != L1BatchState::MbpBatch {
                 self.clear();
             }
         } else if is_mbp {
-            // F_MBP without F_LAST: Always clear to prevent stale prices.
-            // Multi-delta batches must use F_LAST to trigger accumulation.
+            // F_MBP without F_LAST: always clear (streaming mode)
             self.clear();
-            self.in_l1_batch = true;
+            self.batch_state = L1BatchState::MbpBatch;
         } else {
-            // Non-F_MBP: replacement mode
+            // Non-batch: replacement mode
             self.clear();
-            self.in_l1_batch = false;
         }
 
         true
@@ -468,6 +495,16 @@ impl Display for BookLadder {
             writeln!(f, "  {} -> {} orders", price, level.len())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl BookLadder {
+    /// Adds multiple orders to the ladder.
+    pub fn add_bulk(&mut self, orders: Vec<BookOrder>) {
+        for order in orders {
+            self.add(order, 0);
+        }
     }
 }
 
@@ -1632,5 +1669,249 @@ mod tests {
             Price::from("100.00"),
             "2-delta batch keeps best ask (100) from both deltas"
         );
+    }
+
+    #[rstest]
+    fn test_l1_snapshot_batch_accumulates_all_levels_bids() {
+        // F_SNAPSHOT batch accumulates ALL levels and keeps best bid
+        let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+        let prices = ["98.00", "99.00", "100.00", "101.00"];
+        let batch_size = prices.len();
+
+        for (i, price_str) in prices.iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Buy,
+                price: Price::from(*price_str),
+                size: Quantity::from(10),
+                order_id: (i + 100) as u64,
+            };
+            let flags = if i == batch_size - 1 {
+                RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_SNAPSHOT as u8
+            };
+            ladder.add(order, flags);
+        }
+
+        assert_eq!(
+            ladder.len(),
+            1,
+            "L1 should have only 1 level after snapshot"
+        );
+        assert_eq!(
+            ladder.top().unwrap().price.value,
+            Price::from("101.00"),
+            "F_SNAPSHOT batch should keep best bid (101) from ALL deltas"
+        );
+    }
+
+    #[rstest]
+    fn test_l1_snapshot_batch_accumulates_all_levels_asks() {
+        // F_SNAPSHOT batch accumulates ALL levels and keeps best ask
+        let mut ladder = BookLadder::new(OrderSideSpecified::Sell, BookType::L1_MBP);
+        let prices = ["104.00", "103.00", "102.00", "101.00"];
+        let batch_size = prices.len();
+
+        for (i, price_str) in prices.iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Sell,
+                price: Price::from(*price_str),
+                size: Quantity::from(10),
+                order_id: (i + 100) as u64,
+            };
+            let flags = if i == batch_size - 1 {
+                RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_SNAPSHOT as u8
+            };
+            ladder.add(order, flags);
+        }
+
+        assert_eq!(
+            ladder.len(),
+            1,
+            "L1 should have only 1 level after snapshot"
+        );
+        assert_eq!(
+            ladder.top().unwrap().price.value,
+            Price::from("101.00"),
+            "F_SNAPSHOT batch should keep best ask (101) from ALL deltas"
+        );
+    }
+
+    #[rstest]
+    fn test_l1_snapshot_vs_mbp_different_accumulation_behavior() {
+        // F_SNAPSHOT accumulates all levels, F_MBP only accumulates final two
+        let mut mbp_ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+        let prices = ["98.00", "99.00", "100.00", "101.00"];
+        for (i, price_str) in prices.iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Buy,
+                price: Price::from(*price_str),
+                size: Quantity::from(10),
+                order_id: (i + 100) as u64,
+            };
+            let flags = if i == prices.len() - 1 {
+                RecordFlag::F_MBP as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_MBP as u8
+            };
+            mbp_ladder.add(order, flags);
+        }
+        assert_eq!(
+            mbp_ladder.top().unwrap().price.value,
+            Price::from("101.00"),
+            "F_MBP keeps best of final two (100, 101)"
+        );
+
+        let mut snapshot_ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+        for (i, price_str) in prices.iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Buy,
+                price: Price::from(*price_str),
+                size: Quantity::from(10),
+                order_id: (i + 200) as u64,
+            };
+            let flags = if i == prices.len() - 1 {
+                RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_SNAPSHOT as u8
+            };
+            snapshot_ladder.add(order, flags);
+        }
+        assert_eq!(
+            snapshot_ladder.top().unwrap().price.value,
+            Price::from("101.00"),
+            "F_SNAPSHOT keeps best of ALL deltas (98, 99, 100, 101)"
+        );
+    }
+
+    #[rstest]
+    fn test_l1_snapshot_after_incomplete_mbp_stream() {
+        // Snapshot must clear stale state from incomplete F_MBP stream (no F_LAST sent)
+        let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+
+        // Incomplete F_MBP stream leaves stale batch state
+        let stale_order = BookOrder {
+            side: OrderSide::Buy,
+            price: Price::from("101.00"),
+            size: Quantity::from(10),
+            order_id: 100,
+        };
+        ladder.add(stale_order, RecordFlag::F_MBP as u8);
+        assert_eq!(ladder.top().unwrap().price.value, Price::from("101.00"));
+
+        // Snapshot arrives with Clear delta first
+        ladder.clear();
+
+        // Snapshot prices worse than stale 101
+        for (i, price_str) in ["98.00", "99.00", "100.00"].iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Buy,
+                price: Price::from(*price_str),
+                size: Quantity::from(10),
+                order_id: (i + 200) as u64,
+            };
+            let flags = if i == 2 {
+                RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_SNAPSHOT as u8
+            };
+            ladder.add(order, flags);
+        }
+
+        assert_eq!(
+            ladder.top().unwrap().price.value,
+            Price::from("100.00"),
+            "Snapshot replaces stale MBP state: best is 100, not stale 101"
+        );
+    }
+
+    #[rstest]
+    fn test_l1_snapshot_clears_previous_batch() {
+        // New F_SNAPSHOT batch clears previous batch
+        let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+
+        for (i, price_str) in ["100.00", "101.00", "102.00"].iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Buy,
+                price: Price::from(*price_str),
+                size: Quantity::from(10),
+                order_id: (i + 100) as u64,
+            };
+            let flags = if i == 2 {
+                RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_SNAPSHOT as u8
+            };
+            ladder.add(order, flags);
+        }
+        assert_eq!(ladder.top().unwrap().price.value, Price::from("102.00"));
+
+        // Second batch with worse prices
+        for (i, price_str) in ["95.00", "96.00", "97.00"].iter().enumerate() {
+            let order = BookOrder {
+                side: OrderSide::Buy,
+                price: Price::from(*price_str),
+                size: Quantity::from(20),
+                order_id: (i + 200) as u64,
+            };
+            let flags = if i == 2 {
+                RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+            } else {
+                RecordFlag::F_SNAPSHOT as u8
+            };
+            ladder.add(order, flags);
+        }
+        assert_eq!(
+            ladder.top().unwrap().price.value,
+            Price::from("97.00"),
+            "Second batch clears first: best is 97, not 102"
+        );
+    }
+
+    #[rstest]
+    fn test_l1_single_delta_snapshot_after_mbp_batch() {
+        // Single-delta snapshot (F_SNAPSHOT|F_LAST) must clear stale MBP batch state
+        let mut ladder = BookLadder::new(OrderSideSpecified::Buy, BookType::L1_MBP);
+
+        let mbp_order1 = BookOrder {
+            side: OrderSide::Buy,
+            price: Price::from("100.00"),
+            size: Quantity::from(10),
+            order_id: 1,
+        };
+        let mbp_order2 = BookOrder {
+            side: OrderSide::Buy,
+            price: Price::from("101.00"),
+            size: Quantity::from(10),
+            order_id: 2,
+        };
+        ladder.add(mbp_order1, RecordFlag::F_MBP as u8);
+        ladder.add(
+            mbp_order2,
+            RecordFlag::F_MBP as u8 | RecordFlag::F_LAST as u8,
+        );
+
+        assert_eq!(ladder.top().unwrap().price.value, Price::from("101.00"));
+
+        // Single-delta snapshot at worse price (no preceding Clear)
+        let snapshot_order = BookOrder {
+            side: OrderSide::Buy,
+            price: Price::from("95.00"),
+            size: Quantity::from(20),
+            order_id: 100,
+        };
+        ladder.add(
+            snapshot_order,
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8,
+        );
+
+        assert_eq!(
+            ladder.top().unwrap().price.value,
+            Price::from("95.00"),
+            "Single-delta snapshot clears MBP state: best is 95, not stale 101"
+        );
+        assert_eq!(ladder.len(), 1);
     }
 }

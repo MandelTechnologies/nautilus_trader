@@ -729,6 +729,129 @@ class BinanceFuturesOpenAlgoOrdersHttp(BinanceHttpEndpoint):
         return self._get_resp_decoder.decode(raw)
 
 
+class BinanceFuturesAllAlgoOrdersHttp(BinanceHttpEndpoint):
+    """
+    Endpoint for querying all algo (conditional) orders including historical.
+
+    `GET /fapi/v1/allAlgoOrders`
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Query-All-Algo-Orders
+
+    """
+
+    def __init__(
+        self,
+        client: BinanceHttpClient,
+        base_endpoint: str,
+    ):
+        methods = {
+            HttpMethod.GET: BinanceSecurityType.USER_DATA,
+        }
+        url_path = base_endpoint + "allAlgoOrders"
+        super().__init__(
+            client,
+            methods,
+            url_path,
+        )
+
+        self._get_resp_decoder = msgspec.json.Decoder(list[BinanceFuturesAlgoOrder])
+
+    class GetParameters(msgspec.Struct, omit_defaults=True, frozen=True):
+        """
+        Parameters for all algo orders GET request.
+
+        Parameters
+        ----------
+        timestamp : str
+            The millisecond timestamp of the request.
+        symbol : BinanceSymbol
+            The symbol to query (required).
+        algoId : int, optional
+            If set, retrieves orders >= that algoId; otherwise returns most recent.
+        startTime : str, optional
+            Query start timestamp in milliseconds.
+        endTime : str, optional
+            Query end timestamp in milliseconds.
+        page : int, optional
+            Pagination index.
+        limit : int, optional
+            Result limit (default 500, max 1000).
+        recvWindow : str, optional
+            The response receive window for the request (cannot be greater than 60000).
+
+        """
+
+        timestamp: str
+        symbol: BinanceSymbol
+        algoId: int | None = None
+        startTime: str | None = None
+        endTime: str | None = None
+        page: int | None = None
+        limit: int | None = None
+        recvWindow: str | None = None
+
+    async def get(self, params: GetParameters) -> list[BinanceFuturesAlgoOrder]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
+        return self._get_resp_decoder.decode(raw)
+
+
+class BinanceFuturesCancelAllAlgoOrdersHttp(BinanceHttpEndpoint):
+    """
+    Endpoint for canceling all open algo (conditional) orders for a symbol.
+
+    `DELETE /fapi/v1/algoOpenOrders`
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/Cancel-All-Algo-Open-Orders
+
+    """
+
+    def __init__(
+        self,
+        client: BinanceHttpClient,
+        base_endpoint: str,
+    ):
+        methods = {
+            HttpMethod.DELETE: BinanceSecurityType.TRADE,
+        }
+        url_path = base_endpoint + "algoOpenOrders"
+        super().__init__(
+            client,
+            methods,
+            url_path,
+        )
+
+        self._delete_resp_decoder = msgspec.json.Decoder(BinanceStatusCode)
+
+    class DeleteParameters(msgspec.Struct, omit_defaults=True, frozen=True):
+        """
+        Parameters for cancel all algo open orders DELETE request.
+
+        Parameters
+        ----------
+        timestamp : str
+            The millisecond timestamp of the request.
+        symbol : BinanceSymbol
+            The symbol to cancel all algo orders for.
+        recvWindow : str, optional
+            The response receive window for the request (cannot be greater than 60000).
+
+        """
+
+        timestamp: str
+        symbol: BinanceSymbol
+        recvWindow: str | None = None
+
+    async def delete(self, params: DeleteParameters) -> BinanceStatusCode:
+        method_type = HttpMethod.DELETE
+        raw = await self._method(method_type, params)
+        return self._delete_resp_decoder.decode(raw)
+
+
 class BinanceFuturesAccountHttpAPI(BinanceAccountHttpAPI):
     """
     Provides access to the Binance Futures Account/Trade HTTP REST API.
@@ -795,6 +918,14 @@ class BinanceFuturesAccountHttpAPI(BinanceAccountHttpAPI):
             self.base_endpoint,
         )
         self._endpoint_futures_open_algo_orders = BinanceFuturesOpenAlgoOrdersHttp(
+            client,
+            self.base_endpoint,
+        )
+        self._endpoint_futures_all_algo_orders = BinanceFuturesAllAlgoOrdersHttp(
+            client,
+            self.base_endpoint,
+        )
+        self._endpoint_futures_cancel_all_algo_orders = BinanceFuturesCancelAllAlgoOrdersHttp(
             client,
             self.base_endpoint,
         )
@@ -1084,3 +1215,77 @@ class BinanceFuturesAccountHttpAPI(BinanceAccountHttpAPI):
                 recvWindow=recv_window,
             ),
         )
+
+    async def query_all_algo_orders(
+        self,
+        symbol: str,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+        recv_window: str | None = None,
+    ) -> list[BinanceFuturesAlgoOrder]:
+        """
+        Query all algo orders including historical (triggered, cancelled, finished).
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol to query (required).
+        start_time : int, optional
+            Query start timestamp in milliseconds.
+        end_time : int, optional
+            Query end timestamp in milliseconds.
+        page : int, optional
+            Pagination index (1-based).
+        limit : int, optional
+            Result limit (default 500, max 1000).
+        recv_window : str, optional
+            The response receive window for the request.
+
+        Returns
+        -------
+        list[BinanceFuturesAlgoOrder]
+
+        """
+        return await self._endpoint_futures_all_algo_orders.get(
+            params=self._endpoint_futures_all_algo_orders.GetParameters(
+                timestamp=self._timestamp(),
+                symbol=BinanceSymbol(symbol),
+                startTime=str(start_time) if start_time else None,
+                endTime=str(end_time) if end_time else None,
+                page=page,
+                limit=limit,
+                recvWindow=recv_window,
+            ),
+        )
+
+    async def cancel_all_open_algo_orders(
+        self,
+        symbol: str,
+        recv_window: str | None = None,
+    ) -> bool:
+        """
+        Cancel all open algo orders for a specific symbol.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol to cancel all algo orders for.
+        recv_window : str, optional
+            The response receive window for the request.
+
+        Returns
+        -------
+        bool
+            True if successful.
+
+        """
+        response = await self._endpoint_futures_cancel_all_algo_orders.delete(
+            params=self._endpoint_futures_cancel_all_algo_orders.DeleteParameters(
+                timestamp=self._timestamp(),
+                symbol=BinanceSymbol(symbol),
+                recvWindow=recv_window,
+            ),
+        )
+        return response.code == 200

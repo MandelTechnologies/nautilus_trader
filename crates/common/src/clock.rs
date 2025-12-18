@@ -889,6 +889,38 @@ mod tests {
     }
 
     #[rstest]
+    fn test_timer_with_rust_local_callback() {
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut clock = TestClock::new();
+        let call_count = Rc::new(RefCell::new(0_u32));
+        let call_count_clone = Rc::clone(&call_count);
+
+        // Create RustLocal callback using Rc (not Send/Sync)
+        let callback: Rc<dyn Fn(TimeEvent)> = Rc::new(move |_event: TimeEvent| {
+            *call_count_clone.borrow_mut() += 1;
+        });
+
+        clock
+            .set_time_alert_ns(
+                "local_timer",
+                (*clock.timestamp_ns() + 1000).into(),
+                Some(TimeEventCallback::from(callback)),
+                None,
+            )
+            .unwrap();
+
+        let events = clock.advance_time(UnixNanos::from(*clock.timestamp_ns() + 1000), true);
+        let handlers = clock.match_handlers(events);
+
+        for handler in handlers {
+            handler.callback.call(handler.event);
+        }
+
+        assert_eq!(*call_count.borrow(), 1);
+    }
+
+    #[rstest]
     fn test_multiple_timers(mut test_clock: TestClock) {
         let start_time = test_clock.timestamp_ns();
         test_clock

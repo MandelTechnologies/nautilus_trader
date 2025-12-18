@@ -5904,3 +5904,181 @@ fn test_apply_delta_no_order_side_with_zero_order_id_for_clear() {
     assert_eq!(book.bids(None).count(), 0);
     assert_eq!(book.asks(None).count(), 0);
 }
+
+#[rstest]
+fn test_l1_snapshot_tardis_style_selects_best_prices() {
+    // Simulates Tardis snapshot format: Clear + bids + asks with F_LAST only on last ask
+    // Verifies L1_MBP correctly accumulates all levels and selects best prices
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut book = OrderBook::new(instrument_id, BookType::L1_MBP);
+
+    // Tardis snapshot format:
+    // 1. Clear delta (F_SNAPSHOT)
+    // 2. Bid deltas (F_SNAPSHOT)
+    // 3. Ask deltas (F_SNAPSHOT, last one has F_LAST)
+
+    let mut deltas = Vec::new();
+
+    // Clear delta
+    deltas.push(OrderBookDelta::clear(instrument_id, 0, 0.into(), 0.into()));
+
+    // Bid levels: 99, 100, 101 (best bid should be 101)
+    for price in ["99.00", "100.00", "101.00"] {
+        let order = BookOrder::new(
+            OrderSide::Buy,
+            Price::from(price),
+            Quantity::from("10"),
+            0, // order_id will be normalized by pre_process_order
+        );
+        deltas.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            order,
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+
+    // Ask levels: 105, 104, 103, 102 (best ask should be 102)
+    let ask_prices = ["105.00", "104.00", "103.00", "102.00"];
+    for (i, price) in ask_prices.iter().enumerate() {
+        let order = BookOrder::new(
+            OrderSide::Sell,
+            Price::from(*price),
+            Quantity::from("10"),
+            0,
+        );
+        // Last ask gets F_LAST
+        let flags = if i == ask_prices.len() - 1 {
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+        } else {
+            RecordFlag::F_SNAPSHOT as u8
+        };
+        deltas.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            order,
+            flags,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+
+    // Apply all deltas
+    let order_book_deltas = OrderBookDeltas::new(instrument_id, deltas);
+    book.apply_deltas(&order_book_deltas).unwrap();
+
+    // Verify best prices
+    assert_eq!(
+        book.best_bid_price(),
+        Some(Price::from("101.00")),
+        "L1 snapshot should select best bid (101) from all bid levels"
+    );
+    assert_eq!(
+        book.best_ask_price(),
+        Some(Price::from("102.00")),
+        "L1 snapshot should select best ask (102) from all ask levels"
+    );
+}
+
+#[rstest]
+fn test_l1_consecutive_snapshots_clear_between() {
+    // Verifies that consecutive Tardis-style snapshots correctly clear previous state
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut book = OrderBook::new(instrument_id, BookType::L1_MBP);
+
+    // First snapshot: bids at 100, 101; asks at 102, 103
+    let mut deltas1 = Vec::new();
+    deltas1.push(OrderBookDelta::clear(instrument_id, 0, 0.into(), 0.into()));
+    for price in ["100.00", "101.00"] {
+        deltas1.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from("10"), 0),
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+    for (i, price) in ["103.00", "102.00"].iter().enumerate() {
+        let flags = if i == 1 {
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+        } else {
+            RecordFlag::F_SNAPSHOT as u8
+        };
+        deltas1.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Sell,
+                Price::from(*price),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+
+    book.apply_deltas(&OrderBookDeltas::new(instrument_id, deltas1))
+        .unwrap();
+    assert_eq!(book.best_bid_price(), Some(Price::from("101.00")));
+    assert_eq!(book.best_ask_price(), Some(Price::from("102.00")));
+
+    // Second snapshot: worse prices - bids at 95, 96; asks at 108, 107
+    let mut deltas2 = Vec::new();
+    deltas2.push(OrderBookDelta::clear(instrument_id, 0, 1.into(), 1.into()));
+    for price in ["95.00", "96.00"] {
+        deltas2.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from("10"), 0),
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            1.into(),
+            1.into(),
+        ));
+    }
+    for (i, price) in ["108.00", "107.00"].iter().enumerate() {
+        let flags = if i == 1 {
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+        } else {
+            RecordFlag::F_SNAPSHOT as u8
+        };
+        deltas2.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Sell,
+                Price::from(*price),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            1.into(),
+            1.into(),
+        ));
+    }
+
+    book.apply_deltas(&OrderBookDeltas::new(instrument_id, deltas2))
+        .unwrap();
+
+    // Should have new (worse) prices, not old prices
+    assert_eq!(
+        book.best_bid_price(),
+        Some(Price::from("96.00")),
+        "Second snapshot should clear first, best bid is 96"
+    );
+    assert_eq!(
+        book.best_ask_price(),
+        Some(Price::from("107.00")),
+        "Second snapshot should clear first, best ask is 107"
+    );
+}

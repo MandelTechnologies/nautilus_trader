@@ -1617,7 +1617,7 @@ impl TimeBarAggregator {
                 .clone()
         };
 
-        let callback = TimeEventCallback::Rust(Rc::new(move |event: TimeEvent| {
+        let callback = TimeEventCallback::RustLocal(Rc::new(move |event: TimeEvent| {
             if let Some(agg) = aggregator_weak.upgrade() {
                 agg.borrow_mut().build_bar(event);
             }
