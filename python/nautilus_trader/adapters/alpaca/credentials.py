@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  QuantChat Alpaca Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 import os

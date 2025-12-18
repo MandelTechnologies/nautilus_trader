@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
-#  Bot-folio Alpaca Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  QuantChat Alpaca Adapter for Nautilus Trader
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 """
 Alpaca adapter for Nautilus Trader.

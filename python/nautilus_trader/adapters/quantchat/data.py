@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
-#  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  QuantChat Local Paper Trading Adapter for Nautilus Trader
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from nautilus_trader.model.objects import Quantity
 
 class QuantChatDataClient(LiveMarketDataClient):
     """
-    Provides a data client for Botfolio local paper trading.
+    Provides a data client for QuantChat local paper trading.
 
     Subscribes to Redis pub/sub channels for market data published by the
     quantchat backend (from EODHD).
@@ -114,7 +114,7 @@ class QuantChatDataClient(LiveMarketDataClient):
         # Start listening task
         self._listen_task = asyncio.create_task(self._listen_loop())
 
-        self._log.info("Botfolio data client connected", LogColor.GREEN)
+        self._log.info("QuantChat data client connected", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
         """
@@ -141,7 +141,7 @@ class QuantChatDataClient(LiveMarketDataClient):
         self._subscribed_quote_symbols.clear()
         self._bar_types.clear()
 
-        self._log.info("Botfolio data client disconnected")
+        self._log.info("QuantChat data client disconnected")
 
     async def _listen_loop(self) -> None:
         """

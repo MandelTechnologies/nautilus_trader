@@ -45,7 +45,7 @@ RUN uv build --wheel
 RUN uv pip install --system dist/*.whl
 RUN find /usr/local/lib/python3.13/site-packages -name "*.pyc" -exec rm -f {} \;
 
-# Copy bot-folio custom modules into installed package
+# Copy QuantChat custom modules into installed package
 COPY python/nautilus_trader/quantchat /usr/local/lib/python3.13/site-packages/nautilus_trader/quantchat
 COPY python/nautilus_trader/adapters/alpaca /usr/local/lib/python3.13/site-packages/nautilus_trader/adapters/alpaca
 
@@ -55,11 +55,11 @@ FROM base AS application
 COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
-# Install dependencies for bot-folio trading engine
+# Install dependencies for QuantChat trading engine
 # - redis: for config/code fetching
 # - aiohttp, websockets: for Alpaca adapter
 RUN pip install --no-cache-dir redis aiohttp websockets
 
-# Default entrypoint for bot-folio trading engine
+# Default entrypoint for QuantChat trading engine
 # Runs the strategy fetcher/executor from the quantchat module
 CMD ["python", "-m", "nautilus_trader.quantchat.run_strategy"]

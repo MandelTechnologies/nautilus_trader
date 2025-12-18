@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  QuantChat Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def get_cached_quantchat_instrument_provider(
     config: InstrumentProviderConfig,
 ) -> QuantChatInstrumentProvider:
     """
-    Cache and return a Botfolio instrument provider.
+    Cache and return a QuantChat instrument provider.
 
     If a cached provider already exists, then that provider will be returned.
 
@@ -51,7 +51,7 @@ def get_cached_quantchat_instrument_provider(
 
 class QuantChatLiveDataClientFactory(LiveDataClientFactory):
     """
-    Provides a Botfolio live data client factory.
+    Provides a QuantChat live data client factory.
     """
 
     @staticmethod
@@ -64,7 +64,7 @@ class QuantChatLiveDataClientFactory(LiveDataClientFactory):
         clock: LiveClock,
     ) -> QuantChatDataClient:
         """
-        Create a new Botfolio data client.
+        Create a new QuantChat data client.
 
         Parameters
         ----------
@@ -105,7 +105,7 @@ class QuantChatLiveDataClientFactory(LiveDataClientFactory):
 
 class QuantChatLiveExecClientFactory(LiveExecClientFactory):
     """
-    Provides a Botfolio live execution client factory.
+    Provides a QuantChat live execution client factory.
     """
 
     @staticmethod
@@ -118,7 +118,7 @@ class QuantChatLiveExecClientFactory(LiveExecClientFactory):
         clock: LiveClock,
     ) -> QuantChatExecutionClient:
         """
-        Create a new Botfolio execution client.
+        Create a new QuantChat execution client.
 
         Parameters
         ----------

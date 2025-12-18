@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
 #  QuantChat Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.model.identifiers import Venue

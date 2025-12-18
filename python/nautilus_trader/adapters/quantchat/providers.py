@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
-#  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  QuantChat Local Paper Trading Adapter for Nautilus Trader
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from nautilus_trader.model.objects import Quantity
 
 class QuantChatInstrumentProvider(InstrumentProvider):
     """
-    Provides instruments for Botfolio local paper trading.
+    Provides instruments for QuantChat local paper trading.
 
     For simplicity, this provider creates instruments on-demand based on
     symbol naming conventions:
@@ -52,10 +52,10 @@ class QuantChatInstrumentProvider(InstrumentProvider):
         """
         Load all available instruments.
 
-        For Botfolio, instruments are created on-demand, so this is a no-op.
+        For QuantChat, instruments are created on-demand, so this is a no-op.
 
         """
-        self._log.info("Botfolio instruments are created on-demand")
+        self._log.info("QuantChat instruments are created on-demand")
 
     async def load_ids_async(
         self,

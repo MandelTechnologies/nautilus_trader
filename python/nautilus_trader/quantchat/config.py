@@ -1,5 +1,5 @@
 """
-Bot-folio configuration helpers.
+QuantChat configuration helpers.
 
 Provides easy access to credentials and settings injected by run_strategy.py.
 

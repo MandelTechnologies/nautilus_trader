@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
-#  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  QuantChat Local Paper Trading Adapter for Nautilus Trader
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.adapters.quantchat.constants import DEFAULT_BASE_LATENCY_MS

@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------
-#  Bot-folio Local Paper Trading Adapter for Nautilus Trader
-#  https://github.com/mandeltechnologies/quantchat
+#  QuantChat Local Paper Trading Adapter for Nautilus Trader
+#  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ from nautilus_trader.model.objects import Quantity
 
 class QuantChatExecutionClient(LiveExecutionClient):
     """
-    Provides an execution client for Botfolio local paper trading.
+    Provides an execution client for QuantChat local paper trading.
 
     Simulates order execution with configurable slippage and latency.
     Uses Redis to receive price data for fill simulation.
@@ -185,7 +185,7 @@ class QuantChatExecutionClient(LiveExecutionClient):
             self._log.info(f"Initialized account with balances: {self._config.starting_balance}")
 
         self._log.info(
-            f"Botfolio execution client connected (account: {self._account_id})",
+            f"QuantChat execution client connected (account: {self._account_id})",
             LogColor.GREEN,
         )
 
@@ -214,7 +214,7 @@ class QuantChatExecutionClient(LiveExecutionClient):
         self._subscribed_symbols.clear()
         self._pending_orders.clear()
 
-        self._log.info("Botfolio execution client disconnected")
+        self._log.info("QuantChat execution client disconnected")
 
     async def _listen_loop(self) -> None:
         """

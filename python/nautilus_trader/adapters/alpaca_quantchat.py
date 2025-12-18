@@ -1,5 +1,5 @@
 """
-Lightweight Alpaca adapter scaffold for Bot-folio Nautilus workers.
+Lightweight Alpaca adapter scaffold for QuantChat Nautilus workers.
 
 This is a placeholder for live execution; methods must be implemented before production
 use.
@@ -26,7 +26,7 @@ class RiskLimits:
     allowed_symbols: list[str] | None = None
 
 
-class AlpacaBotfolioAdapter:
+class AlpacaQuantChatAdapter:
     """
     Placeholder adapter; wire to Alpaca REST/WS and emit Nautilus events.
     """
