@@ -26,7 +26,7 @@ use nautilus_blockchain::{
 use nautilus_common::{
     actor::{DataActor, DataActorCore, data_actor::DataActorConfig},
     enums::{Environment, LogColor},
-    live::runtime::get_runtime,
+    live::get_runtime,
     log_warn,
     logging::log_info,
 };

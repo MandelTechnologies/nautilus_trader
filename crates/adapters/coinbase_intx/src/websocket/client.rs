@@ -25,7 +25,7 @@ use ahash::{AHashMap, AHashSet};
 use chrono::Utc;
 use dashmap::DashMap;
 use futures_util::{Stream, StreamExt};
-use nautilus_common::{live::runtime::get_runtime, logging::log_task_stopped};
+use nautilus_common::{live::get_runtime, logging::log_task_stopped};
 use nautilus_core::{
     consts::NAUTILUS_USER_AGENT, env::get_or_env_var, time::get_atomic_clock_realtime,
 };
@@ -202,7 +202,7 @@ impl CoinbaseIntxWebSocketClient {
         let post_reconnect = Arc::new(move || {
             let client = client.clone();
 
-            tokio::spawn(async move { client.resubscribe_all().await });
+            get_runtime().spawn(async move { client.resubscribe_all().await });
         });
 
         let config = WebSocketConfig {

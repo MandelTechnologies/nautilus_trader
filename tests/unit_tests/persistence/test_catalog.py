@@ -2355,3 +2355,152 @@ def test_query_first_timestamp_returns_none_when_no_data(catalog: ParquetDataCat
 
     # Assert
     assert result is None
+
+
+def test_backend_session_files_with_optimize_disabled_reads_only_specified_files(
+    catalog: ParquetDataCatalog,
+) -> None:
+    """
+    Test that with optimize_file_loading=False, only specified files are read.
+
+    When `optimize_file_loading=False`, each file is registered individually with
+    DataFusion. This is needed for operations like consolidation where precise file
+    control is required.
+
+    """
+    # Arrange
+    instrument = TestInstrumentProvider.default_fx_ccy("EUR/USD", Venue("SIM"))
+    catalog.write_data([instrument])
+
+    trades_batch1 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.10000"),
+            size=Quantity.from_int(100),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId(f"batch1_{i}"),
+            ts_event=1000 + i,
+            ts_init=1000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch1)
+
+    trades_batch2 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.20000"),
+            size=Quantity.from_int(200),
+            aggressor_side=AggressorSide.SELLER,
+            trade_id=TradeId(f"batch2_{i}"),
+            ts_event=2000 + i,
+            ts_init=2000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch2)
+
+    trades_batch3 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.30000"),
+            size=Quantity.from_int(300),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId(f"batch3_{i}"),
+            ts_event=3000 + i,
+            ts_init=3000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch3)
+
+    all_files = catalog._query_files(TradeTick, [str(instrument.id)], None, None)
+    assert len(all_files) == 3, f"Expected 3 files, got {len(all_files)}: {all_files}"
+    selected_files = [all_files[0]]
+
+    # Act
+    session = catalog.backend_session(
+        data_cls=TradeTick,
+        files=selected_files,
+        optimize_file_loading=False,
+    )
+
+    result = session.to_query_result()
+    data = []
+    for chunk in result:
+        from nautilus_trader.model.data import capsule_to_list
+
+        data.extend(capsule_to_list(chunk))
+
+    # Assert
+    assert len(data) == 3, f"Expected 3 trades from one file, got {len(data)}"
+    prices = {str(trade.price) for trade in data}
+    assert len(prices) == 1, f"Expected trades from single batch, got prices: {prices}"
+
+
+def test_backend_session_files_with_optimize_reads_entire_directory(
+    catalog: ParquetDataCatalog,
+) -> None:
+    """
+    Test that with optimize_file_loading=True, the entire directory is read.
+
+    The `files` parameter is a performance hint to skip file discovery, but with
+    `optimize_file_loading=True` (the default), DataFusion reads all files in the
+    directory for efficiency. Only with `optimize_file_loading=False` are the
+    specific files honored.
+
+    """
+    # Arrange
+    instrument = TestInstrumentProvider.default_fx_ccy("GBP/USD", Venue("SIM"))
+    catalog.write_data([instrument])
+
+    trades_batch1 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.25000"),
+            size=Quantity.from_int(100),
+            aggressor_side=AggressorSide.BUYER,
+            trade_id=TradeId(f"opt_batch1_{i}"),
+            ts_event=1000 + i,
+            ts_init=1000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch1)
+
+    trades_batch2 = [
+        TradeTick(
+            instrument_id=instrument.id,
+            price=Price.from_str("1.26000"),
+            size=Quantity.from_int(200),
+            aggressor_side=AggressorSide.SELLER,
+            trade_id=TradeId(f"opt_batch2_{i}"),
+            ts_event=2000 + i,
+            ts_init=2000 + i,
+        )
+        for i in range(3)
+    ]
+    catalog.write_data(trades_batch2)
+
+    all_files = catalog._query_files(TradeTick, [str(instrument.id)], None, None)
+    assert len(all_files) == 2
+    selected_files = [all_files[0]]  # Only pass one file, but expect all to be read
+
+    # Act
+    session = catalog.backend_session(
+        data_cls=TradeTick,
+        files=selected_files,
+        optimize_file_loading=True,  # Directory-based reading
+    )
+
+    result = session.to_query_result()
+    data = []
+    for chunk in result:
+        from nautilus_trader.model.data import capsule_to_list
+
+        data.extend(capsule_to_list(chunk))
+
+    # Assert - with optimize_file_loading=True, the entire directory is read
+    assert len(data) == 6, f"Expected 6 trades from entire directory, got {len(data)}"
+    prices = {str(trade.price) for trade in data}
+    assert len(prices) == 2, f"Expected trades from both batches, got prices: {prices}"

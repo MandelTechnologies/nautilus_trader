@@ -15,7 +15,7 @@
 
 use nautilus_common::{
     defi::RequestPoolSnapshot,
-    live::runtime::get_runtime,
+    live::get_runtime,
     messages::{
         DataEvent,
         defi::{

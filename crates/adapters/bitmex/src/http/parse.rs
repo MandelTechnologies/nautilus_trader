@@ -32,7 +32,7 @@ use super::models::{
     BitmexExecution, BitmexInstrument, BitmexOrder, BitmexPosition, BitmexTrade, BitmexTradeBin,
 };
 use crate::common::{
-    enums::{BitmexExecInstruction, BitmexExecType, BitmexInstrumentType},
+    enums::{BitmexExecInstruction, BitmexExecType, BitmexInstrumentState, BitmexInstrumentType},
     parse::{
         clean_reason, convert_contract_quantity, derive_contract_decimal_and_increment,
         map_bitmex_currency, normalize_trade_bin_prices, normalize_trade_bin_volume,
@@ -51,6 +51,11 @@ pub enum InstrumentParseResult {
     Unsupported {
         symbol: String,
         instrument_type: BitmexInstrumentType,
+    },
+    /// Instrument is not tradeable (delisted, settled, unlisted).
+    Inactive {
+        symbol: String,
+        state: BitmexInstrumentState,
     },
     /// Failed to parse due to an error.
     Failed {
@@ -83,6 +88,15 @@ pub fn parse_instrument_any(
 ) -> InstrumentParseResult {
     let symbol = instrument.symbol.to_string();
     let instrument_type = instrument.instrument_type;
+
+    match instrument.state {
+        BitmexInstrumentState::Open | BitmexInstrumentState::Closed => {}
+        state @ (BitmexInstrumentState::Unlisted
+        | BitmexInstrumentState::Settled
+        | BitmexInstrumentState::Delisted) => {
+            return InstrumentParseResult::Inactive { symbol, state };
+        }
+    }
 
     match instrument.instrument_type {
         BitmexInstrumentType::Spot => match parse_spot_instrument(instrument, ts_init) {

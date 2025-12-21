@@ -21,10 +21,9 @@ use std::sync::{
 };
 
 use anyhow::Context;
-use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_common::{
-    live::runner::get_data_event_sender,
+    live::{runner::get_data_event_sender, runtime::get_runtime},
     messages::{
         DataEvent, DataResponse,
         data::{
@@ -39,6 +38,7 @@ use nautilus_common::{
 };
 use nautilus_core::{
     UnixNanos,
+    datetime::datetime_to_unix_nanos,
     time::{AtomicTime, get_atomic_clock_realtime},
 };
 use nautilus_data::client::DataClient;
@@ -222,7 +222,7 @@ impl DydxDataClient {
     where
         F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             if let Err(e) = fut.await {
                 tracing::error!("{context}: {e:?}");
             }
@@ -347,7 +347,7 @@ impl DataClient for DydxDataClient {
                 let active_bar_subs = self.active_bar_subs.clone();
                 let incomplete_bars = self.incomplete_bars.clone();
 
-                let task = tokio::spawn(async move {
+                let task = get_runtime().spawn(async move {
                     let mut rx = rx;
                     while let Some(msg) = rx.recv().await {
                         let ctx = WsMessageContext {
@@ -501,7 +501,7 @@ impl DataClient for DydxDataClient {
         let ws = self.ws_client()?.clone();
         let instrument_id = cmd.instrument_id;
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             if let Err(e) = ws.subscribe_orderbook(instrument_id).await {
                 tracing::error!(
                     "Failed to subscribe to orderbook snapshot for {instrument_id}: {e:?}"
@@ -746,7 +746,7 @@ impl DataClient for DydxDataClient {
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             // First try to get from cache
             let symbol = Ustr::from(instrument_id.symbol.as_str());
             let instrument = if let Some(cached) = instruments_cache.get(&symbol) {
@@ -808,7 +808,7 @@ impl DataClient for DydxDataClient {
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             match http.request_instruments(None, None, None).await {
                 Ok(instruments) => {
                     tracing::info!("Fetched {} instruments from dYdX", instruments.len());
@@ -879,7 +879,7 @@ impl DataClient for DydxDataClient {
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             // dYdX Indexer trades endpoint supports `limit` but not an explicit
             // date range in this client; we approximate by using the provided
             // limit and instrument metadata for precision.
@@ -1109,7 +1109,7 @@ impl DataClient for DydxDataClient {
             }
         };
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             // Determine bar duration in seconds.
             let bar_secs: i64 = match spec.aggregation {
                 BarAggregation::Minute => spec.step.get() as i64 * 60,
@@ -1348,14 +1348,6 @@ fn upsert_instrument(cache: &Arc<DashMap<Ustr, InstrumentAny>>, instrument: Inst
     cache.insert(symbol, instrument);
 }
 
-/// Convert optional DateTime to optional UnixNanos timestamp.
-fn datetime_to_unix_nanos(value: Option<DateTime<Utc>>) -> Option<UnixNanos> {
-    value
-        .and_then(|dt| dt.timestamp_nanos_opt())
-        .and_then(|nanos| u64::try_from(nanos).ok())
-        .map(UnixNanos::from)
-}
-
 impl DydxDataClient {
     /// Start a task to periodically refresh instruments.
     ///
@@ -1384,7 +1376,7 @@ impl DydxDataClient {
             interval_secs
         );
 
-        let task = tokio::spawn(async move {
+        let task = get_runtime().spawn(async move {
             let mut interval_timer = tokio::time::interval(interval);
             interval_timer.tick().await; // Skip first immediate tick
 
@@ -1457,7 +1449,7 @@ impl DydxDataClient {
             interval_secs
         );
 
-        let task = tokio::spawn(async move {
+        let task = get_runtime().spawn(async move {
             let mut interval_timer = tokio::time::interval(interval);
             interval_timer.tick().await; // Skip first immediate tick
 
@@ -1767,7 +1759,7 @@ impl DydxDataClient {
                     for entry in ctx.active_orderbook_subs.iter() {
                         let instrument_id = *entry.key();
                         let ws_clone = ws.clone();
-                        tokio::spawn(async move {
+                        get_runtime().spawn(async move {
                             if let Err(e) = ws_clone.subscribe_orderbook(instrument_id).await {
                                 tracing::error!(
                                     "Failed to re-subscribe to orderbook for {instrument_id}: {e:?}"
@@ -1782,7 +1774,7 @@ impl DydxDataClient {
                     for entry in ctx.active_trade_subs.iter() {
                         let instrument_id = *entry.key();
                         let ws_clone = ws.clone();
-                        tokio::spawn(async move {
+                        get_runtime().spawn(async move {
                             if let Err(e) = ws_clone.subscribe_trades(instrument_id).await {
                                 tracing::error!(
                                     "Failed to re-subscribe to trades for {instrument_id}: {e:?}"
@@ -1815,7 +1807,7 @@ impl DydxDataClient {
                             );
                         }
 
-                        tokio::spawn(async move {
+                        get_runtime().spawn(async move {
                             if let Err(e) =
                                 ws_clone.subscribe_candles(instrument_id, &resolution).await
                             {
@@ -1834,6 +1826,11 @@ impl DydxDataClient {
                 } else {
                     tracing::warn!("WebSocket client not available for re-subscription");
                 }
+            }
+            crate::websocket::enums::NautilusWsMessage::BlockHeight(_) => {
+                tracing::debug!(
+                    "Ignoring block height message on dYdX data client (handled by execution adapter)"
+                );
             }
             crate::websocket::enums::NautilusWsMessage::Order(_)
             | crate::websocket::enums::NautilusWsMessage::Fill(_)
@@ -2239,7 +2236,7 @@ impl DydxDataClient {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, net::SocketAddr};
+    use std::{collections::HashMap, net::SocketAddr, time::Duration};
 
     use axum::{
         Router,
@@ -2247,10 +2244,12 @@ mod tests {
         response::Json,
         routing::get,
     };
+    use chrono::Utc;
     use indexmap::IndexMap;
     use nautilus_common::{
         live::runner::set_data_event_sender,
         messages::{DataEvent, data::DataResponse},
+        testing::wait_until_async,
     };
     use nautilus_core::UUID4;
     use nautilus_model::{
@@ -2270,7 +2269,7 @@ mod tests {
     use rstest::rstest;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
     use crate::http::models::{Candle, CandlesResponse};
@@ -2279,6 +2278,14 @@ mod tests {
         // Initialize data event sender for tests
         let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
         set_data_event_sender(sender);
+    }
+
+    async fn wait_for_server(addr: SocketAddr) {
+        wait_until_async(
+            || async move { TcpStream::connect(addr).await.is_ok() },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 
     #[rstest]
@@ -2754,13 +2761,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             axum::serve(listener, router.into_make_service())
                 .await
                 .unwrap();
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_server(addr).await;
         addr
     }
 
@@ -2794,13 +2801,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             axum::serve(listener, router.into_make_service())
                 .await
                 .unwrap();
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_server(addr).await;
         addr
     }
 
@@ -2821,13 +2828,13 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             axum::serve(listener, router.into_make_service())
                 .await
                 .unwrap();
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        wait_for_server(addr).await;
         addr
     }
 
@@ -4896,7 +4903,13 @@ mod tests {
         );
 
         assert!(client.request_trades(&request).is_ok());
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        let state_clone = state.clone();
+        wait_until_async(
+            || async { state_clone.last_limit.lock().await.is_some() },
+            Duration::from_secs(5),
+        )
+        .await;
 
         // Verify limit was passed to HTTP client
         let last_limit = *state.last_limit.lock().await;
@@ -5356,15 +5369,15 @@ mod tests {
             .route("/v4/markets", get(malformed_markets_handler))
             .with_state(MalformedState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
@@ -5439,15 +5452,15 @@ mod tests {
             .route("/v4/markets", get(missing_fields_handler))
             .with_state(MissingFieldsState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
@@ -5524,15 +5537,15 @@ mod tests {
             .route("/v4/markets", get(invalid_types_handler))
             .with_state(InvalidTypesState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
@@ -5604,15 +5617,15 @@ mod tests {
             .route("/v4/markets", get(unexpected_structure_handler))
             .with_state(UnexpectedState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
@@ -5679,15 +5692,15 @@ mod tests {
             .route("/v4/markets", get(empty_markets_handler))
             .with_state(EmptyMarketsState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
@@ -5762,15 +5775,15 @@ mod tests {
             .route("/v4/markets", get(null_values_handler))
             .with_state(NullValuesState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);
@@ -6230,15 +6243,15 @@ mod tests {
             .route("/v4/markets", get(venue_handler))
             .with_state(VenueTestState);
 
-        let addr = SocketAddr::from(([127, 0, 0, 1], 0));
-        let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = listener.local_addr().unwrap();
+        let port = server_addr.port();
 
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        wait_for_server(server_addr).await;
 
         let (sender, mut rx) = tokio::sync::mpsc::unbounded_channel::<DataEvent>();
         set_data_event_sender(sender);

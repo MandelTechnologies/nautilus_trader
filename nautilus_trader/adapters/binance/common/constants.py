@@ -45,6 +45,7 @@ BINANCE_RETRY_ERRORS: set[BinanceErrorCode] = {
 BINANCE_RETRY_WARNINGS: set[BinanceErrorCode] = {
     BinanceErrorCode.FOK_ORDER_REJECT,
     BinanceErrorCode.GTX_ORDER_REJECT,
+    BinanceErrorCode.ORDER_WOULD_IMMEDIATELY_TRIGGER,
 }
 
 # Valid `priceMatch` argument values for Binance Futures order placement.

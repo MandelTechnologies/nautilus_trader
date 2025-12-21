@@ -48,7 +48,6 @@ pub mod handler;
 pub mod messages;
 pub mod parse;
 
-// Re-exports
 pub use client::DydxWebSocketClient;
 pub use enums::{
     DydxWsChannel, DydxWsMessage, DydxWsMessageType, DydxWsOperation, NautilusWsMessage,

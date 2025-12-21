@@ -32,7 +32,7 @@ use std::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::Stream;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::{
     consts::NAUTILUS_USER_AGENT, env::get_or_env_var_opt, time::get_atomic_clock_realtime,
 };
@@ -73,6 +73,10 @@ const AUTHENTICATION_TIMEOUT_SECS: u64 = 30;
 
 /// WebSocket client for connecting to Deribit.
 #[derive(Clone)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+)]
 pub struct DeribitWebSocketClient {
     url: String,
     is_testnet: bool,
@@ -226,6 +230,12 @@ impl DeribitWebSocketClient {
         self.connection_mode() == ConnectionMode::Active
     }
 
+    /// Returns the WebSocket URL.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     /// Returns whether the client is closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -286,7 +296,7 @@ impl DeribitWebSocketClient {
             let tx = self.cmd_tx.clone();
             let inst = self.instruments_cache.get(&symbol).map(|r| r.clone());
             if let Some(inst) = inst {
-                tokio::spawn(async move {
+                get_runtime().spawn(async move {
                     let _ = tx
                         .read()
                         .await

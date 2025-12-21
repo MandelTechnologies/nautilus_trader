@@ -790,6 +790,37 @@ The `FillModel` has certain limitations to keep in mind:
 - **Partial fills are supported** with L2/L3 order book data - when there is no longer any size available in the order book, no more fills will be generated and the order will remain in a partially filled state. This accurately simulates real market conditions where not enough liquidity is available at the desired price levels.
 - With L1 data, slippage limits to a fixed 1-tick, at which the system fills the entire order's quantity.
 
+### Order book immutability and consumed liquidity
+
+Historical order book data is immutable during backtesting. When your order fills against book liquidity,
+the book state remains unchanged. This preserves historical data integrity.
+
+The matching engine tracks **total consumed quantity** per order. On subsequent market updates,
+available liquidity is calculated as:
+
+```
+available_liquidity = book_liquidity - consumed_liquidity
+```
+
+**Example:**
+
+1. Order book shows 10 units at price 100.00.
+2. Your BUY LIMIT order for 200 units at 100.00 fills 10 units (consumed = 10).
+3. An unrelated market update arrives (e.g., a change on the bid side).
+4. The book still shows 10 units at 100.00, but consumed = 10.
+5. Available = 10 - 10 = 0, so no additional fill occurs.
+6. The book updates to show 50 units at 100.00.
+7. Available = 50 - 10 = 40, so the order fills 40 more units.
+
+When new liquidity arrives at better prices, fills are calculated from best to worst prices
+with the total consumed quantity subtracted. This ensures correct total fill quantity
+and is slightly conservative on fill prices.
+
+:::note
+Consumed liquidity tracking is **per-order**. Different orders can each consume the full book liquidity independently.
+A future update may implement persistent liquidity consumption across orders at each price level.
+:::
+
 :::note
 As the `FillModel` continues to evolve, future versions may introduce more sophisticated simulation of order execution dynamics, including:
 

@@ -20,7 +20,7 @@ use std::{cell::RefCell, rc::Rc};
 use nautilus_common::{
     actor::data_actor::{DataActorConfig, ImportableActorConfig},
     enums::Environment,
-    live::runtime::get_runtime,
+    live::get_runtime,
     python::actor::PyDataActor,
 };
 use nautilus_core::{UUID4, python::to_pyruntime_err};

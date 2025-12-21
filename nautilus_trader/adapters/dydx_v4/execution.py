@@ -39,6 +39,7 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
+from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import nanos_to_secs
 from nautilus_trader.core.uuid import UUID4
@@ -314,6 +315,19 @@ class DYDXv4ExecutionClient(LiveExecutionClient):
             )
             return
 
+        # Check block height is available for short-term orders
+        if self._block_height == 0:
+            reason = "Block height not initialized"
+            self._log.warning(
+                f"Cannot submit order {command.order.client_order_id}: {reason}",
+                LogColor.YELLOW,
+            )
+            self._generate_order_rejected(
+                command.order.client_order_id,
+                reason,
+            )
+            return
+
         order = command.order
         instrument = self._instrument_provider.find(order.instrument_id)
 
@@ -380,6 +394,12 @@ class DYDXv4ExecutionClient(LiveExecutionClient):
         assert self._wallet is not None  # Checked in _submit_order
         # Convert TimeInForce enum to int value
         tif_value = order.time_in_force.value
+
+        self._log.info(
+            f"Submitting limit order with block_height={self._block_height}, "
+            f"price={order.price}, qty={order.quantity}, tif={order.time_in_force}",
+            LogColor.MAGENTA,
+        )
 
         await self._order_submitter.submit_limit_order(
             wallet=self._wallet,
@@ -676,7 +696,11 @@ class DYDXv4ExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.exception("Failed to generate OrderStatusReports", e)
 
-        self._log.info(f"Received {len(reports)} OrderStatusReport(s)")
+        self._log_report_receipt(
+            len(reports),
+            "OrderStatusReport",
+            command.log_receipt_level,
+        )
 
         return reports
 
@@ -725,7 +749,7 @@ class DYDXv4ExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.exception("Failed to generate FillReports", e)
 
-        self._log.info(f"Received {len(reports)} FillReport(s)")
+        self._log_report_receipt(len(reports), "FillReport", LogLevel.INFO)
 
         return reports
 
@@ -774,7 +798,11 @@ class DYDXv4ExecutionClient(LiveExecutionClient):
         except Exception as e:
             self._log.exception("Failed to generate PositionStatusReports", e)
 
-        self._log.info(f"Received {len(reports)} PositionStatusReport(s)")
+        self._log_report_receipt(
+            len(reports),
+            "PositionStatusReport",
+            command.log_receipt_level,
+        )
 
         return reports
 

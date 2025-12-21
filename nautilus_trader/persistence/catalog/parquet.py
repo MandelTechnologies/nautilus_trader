@@ -894,6 +894,7 @@ class ParquetDataCatalog(BaseDataCatalog):
                 start=query_info["query_start"],
                 end=query_info["query_end"],
                 files=existing_files,
+                optimize_file_loading=False,
             )
 
             if not period_data:
@@ -1642,6 +1643,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         where: str | None = None,
         session: DataBackendSession | None = None,
         files: list[str] | None = None,
+        optimize_file_loading: bool = True,
         **kwargs: Any,
     ) -> DataBackendSession:
         """
@@ -1666,8 +1668,15 @@ class ParquetDataCatalog(BaseDataCatalog):
         session : DataBackendSession, optional
             An existing session to update. If None, a new session is created.
         files : list[str], optional
-            A specific list of files to query from. If provided, these files are used
-            instead of discovering files through the normal process.
+            A list of known files to use, skipping the file discovery step. This is a
+            performance optimization when the caller already knows which files exist.
+            Note: With `optimize_file_loading=True`, the entire directory containing
+            these files will be read by DataFusion, not just the specified files.
+        optimize_file_loading : bool, default True
+            If True (default), registers entire directories with DataFusion, which is
+            more efficient for managing many files. If False, registers each file
+            individually (needed for operations like consolidation where precise file
+            control is required).
         **kwargs : Any
             Additional keyword arguments.
 
@@ -1701,8 +1710,9 @@ class ParquetDataCatalog(BaseDataCatalog):
         if self.fs_protocol != "file":
             self._register_object_store_with_session(session)
 
-        if files is not None:
-            # If specific files are requested, register them individually
+        if files is not None and not optimize_file_loading:
+            # Register files individually only when optimization is disabled
+            # (e.g., for consolidation operations requiring precise file control)
             for file in files:
                 self._register_file_table(
                     session=session,
@@ -1714,10 +1724,14 @@ class ParquetDataCatalog(BaseDataCatalog):
                     where=where,
                 )
         else:
-            # Otherwise, group by directory (instrument) to reduce the number of
-            # registered tables and streams. This significantly reduces memory usage
-            # when dealing with many small files.
-            file_list = self._query_files(data_cls, identifiers, start, end)
+            # Use directory-based registration for efficiency. DataFusion handles
+            # reading all files in each directory, which is more memory-efficient
+            # than registering many individual file tables.
+            if files is not None:
+                file_list = files
+            else:
+                file_list = self._query_files(data_cls, identifiers, start, end)
+
             directories = {os.path.dirname(file) for file in file_list}
             for directory in directories:
                 self._register_directory_table(
@@ -1950,6 +1964,43 @@ class ParquetDataCatalog(BaseDataCatalog):
 
         return self._handle_table_nautilus(table, data_cls=data_cls)
 
+    def _query_files(
+        self,
+        data_cls: type,
+        identifiers: list[str] | None = None,
+        start: TimestampLike | None = None,
+        end: TimestampLike | None = None,
+        files: list[str] | None = None,
+    ) -> list[str]:
+        """
+        Query files based on data class, identifiers, and time range.
+
+        This function either retrieves files for a data class or uses a provided list,
+        then filters them based on identifiers and time range.
+
+        Parameters
+        ----------
+        data_cls : type
+            The data class type to query for (e.g., Bar, TradeTick).
+        identifiers : list[str] | None, optional
+            List of identifiers to match against file paths. If None, no identifier filtering is applied.
+        start : TimestampLike | None, optional
+            Start timestamp for filtering. If None, no start time constraint is applied.
+        end : TimestampLike | None, optional
+            End timestamp for filtering. If None, no end time constraint is applied.
+        files : list[str] | None, optional
+            Predefined list of files to filter. If None, files are retrieved using get_file_list_from_data_cls.
+
+        Returns
+        -------
+        list[str]
+            List of file paths that match the query criteria.
+
+        """
+        file_paths = files if files is not None else self.get_file_list_from_data_cls(data_cls)
+
+        return self.filter_files(data_cls, file_paths, identifiers, start, end)
+
     def filter_files(
         self,
         data_cls: type,
@@ -1995,11 +2046,12 @@ class ParquetDataCatalog(BaseDataCatalog):
                 identifiers = [identifiers]
 
             safe_identifiers = [urisafe_identifier(identifier) for identifier in identifiers]
-            file_instruments = [file_path.split("/")[-2] for file_path in file_paths]
+            file_safe_identifiers = [file_path.split("/")[-2] for file_path in file_paths]
+
             # Exact match by default for instrument_ids or bar_types
             exact_match_file_paths = [
-                file_paths[index]
-                for index,file_instrument in enumerate(file_instruments)
+                file_paths[i]
+                for i, file_instrument in enumerate(file_safe_identifiers)
                 if any(
                     safe_identifier == file_instrument
                     for safe_identifier in safe_identifiers
@@ -2009,10 +2061,10 @@ class ParquetDataCatalog(BaseDataCatalog):
             if not exact_match_file_paths and data_cls in [Bar, *Bar.__subclasses__()]:
                 # Partial match of instrument_ids in bar_types for bars
                 file_paths = [
-                    file_paths[index]
-                    for index,file_instrument in enumerate(file_instruments)
+                    file_paths[i]
+                    for i, file_safe_identifier in enumerate(file_safe_identifiers)
                     if any(
-                        file_instrument.startswith(f"{safe_identifier}-")
+                        file_safe_identifier.startswith(f"{safe_identifier}-")
                         for safe_identifier in safe_identifiers
                     )
                 ]
@@ -2058,44 +2110,8 @@ class ParquetDataCatalog(BaseDataCatalog):
         base_path = self.path.rstrip("/")
         glob_path = f"{base_path}/data/{file_prefix}/**/*.parquet"
         file_paths: list[str] = self.fs.glob(glob_path)
+
         return file_paths
-
-    def _query_files(
-        self,
-        data_cls: type,
-        identifiers: list[str] | None = None,
-        start: TimestampLike | None = None,
-        end: TimestampLike | None = None,
-        files: list[str] | None = None,
-    ) -> list[str]:
-        """
-        Query files based on data class, identifiers, and time range.
-
-        This function either retrieves files for a data class or uses a provided list,
-        then filters them based on identifiers and time range.
-
-        Parameters
-        ----------
-        data_cls : type
-            The data class type to query for (e.g., Bar, TradeTick).
-        identifiers : list[str] | None, optional
-            List of identifiers to match against file paths. If None, no identifier filtering is applied.
-        start : TimestampLike | None, optional
-            Start timestamp for filtering. If None, no start time constraint is applied.
-        end : TimestampLike | None, optional
-            End timestamp for filtering. If None, no end time constraint is applied.
-        files : list[str] | None, optional
-            Predefined list of files to filter. If None, files are retrieved using get_file_list_from_data_cls.
-
-        Returns
-        -------
-        list[str]
-            List of file paths that match the query criteria.
-
-        """
-        file_paths = files if files is not None else self.get_file_list_from_data_cls(data_cls)
-
-        return self.filter_files(data_cls, file_paths, identifiers, start, end)
 
     def query_first_timestamp(
         self,

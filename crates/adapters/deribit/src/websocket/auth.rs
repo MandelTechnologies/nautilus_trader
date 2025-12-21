@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::{UUID4, time::get_atomic_clock_realtime};
 
 use super::{

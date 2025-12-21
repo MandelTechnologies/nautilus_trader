@@ -74,7 +74,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use heck::ToSnakeCase;
 use itertools::Itertools;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::{
     UnixNanos,
     datetime::{iso8601_to_unix_nanos, unix_nanos_to_iso8601},

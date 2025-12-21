@@ -1519,7 +1519,34 @@ impl OrderMatchingEngine {
 
                 let mut fills = self.book.simulate_fills(&book_order);
 
-                // return immediately if no fills
+                // Adjust fills to account for liquidity already consumed from the immutable book.
+                // Only applies to L2/L3 book types where deltas are incremental updates.
+                // For L1 (quotes/bars), each update is a full state snapshot with fresh liquidity.
+                if self.book_type != BookType::L1_MBP
+                    && let Some(&cached_qty) = self.cached_filled_qty.get(&order.client_order_id())
+                {
+                    let mut remaining_cached = cached_qty;
+                    let mut adjusted_fills = Vec::with_capacity(fills.len());
+
+                    for (price, qty) in fills.into_iter() {
+                        if remaining_cached.is_zero() {
+                            adjusted_fills.push((price, qty));
+                            continue;
+                        }
+
+                        if qty > remaining_cached {
+                            let adjusted_qty = qty - remaining_cached;
+                            adjusted_fills.push((price, adjusted_qty));
+                            remaining_cached = Quantity::zero(adjusted_qty.precision);
+                        } else {
+                            remaining_cached -= qty;
+                        }
+                    }
+
+                    fills = adjusted_fills;
+                }
+
+                // Return immediately if no fills
                 if fills.is_empty() {
                     return fills;
                 }
@@ -1720,6 +1747,13 @@ impl OrderMatchingEngine {
                 }
 
                 let fills = self.determine_limit_price_and_volume(order);
+
+                // Skip apply_fills when consumed-liquidity adjustment produces no fills.
+                // This occurs for partially filled orders when an unrelated delta arrives
+                // and no new liquidity is available at the order's price level.
+                if fills.is_empty() {
+                    return;
+                }
 
                 self.apply_fills(
                     order,

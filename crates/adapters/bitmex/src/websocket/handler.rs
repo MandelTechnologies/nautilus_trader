@@ -842,8 +842,9 @@ impl FeedHandler {
                                     temp_cache.insert(symbol, instrument_any.clone());
                                     instruments.push(instrument_any);
                                 }
-                                InstrumentParseResult::Unsupported { .. } => {
-                                    // Silently skip unsupported instrument types
+                                InstrumentParseResult::Unsupported { .. }
+                                | InstrumentParseResult::Inactive { .. } => {
+                                    // Silently skip unsupported or inactive instruments
                                 }
                                 InstrumentParseResult::Failed {
                                     symbol,

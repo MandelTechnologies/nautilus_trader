@@ -67,5 +67,7 @@ pub use builder::NautilusKernelBuilder;
 pub use config::NautilusKernelConfig;
 pub use factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 pub use kernel::NautilusKernel;
+#[cfg(feature = "streaming")]
+pub use nautilus_persistence::config::StreamingConfig;
 #[cfg(feature = "python")]
 pub use python::{FactoryRegistry, get_global_pyo3_registry};

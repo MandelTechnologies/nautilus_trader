@@ -214,8 +214,13 @@ impl NautilusKernelConfig for BacktestEngineConfig {
     }
 
     #[cfg(feature = "streaming")]
-    fn streaming(&self) -> Option<StreamingConfig> {
+    fn streaming(&self) -> Option<nautilus_system::StreamingConfig> {
         self.streaming.clone()
+    }
+
+    #[cfg(not(feature = "streaming"))]
+    fn streaming(&self) -> Option<nautilus_system::StreamingConfig> {
+        None
     }
 }
 
