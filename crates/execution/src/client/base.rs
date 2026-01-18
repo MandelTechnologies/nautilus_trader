@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,7 +22,8 @@
 use std::{any::Any, cell::RefCell, fmt::Debug, rc::Rc};
 
 use nautilus_common::{
-    cache::Cache, clock::Clock, msgbus, msgbus::switchboard::MessagingSwitchboard,
+    cache::Cache, clock::Clock, messages::ExecutionReport, msgbus,
+    msgbus::switchboard::MessagingSwitchboard,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -37,6 +38,7 @@ use nautilus_model::{
         AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId,
         TraderId, Venue, VenueOrderId,
     },
+    orders::OrderAny,
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
@@ -123,6 +125,19 @@ impl ExecutionClientCore {
     #[must_use]
     pub fn get_account(&self) -> Option<AccountAny> {
         self.cache.borrow().account(&self.account_id).cloned()
+    }
+
+    /// Returns the order for the given client order ID from the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the order is not found in the cache.
+    pub fn get_order(&self, client_order_id: &ClientOrderId) -> anyhow::Result<OrderAny> {
+        self.cache
+            .borrow()
+            .order(client_order_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Order not found in cache for {client_order_id}"))
     }
 
     /// Generates and publishes the account state event.
@@ -455,7 +470,7 @@ impl ExecutionClientCore {
 
     fn send_account_state(&self, account_state: AccountState) {
         let endpoint = MessagingSwitchboard::portfolio_update_account();
-        msgbus::send_any(endpoint, &account_state as &dyn Any);
+        msgbus::send_account_state(endpoint, &account_state);
     }
 
     fn send_order_event(&self, event: OrderEventAny) {
@@ -464,22 +479,26 @@ impl ExecutionClientCore {
     }
 
     fn send_mass_status_report(&self, report: ExecutionMassStatus) {
-        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_mass_status();
+        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+        let report = ExecutionReport::MassStatus(Box::new(report));
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 
     fn send_order_status_report(&self, report: OrderStatusReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+        let report = ExecutionReport::Order(Box::new(report));
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 
     fn send_fill_report(&self, report: FillReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+        let report = ExecutionReport::Fill(Box::new(report));
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 
     fn send_position_report(&self, report: PositionStatusReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
+        let report = ExecutionReport::Position(Box::new(report));
         msgbus::send_any(endpoint, &report as &dyn Any);
     }
 }

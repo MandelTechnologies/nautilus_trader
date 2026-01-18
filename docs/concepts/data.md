@@ -441,7 +441,7 @@ The `ts_init` field indicates when the message was originally received.
 
 ## Data flow
 
-The platform ensures consistency by flowing data through the same pathways across all system [environment contexts](/concepts/architecture.md#environment-contexts)
+The platform ensures consistency by flowing data through the same pathways across all system [environment contexts](architecture.md#environment-contexts)
 (e.g., `backtest`, `sandbox`, `live`). Data is primarily transported via the `MessageBus` to the `DataEngine`
 and then distributed to subscribed or registered handlers.
 
@@ -895,7 +895,6 @@ data_config = BacktestDataConfig(
     instrument_id=InstrumentId.from_str("BTC/USD.COINBASE"),
     start_time="2024-01-01T09:30:00Z",
     end_time="2024-01-01T16:00:00Z",
-    filter_expr="side == 'BUY'",  # Only buy-side deltas
 )
 ```
 
@@ -1759,3 +1758,9 @@ class GreeksData(Data):
         delta: float = 0.0,
   ) -> GreeksData: ...
 ```
+
+## Related guides
+
+- [Instruments](instruments.md) - Financial instruments referenced by data.
+- [Cache](cache.md) - Data storage and retrieval.
+- [Adapters](adapters.md) - Data sources and connectivity.

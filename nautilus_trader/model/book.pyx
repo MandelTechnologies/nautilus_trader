@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -61,7 +61,9 @@ from nautilus_trader.core.rust.model cimport orderbook_clear_asks
 from nautilus_trader.core.rust.model cimport orderbook_clear_bids
 from nautilus_trader.core.rust.model cimport orderbook_delete
 from nautilus_trader.core.rust.model cimport orderbook_drop
+from nautilus_trader.core.rust.model cimport orderbook_get_all_crossed_levels
 from nautilus_trader.core.rust.model cimport orderbook_get_avg_px_for_quantity
+from nautilus_trader.core.rust.model cimport orderbook_get_quantity_at_level
 from nautilus_trader.core.rust.model cimport orderbook_get_quantity_for_price
 from nautilus_trader.core.rust.model cimport orderbook_has_ask
 from nautilus_trader.core.rust.model cimport orderbook_has_bid
@@ -581,13 +583,15 @@ cdef class OrderBook(Data):
 
     cpdef double get_quantity_for_price(self, Price price, OrderSide order_side):
         """
-        Return the current total quantity for the given `price` based on the current state
-        of the order book.
+        Return the cumulative quantity at or better than the given `price`.
+
+        For a BUY order, sums ask levels at or below the price.
+        For a SELL order, sums bid levels at or above the price.
 
         Parameters
         ----------
         price : Price
-            The quantity for the calculation.
+            The price for the calculation.
         order_side : OrderSide
             The order side for the calculation.
 
@@ -605,6 +609,37 @@ cdef class OrderBook(Data):
         Condition.not_equal(order_side, OrderSide.NO_ORDER_SIDE, "order_side", "NO_ORDER_SIDE")
 
         return orderbook_get_quantity_for_price(&self._mem, price._mem, order_side)
+
+    cpdef Quantity get_quantity_at_level(self, Price price, OrderSide order_side, uint8_t size_precision):
+        """
+        Return the quantity at a specific price level only.
+
+        Unlike `get_quantity_for_price` which returns cumulative quantity across
+        multiple levels, this returns only the quantity at the exact price level.
+
+        Parameters
+        ----------
+        price : Price
+            The price level to query.
+        order_side : OrderSide
+            The order side for the calculation.
+        size_precision : uint8_t
+            The precision for the returned quantity.
+
+        Returns
+        -------
+        Quantity
+
+        Raises
+        ------
+        ValueError
+            If `order_side` is equal to ``NO_ORDER_SIDE``
+
+        """
+        Condition.not_none(price, "price")
+        Condition.not_equal(order_side, OrderSide.NO_ORDER_SIDE, "order_side", "NO_ORDER_SIDE")
+
+        return Quantity.from_mem_c(orderbook_get_quantity_at_level(&self._mem, price._mem, order_side, size_precision))
 
     cpdef list simulate_fills(self, Order order, uint8_t price_prec, uint8_t size_prec, bint is_aggressive):
         """
@@ -628,7 +663,7 @@ cdef class OrderBook(Data):
             raise RuntimeError(
                 f"Invalid size precision for order leaves quantity {order.leaves_qty._mem.precision} "
                 f"when instrument size precision is {size_prec}. "
-                f"Check order quantity precision matches the {order.instrument.id} instrument"
+                f"Check order quantity precision matches the {order.instrument_id} instrument"
             )
 
         cdef Price order_price
@@ -669,6 +704,54 @@ cdef class OrderBook(Data):
         vec_drop_fills(raw_fills_vec)
 
         return fills
+
+    cpdef list get_all_crossed_levels(self, OrderSide order_side, Price price, uint8_t size_prec):
+        """
+        Return all price levels that would be crossed by an order at the given price.
+
+        Unlike `simulate_fills`, this returns ALL crossed levels regardless of
+        order quantity. Used when liquidity consumption tracking needs visibility
+        into all available levels.
+
+        Parameters
+        ----------
+        order_side : OrderSide
+            The order side (BUY or SELL).
+        price : Price
+            The limit price to check against.
+        size_prec : uint8_t
+            The size precision for the quantities.
+
+        Returns
+        -------
+        list[(Price, Quantity)]
+
+        """
+        Condition.not_none(price, "price")
+
+        cdef CVec raw_levels_vec = orderbook_get_all_crossed_levels(
+            &self._mem,
+            order_side,
+            price._mem,
+            size_prec,
+        )
+        cdef (Price_t, Quantity_t)* raw_levels = <(Price_t, Quantity_t)*>raw_levels_vec.ptr
+        cdef list levels = []
+
+        cdef:
+            uint64_t i
+            (Price_t, Quantity_t) raw_level
+            Price level_price
+            Quantity level_size
+        for i in range(raw_levels_vec.len):
+            raw_level = raw_levels[i]
+            level_price = Price.from_mem_c(raw_level[0])
+            level_size = Quantity.from_mem_c(raw_level[1])
+            levels.append((level_price, level_size))
+
+        vec_drop_fills(raw_levels_vec)
+
+        return levels
 
     cpdef void update_quote_tick(self, QuoteTick tick):
         """

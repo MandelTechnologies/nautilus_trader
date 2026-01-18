@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,9 +16,6 @@
 //! Risk management engine implementation.
 
 pub mod config;
-
-#[cfg(test)]
-mod tests;
 
 use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
@@ -197,14 +194,12 @@ impl RiskEngine {
     }
 
     fn handle_submit_order_cache(cache: &Rc<RefCell<Cache>>, submit_order: &SubmitOrder) {
-        let mut cache = cache.borrow_mut();
+        let cache = cache.borrow();
         if !cache.order_exists(&submit_order.client_order_id) {
-            cache
-                .add_order(submit_order.order.clone(), None, None, false)
-                .map_err(|e| {
-                    log::error!("Cannot add order to cache: {e}");
-                })
-                .unwrap();
+            log::error!(
+                "Order not found in cache for client_order_id: {}",
+                submit_order.client_order_id
+            );
         }
     }
 
@@ -260,8 +255,6 @@ impl RiskEngine {
         ))
     }
 
-    // -- COMMANDS --------------------------------------------------------------------------------
-
     /// Executes a trading command through the risk management pipeline.
     pub fn execute(&mut self, command: TradingCommand) {
         // This will extend to other commands such as `RiskCommand`
@@ -288,7 +281,7 @@ impl RiskEngine {
         // TODO: Create a new Event "TradingStateChanged" in OrderEventAny enum.
         // let event = OrderEventAny::TradingStateChanged(TradingStateChanged::new(..,self.trading_state,..));
 
-        msgbus::publish("events.risk".into(), &"message"); // TODO: Send the new Event here
+        msgbus::publish_any("events.risk".into(), &"message"); // TODO: Send the new Event here
 
         log::info!("Trading state set to {state:?}");
     }
@@ -301,9 +294,61 @@ impl RiskEngine {
         log::info!("Set MAX_NOTIONAL_PER_ORDER: {instrument_id} {new_value_str}");
     }
 
-    // -- COMMAND HANDLERS ------------------------------------------------------------------------
+    /// Starts the risk engine.
+    pub fn start(&mut self) {
+        log::info!("Started");
+    }
 
-    // Renamed from `execute_command`
+    /// Stops the risk engine.
+    pub fn stop(&mut self) {
+        log::info!("Stopped");
+    }
+
+    /// Resets the risk engine to its initial state.
+    pub fn reset(&mut self) {
+        self.throttled_submit_order.reset();
+        self.throttled_modify_order.reset();
+        self.max_notional_per_order.clear();
+        self.trading_state = TradingState::Active;
+
+        log::info!("Reset");
+    }
+
+    /// Disposes of the risk engine, releasing resources.
+    pub fn dispose(&mut self) {
+        log::info!("Disposed");
+    }
+
+    /// Returns a reference to the clock.
+    #[must_use]
+    pub fn clock(&self) -> &Rc<RefCell<dyn Clock>> {
+        &self.clock
+    }
+
+    /// Returns a reference to the cache.
+    #[must_use]
+    pub fn cache(&self) -> &Rc<RefCell<Cache>> {
+        &self.cache
+    }
+
+    /// Returns a reference to the configuration.
+    #[must_use]
+    pub const fn config(&self) -> &RiskEngineConfig {
+        &self.config
+    }
+
+    /// Returns the current trading state.
+    #[must_use]
+    pub const fn trading_state(&self) -> TradingState {
+        self.trading_state
+    }
+
+    /// Returns a reference to the max notional per order settings.
+    #[must_use]
+    pub const fn max_notional_per_order(&self) -> &AHashMap<InstrumentId, Decimal> {
+        &self.max_notional_per_order
+    }
+
     fn handle_command(&mut self, command: TradingCommand) {
         if self.config.debug {
             log::debug!("{CMD}{RECV} {command:?}");
@@ -330,7 +375,20 @@ impl RiskEngine {
             return;
         }
 
-        let order = &command.order;
+        let order = {
+            let cache = self.cache.borrow();
+            match cache.order(&command.client_order_id) {
+                Some(order) => order.clone(),
+                None => {
+                    log::error!(
+                        "Cannot handle submit order: order not found in cache for {}",
+                        command.client_order_id
+                    );
+                    return;
+                }
+            }
+        };
+
         if let Some(position_id) = command.position_id
             && order.is_reduce_only()
         {
@@ -380,7 +438,7 @@ impl RiskEngine {
             return; // Denied
         }
 
-        if !self.check_orders_risk(instrument.clone(), Vec::from([order.clone()])) {
+        if !self.check_orders_risk(instrument.clone(), Vec::from([order])) {
             return; // Denied
         }
 
@@ -530,8 +588,6 @@ impl RiskEngine {
         self.throttled_modify_order.send(command);
     }
 
-    // -- PRE-TRADE CHECKS ------------------------------------------------------------------------
-
     fn check_order(&self, instrument: InstrumentAny, order: OrderAny) -> bool {
         ////////////////////////////////////////////////////////////////////////////////
         // VALIDATION CHECKS
@@ -642,12 +698,24 @@ impl RiskEngine {
         let (net_long_qty_raw, pending_sell_qty_raw) = {
             let cache = self.cache.borrow();
             let long_qty: QuantityRaw = cache
-                .positions_open(None, Some(&instrument.id()), None, Some(PositionSide::Long))
+                .positions_open(
+                    None,
+                    Some(&instrument.id()),
+                    None,
+                    None,
+                    Some(PositionSide::Long),
+                )
                 .iter()
                 .map(|pos| pos.quantity.raw)
                 .sum();
             let pending_sells: QuantityRaw = cache
-                .orders_open(None, Some(&instrument.id()), None, Some(OrderSide::Sell))
+                .orders_open(
+                    None,
+                    Some(&instrument.id()),
+                    None,
+                    None,
+                    Some(OrderSide::Sell),
+                )
                 .iter()
                 .map(|ord| ord.leaves_qty().raw)
                 .sum();
@@ -1126,12 +1194,21 @@ impl RiskEngine {
         None
     }
 
-    // -- DENIALS ---------------------------------------------------------------------------------
-
     fn deny_command(&self, command: TradingCommand, reason: &str) {
         match command {
             TradingCommand::SubmitOrder(command) => {
-                self.deny_order(command.order, reason);
+                let order = {
+                    let cache = self.cache.borrow();
+                    cache.order(&command.client_order_id).cloned()
+                };
+                if let Some(order) = order {
+                    self.deny_order(order, reason);
+                } else {
+                    log::error!(
+                        "Cannot deny order: not found in cache for {}",
+                        command.client_order_id
+                    );
+                }
             }
             TradingCommand::SubmitOrderList(command) => {
                 self.deny_order_list(command.order_list, reason);
@@ -1207,13 +1284,17 @@ impl RiskEngine {
         msgbus::send_any("ExecEngine.process".into(), &denied);
     }
 
-    // -- EGRESS ----------------------------------------------------------------------------------
-
     fn execution_gateway(&mut self, instrument: InstrumentAny, command: TradingCommand) {
         match self.trading_state {
             TradingState::Halted => match command {
                 TradingCommand::SubmitOrder(submit_order) => {
-                    self.deny_order(submit_order.order, "TradingState::HALTED");
+                    let order = {
+                        let cache = self.cache.borrow();
+                        cache.order(&submit_order.client_order_id).cloned()
+                    };
+                    if let Some(order) = order {
+                        self.deny_order(order, "TradingState::HALTED");
+                    }
                 }
                 TradingCommand::SubmitOrderList(submit_order_list) => {
                     self.deny_order_list(submit_order_list.order_list, "TradingState::HALTED");
@@ -1222,23 +1303,28 @@ impl RiskEngine {
             },
             TradingState::Reducing => match command {
                 TradingCommand::SubmitOrder(submit_order) => {
-                    let order = submit_order.order;
-                    if order.is_buy() && self.portfolio.is_net_long(&instrument.id()) {
-                        self.deny_order(
-                            order,
-                            &format!(
-                                "BUY when TradingState::REDUCING and LONG {}",
-                                instrument.id()
-                            ),
-                        );
-                    } else if order.is_sell() && self.portfolio.is_net_short(&instrument.id()) {
-                        self.deny_order(
-                            order,
-                            &format!(
-                                "SELL when TradingState::REDUCING and SHORT {}",
-                                instrument.id()
-                            ),
-                        );
+                    let order = {
+                        let cache = self.cache.borrow();
+                        cache.order(&submit_order.client_order_id).cloned()
+                    };
+                    if let Some(order) = order {
+                        if order.is_buy() && self.portfolio.is_net_long(&instrument.id()) {
+                            self.deny_order(
+                                order,
+                                &format!(
+                                    "BUY when TradingState::REDUCING and LONG {}",
+                                    instrument.id()
+                                ),
+                            );
+                        } else if order.is_sell() && self.portfolio.is_net_short(&instrument.id()) {
+                            self.deny_order(
+                                order,
+                                &format!(
+                                    "SELL when TradingState::REDUCING and SHORT {}",
+                                    instrument.id()
+                                ),
+                            );
+                        }
                     }
                 }
                 TradingCommand::SubmitOrderList(submit_order_list) => {

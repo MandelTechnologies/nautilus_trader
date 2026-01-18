@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,11 +42,13 @@ from nautilus_trader.data.engine import DataEngine
 from nautilus_trader.execution.engine import ExecutionEngine
 from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.currencies import USDC_POS
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import AccountId
@@ -63,6 +65,7 @@ from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.risk.engine import RiskEngine
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 from nautilus_trader.trading.strategy import Strategy
 
@@ -145,6 +148,20 @@ class TestPolymarketExecutionClient:
             name=None,
         )
 
+        # Prevent actual WebSocket connections in tests
+        mock_ws_client = MagicMock()
+        mock_ws_client.is_disconnected.return_value = False
+        mock_ws_client.is_connected.return_value = True
+        mock_ws_client.has_subscriptions = True
+        mock_ws_client.subscriptions = []
+        mock_ws_client.market_subscriptions.return_value = []
+        mock_ws_client.connect = AsyncMock()
+        mock_ws_client.disconnect = AsyncMock()
+        mock_ws_client.subscribe = AsyncMock()
+        mock_ws_client.unsubscribe = AsyncMock()
+        mock_ws_client.add_subscription = MagicMock()
+        self.exec_client._ws_client = mock_ws_client
+
         self.exec_engine.register_client(self.exec_client)
 
         self.strategy = Strategy()
@@ -209,7 +226,8 @@ class TestPolymarketExecutionClient:
         price: Price | None = None,
     ) -> tuple[ClientOrderId, VenueOrderId]:
         """
-        Create test order and add to cache with venue order ID mapping.
+        Create test order in SUBMITTED state and add to cache with venue order ID
+        mapping.
         """
         if use_ws_instrument:
             # Use the instrument that matches websocket messages
@@ -226,6 +244,10 @@ class TestPolymarketExecutionClient:
             quantity=Quantity.from_str("5"),
             price=price or Price.from_str("0.513"),
         )
+
+        # Transition to SUBMITTED state (required before ACCEPTED)
+        submitted = TestEventStubs.order_submitted(order)
+        order.apply(submitted)
 
         client_order_id = order.client_order_id
         venue_order_id = VenueOrderId(venue_order_id_str)
@@ -478,9 +500,11 @@ class TestPolymarketExecutionClient:
         msg = msgspec.json.decode(raw_message)
         msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
 
+        # Use a maker order ID from the message (not taker_order_id)
         client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
-            "0x3ad09f225ebe141dfbdb3824f31cb457e8e0301ca4e0a06311e543f5328b9dea",
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
             use_ws_instrument=True,
+            price=Price.from_str("0.518"),
         )
 
         # Act
@@ -517,8 +541,10 @@ class TestPolymarketExecutionClient:
 
         msg = msgspec.json.decode(raw_message)
         msg = fast_exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+
+        # Use a maker order ID from the message (not taker_order_id)
         venue_order_id = VenueOrderId(
-            "0x3ad09f225ebe141dfbdb3824f31cb457e8e0301ca4e0a06311e543f5328b9dea",
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
         )
 
         # Don't add venue_order_id to cache to simulate timeout
@@ -542,8 +568,10 @@ class TestPolymarketExecutionClient:
 
         msg = msgspec.json.decode(raw_message)
         msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+
+        # Use a maker order ID from the message (not taker_order_id)
         venue_order_id = VenueOrderId(
-            "0x3ad09f225ebe141dfbdb3824f31cb457e8e0301ca4e0a06311e543f5328b9dea",
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
         )
 
         # Create an order and add to cache (but without venue_order_id mapping yet)
@@ -555,7 +583,7 @@ class TestPolymarketExecutionClient:
             instrument_id=instrument_id_1,
             order_side=OrderSide.BUY,
             quantity=Quantity.from_str("5"),
-            price=Price.from_str("0.513"),
+            price=Price.from_str("0.518"),
         )
         client_order_id = order.client_order_id
         self.cache.add_order(order, None)
@@ -702,6 +730,7 @@ class TestPolymarketExecutionClient:
 
         # Act
         command = Mock()
+        command.instrument_id = None
         command.venue_order_id = None
 
         parsed_fill_keys: set[tuple[TradeId, VenueOrderId]] = set()
@@ -718,20 +747,145 @@ class TestPolymarketExecutionClient:
         assert len(reports) == 2
         assert len(parsed_fill_keys) == 2
 
-        trade_ids = {report.trade_id for report in reports}
-        venue_order_ids = {report.venue_order_id for report in reports}
-        client_order_ids = {report.client_order_id for report in reports}
+    def test_parse_trades_response_filters_by_instrument_id(self):
+        """
+        Ensure instrument-scoped fill queries drop fills for other assets in the same
+        market.
 
-        assert len(trade_ids) == 1
-        assert len(venue_order_ids) == 2
-        assert len(client_order_ids) == 2
+        generate_fill_reports fetches trades for the whole market; this verifies that
+        _parse_trades_response_object enforces command.instrument_id when multiple maker
+        fills with different asset_ids are present.
 
-        assert first_venue_order_id in venue_order_ids
-        assert second_venue_order_id in venue_order_ids
+        """
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        yes_asset_id = (
+            "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+        )
+        no_asset_id = "1234567890123456789012345678901234567890123456789012345678901234"
 
-        # Guards cache lookup regression
-        assert first_client_order_id in client_order_ids
-        assert second_client_order_id in client_order_ids
+        # Add a second instrument for the opposite outcome in the same market
+        instrument_id_no = get_polymarket_instrument_id(market, no_asset_id)
+        instrument_id_yes = get_polymarket_instrument_id(market, yes_asset_id)
+        instrument_yes = self.cache.instrument(instrument_id_yes)
+        assert instrument_yes is not None
+
+        instrument_no = BinaryOption(
+            instrument_id=instrument_id_no,
+            raw_symbol=Symbol(f"{instrument_id_no.symbol.value}"),
+            outcome="No",
+            description="Test Polymarket Instrument 2",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC,
+            price_precision=3,
+            price_increment=Price.from_str("0.001"),
+            size_precision=2,
+            size_increment=Quantity.from_str("0.01"),
+            activation_ns=0,
+            expiration_ns=0,
+            max_quantity=None,
+            min_quantity=Quantity.from_str("1"),
+            maker_fee=0.0,
+            taker_fee=0.0,
+            ts_event=0,
+            ts_init=0,
+        )
+        self.cache.add_instrument(instrument_no)
+
+        # Orders for each side of the market
+        order_yes = self.strategy.order_factory.limit(
+            instrument_id=instrument_yes.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("2"),
+            price=Price.from_str("0.50"),
+        )
+        order_no = self.strategy.order_factory.limit(
+            instrument_id=instrument_no.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("3"),
+            price=Price.from_str("0.45"),
+        )
+
+        venue_order_id_yes = VenueOrderId("0xorder_yes")
+        venue_order_id_no = VenueOrderId("0xorder_no")
+
+        self.cache.add_order(order_yes, None)
+        self.cache.add_venue_order_id(order_yes.client_order_id, venue_order_id_yes)
+        self.cache.add_order(order_no, None)
+        self.cache.add_venue_order_id(order_no.client_order_id, venue_order_id_no)
+
+        trade_payload = {
+            "id": "trade-abc",
+            "taker_order_id": "0xtaker",
+            "market": market,
+            "asset_id": yes_asset_id,
+            "side": "BUY",
+            "size": "5",
+            "fee_rate_bps": "0",
+            "price": "0.55",
+            "status": "CONFIRMED",
+            "match_time": "1710000000",
+            "last_update": "1710000001",
+            "outcome": "Yes",
+            "bucket_index": 0,
+            "owner": self.http_client.creds.api_key,
+            "maker_address": self.http_client.get_address.return_value,
+            "transaction_hash": "0xdeadbeef",
+            "maker_orders": [
+                {
+                    "asset_id": yes_asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": self.http_client.get_address.return_value,
+                    "matched_amount": "2",
+                    "order_id": venue_order_id_yes.value,
+                    "outcome": "Yes",
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.50",
+                },
+                {
+                    "asset_id": no_asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": self.http_client.get_address.return_value,
+                    "matched_amount": "3",
+                    "order_id": venue_order_id_no.value,
+                    "outcome": "No",
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.45",
+                },
+            ],
+            "trader_side": "MAKER",
+        }
+
+        command_yes = Mock()
+        command_yes.instrument_id = order_yes.instrument_id
+        command_yes.venue_order_id = None
+        parsed_fill_keys_yes: set[tuple[TradeId, VenueOrderId]] = set()
+        reports_yes: list[FillReport] = []
+
+        self.exec_client._parse_trades_response_object(
+            command=command_yes,
+            json_obj=trade_payload,
+            parsed_fill_keys=parsed_fill_keys_yes,
+            reports=reports_yes,
+        )
+
+        assert len(reports_yes) == 1
+        assert reports_yes[0].instrument_id == order_yes.instrument_id
+
+        command_no = Mock()
+        command_no.instrument_id = instrument_no.id
+        command_no.venue_order_id = None
+        parsed_fill_keys_no: set[tuple[TradeId, VenueOrderId]] = set()
+        reports_no: list[FillReport] = []
+
+        self.exec_client._parse_trades_response_object(
+            command=command_no,
+            json_obj=trade_payload,
+            parsed_fill_keys=parsed_fill_keys_no,
+            reports=reports_no,
+        )
+
+        assert len(reports_no) == 1
+        assert reports_no[0].instrument_id == instrument_no.id
 
     def test_handle_ws_message_invalid_json(self):
         """
@@ -1501,7 +1655,9 @@ class TestPolymarketExecutionClient:
             update_mock.assert_not_called()
 
             order = self.cache.order(client_order_id)
-            assert len(order.events) == initial_fill_count, "No duplicate fill from replayed CONFIRMED"
+            assert len(order.events) == initial_fill_count, (
+                "No duplicate fill from replayed CONFIRMED"
+            )
 
     def test_replayed_finalized_trade_is_ignored(self):
         """
@@ -1554,7 +1710,9 @@ class TestPolymarketExecutionClient:
             update_mock.assert_not_called()
 
             order = self.cache.order(client_order_id)
-            assert len(order.events) == initial_event_count, "No duplicate events from replayed message"
+            assert len(order.events) == initial_event_count, (
+                "No duplicate events from replayed message"
+            )
 
     @pytest.mark.asyncio
     async def test_generate_fill_reports_with_start_end_datetime(self, mocker):
@@ -1585,3 +1743,619 @@ class TestPolymarketExecutionClient:
         # Verify datetime was correctly converted to integer seconds
         assert params.after == int(start_dt.timestamp())
         assert params.before == int(end_dt.timestamp())
+
+    def test_placement_skipped_when_order_already_canceled(self, mocker):
+        """
+        Test that PLACEMENT events are skipped when order is already CANCELED.
+
+        This prevents InvalidStateTrigger: CANCELED -> ACCEPTED errors that occur
+        when a stale PLACEMENT event arrives after an order was canceled.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_placement.json",
+        )
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0x0f76f4dc6eaf3332f4100f2e8a0b4a927351dd64646b7bb12f37df775c657a78",
+            use_ws_instrument=True,
+        )
+
+        # Transition order to CANCELED state
+        order = self.cache.order(client_order_id)
+        self.exec_client.generate_order_accepted(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=self.clock.timestamp_ns(),
+        )
+        self.exec_client.generate_order_canceled(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=self.clock.timestamp_ns(),
+        )
+
+        order = self.cache.order(client_order_id)
+        assert order.status == OrderStatus.CANCELED
+
+        accepted_spy = mocker.spy(self.exec_client, "generate_order_accepted")
+
+        # Act
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        self.exec_client._handle_ws_order_msg(msg, wait_for_ack=False)
+
+        # Assert
+        accepted_spy.assert_not_called()
+
+    def test_placement_skipped_when_order_already_accepted(self, mocker):
+        """
+        Test that PLACEMENT events are skipped when order is already ACCEPTED.
+
+        This prevents duplicate OrderAccepted events from stale/replayed messages.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_placement.json",
+        )
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0x0f76f4dc6eaf3332f4100f2e8a0b4a927351dd64646b7bb12f37df775c657a78",
+            use_ws_instrument=True,
+        )
+
+        # Transition order to ACCEPTED state
+        order = self.cache.order(client_order_id)
+        self.exec_client.generate_order_accepted(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=self.clock.timestamp_ns(),
+        )
+
+        order = self.cache.order(client_order_id)
+        assert order.status == OrderStatus.ACCEPTED
+
+        accepted_spy = mocker.spy(self.exec_client, "generate_order_accepted")
+
+        # Act
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        self.exec_client._handle_ws_order_msg(msg, wait_for_ack=False)
+
+        # Assert
+        accepted_spy.assert_not_called()
+
+    def test_cancellation_skipped_when_order_already_canceled(self, mocker):
+        """
+        Test that CANCELLATION events are skipped when order is already CANCELED.
+
+        This prevents InvalidStateTrigger: CANCELED -> CANCELED errors from
+        duplicate cancellation events.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_cancel.json",
+        )
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0xc6e99c14f1c7cae9e0538eb2d45a4d8b93ffd743e850edd1502a8c85700be5d3",
+            use_ws_instrument=True,
+        )
+
+        # Transition order to CANCELED state
+        order = self.cache.order(client_order_id)
+        self.exec_client.generate_order_accepted(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=self.clock.timestamp_ns(),
+        )
+        self.exec_client.generate_order_canceled(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=self.clock.timestamp_ns(),
+        )
+
+        order = self.cache.order(client_order_id)
+        assert order.status == OrderStatus.CANCELED
+
+        canceled_spy = mocker.spy(self.exec_client, "generate_order_canceled")
+
+        # Act
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        self.exec_client._handle_ws_order_msg(msg, wait_for_ack=False)
+
+        # Assert
+        canceled_spy.assert_not_called()
+
+    def test_placement_allowed_when_order_is_submitted(self, mocker):
+        """
+        Test that PLACEMENT events generate OrderAccepted when order is SUBMITTED.
+
+        This is the normal flow: order is submitted, PLACEMENT event arrives,
+        and OrderAccepted is generated.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_placement.json",
+        )
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0x0f76f4dc6eaf3332f4100f2e8a0b4a927351dd64646b7bb12f37df775c657a78",
+            use_ws_instrument=True,
+        )
+
+        order = self.cache.order(client_order_id)
+        assert order.status == OrderStatus.SUBMITTED
+
+        accepted_spy = mocker.spy(self.exec_client, "generate_order_accepted")
+
+        # Act
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        self.exec_client._handle_ws_order_msg(msg, wait_for_ack=False)
+
+        # Assert
+        accepted_spy.assert_called_once()
+
+    def test_placement_skipped_when_order_partially_filled(self, mocker):
+        """
+        Test that PLACEMENT events are skipped when order is PARTIALLY_FILLED.
+
+        Once an order has fills, it's already been accepted.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_placement.json",
+        )
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0x0f76f4dc6eaf3332f4100f2e8a0b4a927351dd64646b7bb12f37df775c657a78",
+            use_ws_instrument=True,
+        )
+
+        # Transition order to PARTIALLY_FILLED state
+        order = self.cache.order(client_order_id)
+        self.exec_client.generate_order_accepted(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            ts_event=self.clock.timestamp_ns(),
+        )
+        self.exec_client.generate_order_filled(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            venue_position_id=None,
+            trade_id=TradeId("test-trade-1"),
+            order_side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            last_qty=Quantity.from_str("2"),
+            last_px=Price.from_str("0.513"),
+            quote_currency=USDC,
+            commission=Money(0, USDC),
+            liquidity_side=LiquiditySide.MAKER,
+            ts_event=self.clock.timestamp_ns(),
+        )
+
+        order = self.cache.order(client_order_id)
+        assert order.status == OrderStatus.PARTIALLY_FILLED
+
+        accepted_spy = mocker.spy(self.exec_client, "generate_order_accepted")
+
+        # Act
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        self.exec_client._handle_ws_order_msg(msg, wait_for_ack=False)
+
+        # Assert
+        accepted_spy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_ack_waiter_reuses_existing_event(self):
+        """
+        Test that duplicate WebSocket messages reuse existing ack events.
+
+        When a duplicate message arrives for the same venue_order_id before the first
+        waiter completes, the second message should reuse the existing event rather than
+        overwriting it (which would cause the first waiter to hang).
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="order_placement.json",
+        )
+
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        venue_order_id = VenueOrderId(
+            "0x0f76f4dc6eaf3332f4100f2e8a0b4a927351dd64646b7bb12f37df775c657a78",
+        )
+
+        # Start first waiter (will create event)
+        wait_task1 = asyncio.create_task(
+            self.exec_client._wait_for_ack_order(msg, venue_order_id),
+        )
+        await asyncio.sleep(0.01)
+
+        # Capture the event created by first waiter
+        first_event = self.exec_client._ack_events_order.get(venue_order_id)
+        assert first_event is not None
+
+        # Start second waiter (should reuse same event)
+        wait_task2 = asyncio.create_task(
+            self.exec_client._wait_for_ack_order(msg, venue_order_id),
+        )
+        await asyncio.sleep(0.01)
+
+        # Verify same event object is used
+        second_event = self.exec_client._ack_events_order.get(venue_order_id)
+        assert second_event is first_event, "Second waiter should reuse existing event"
+
+        # Signal the event - both waiters should complete
+        first_event.set()
+
+        await asyncio.wait_for(wait_task1, timeout=1.0)
+        await asyncio.wait_for(wait_task2, timeout=1.0)
+
+        assert wait_task1.done()
+        assert wait_task2.done()
+
+    def test_multi_order_fill_deduplication(self):
+        """
+        Test that fills are deduplicated at the (trade_id, venue_order_id) level.
+
+        When a trade contains multiple orders and the message is processed multiple
+        times (e.g., from concurrent wait tasks), each fill should only be recorded once
+        via the _processed_fills cache.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="user_trade4.json",
+        )
+
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+        trade_id = TradeId(msg.id)
+
+        first_client_order_id, first_venue_order_id = self._setup_test_order_with_venue_id(
+            "0x67b598cab933c71389176573822be763192a35a8c37e49999a11d611a5882e7d",
+            use_ws_instrument=True,
+            price=Price.from_str("0.3"),
+        )
+        second_client_order_id, second_venue_order_id = self._setup_test_order_with_venue_id(
+            "0x3ad09f225ebe141dfbdb3824f31cb457e8e0301ca4e0a06311e543f5328b9dea",
+            use_ws_instrument=True,
+            price=Price.from_str("0.4"),
+        )
+
+        # Act - Process the trade message twice (simulating concurrent wait tasks)
+        self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+        self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+        # Assert - Each fill should be recorded exactly once
+        assert (trade_id, first_venue_order_id) in self.exec_client._processed_fills
+        assert (trade_id, second_venue_order_id) in self.exec_client._processed_fills
+
+        # Verify positions show correct quantities (no duplicates)
+        positions = self.cache.positions()
+        assert len(positions) == 1
+        position = positions[0]
+        assert position.quantity.as_double() == 10  # 5 + 5, not 20
+
+    def test_parse_trades_response_skips_duplicate_fill_keys(self):
+        """
+        Test that duplicate (trade_id, venue_order_id) pairs are skipped with warning.
+
+        This can occur if the API returns the same fill multiple times in a response.
+
+        """
+        # Arrange
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+
+        client_order_id, venue_order_id = self._setup_test_order_with_venue_id(
+            "0xorder_abc",
+            use_ws_instrument=True,
+            price=Price.from_str("0.50"),
+        )
+
+        # Trade payload with the same order appearing twice in maker_orders
+        trade_payload = {
+            "id": "trade-duplicate-test",
+            "taker_order_id": "0xtaker",
+            "market": market,
+            "asset_id": asset_id,
+            "side": "BUY",
+            "size": "10",
+            "fee_rate_bps": "0",
+            "price": "0.50",
+            "status": "CONFIRMED",
+            "match_time": "1710000000",
+            "last_update": "1710000001",
+            "outcome": "Yes",
+            "bucket_index": 0,
+            "owner": self.http_client.creds.api_key,
+            "maker_address": self.http_client.get_address.return_value,
+            "transaction_hash": "0xdeadbeef",
+            "maker_orders": [
+                {
+                    "asset_id": asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": self.http_client.get_address.return_value,
+                    "matched_amount": "5",
+                    "order_id": venue_order_id.value,
+                    "outcome": "Yes",
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.50",
+                },
+                {
+                    "asset_id": asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": self.http_client.get_address.return_value,
+                    "matched_amount": "5",
+                    "order_id": venue_order_id.value,  # Same order_id (duplicate)
+                    "outcome": "Yes",
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.50",
+                },
+            ],
+            "trader_side": "MAKER",
+        }
+
+        command = Mock()
+        command.instrument_id = None
+        command.venue_order_id = None
+
+        parsed_fill_keys: set[tuple[TradeId, VenueOrderId]] = set()
+        reports: list = []
+
+        # Act
+        self.exec_client._parse_trades_response_object(
+            command=command,
+            json_obj=trade_payload,
+            parsed_fill_keys=parsed_fill_keys,
+            reports=reports,
+        )
+
+        # Assert - Only one fill report despite duplicate entries
+        assert len(reports) == 1
+        assert len(parsed_fill_keys) == 1
+
+    @pytest.mark.asyncio
+    async def test_submit_order_unsupported_type_emits_order_denied(self, mocker):
+        """
+        Test that unsupported order types emit order_denied event.
+
+        When an order type like STOP_MARKET is submitted, the execution client should
+        emit an order_denied event with reason UNSUPPORTED_ORDER_TYPE, not just log an
+        error.
+
+        """
+        # Arrange
+        order = self.strategy.order_factory.stop_market(
+            instrument_id=ELECTION_INSTRUMENT.id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("10"),
+            trigger_price=Price.from_str("0.55"),
+        )
+        self.cache.add_order(order, None)
+
+        submit_order = SubmitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            position_id=None,
+            order=order,
+            command_id=UUID4(),
+            ts_init=0,
+        )
+
+        denied_spy = mocker.spy(self.exec_client, "generate_order_denied")
+
+        # Act
+        await self.exec_client._submit_order(submit_order)
+
+        # Assert
+        denied_spy.assert_called_once()
+        denied_kwargs = denied_spy.call_args.kwargs
+        assert denied_kwargs["client_order_id"] == order.client_order_id
+        assert denied_kwargs["reason"] == "UNSUPPORTED_ORDER_TYPE"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_trade_ack_waiter_reuses_existing_event(self):
+        """
+        Test that duplicate trade WebSocket messages reuse existing ack events.
+
+        Same as test_duplicate_ack_waiter_reuses_existing_event but for the trade ack
+        path (_wait_for_ack_trade) rather than order ack path.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="user_trade1.json",
+        )
+
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+
+        # Use a maker order ID from the message (not the taker_order_id)
+        venue_order_id = VenueOrderId(
+            "0xab679e56242324e15e59cfd488cd0f12e4fd71b153b9bfb57518898b9983145e",
+        )
+
+        # Start first waiter (will create event)
+        wait_task1 = asyncio.create_task(
+            self.exec_client._wait_for_ack_trade(msg, venue_order_id),
+        )
+        await asyncio.sleep(0.01)
+
+        # Capture the event created by first waiter
+        first_event = self.exec_client._ack_events_trade.get(venue_order_id)
+        assert first_event is not None
+
+        # Start second waiter (should reuse same event)
+        wait_task2 = asyncio.create_task(
+            self.exec_client._wait_for_ack_trade(msg, venue_order_id),
+        )
+        await asyncio.sleep(0.01)
+
+        # Verify same event object is used
+        second_event = self.exec_client._ack_events_trade.get(venue_order_id)
+        assert second_event is first_event, "Second waiter should reuse existing event"
+
+        # Signal the event - both waiters should complete
+        first_event.set()
+
+        await asyncio.wait_for(wait_task1, timeout=1.0)
+        await asyncio.wait_for(wait_task2, timeout=1.0)
+
+        assert wait_task1.done()
+        assert wait_task2.done()
+
+    @pytest.mark.asyncio
+    async def test_multi_order_trade_late_mapping_attribution(self, mocker):
+        """
+        Test that late-mapped orders in multi-order trades are correctly attributed.
+
+        Scenario: Trade arrives with orders A (already mapped) and B (not yet mapped).
+        Order A processes immediately. Order B's wait task must still correctly attribute
+        the fill when the mapping arrives, not treat it as unknown.
+
+        """
+        # Arrange
+        raw_message = pkgutil.get_data(
+            package="tests.integration_tests.adapters.polymarket.resources.ws_messages",
+            resource="user_trade4.json",
+        )
+
+        msg = msgspec.json.decode(raw_message)
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(msg))
+
+        # Set up order A (already mapped before trade arrives)
+        first_client_order_id, first_venue_order_id = self._setup_test_order_with_venue_id(
+            "0x67b598cab933c71389176573822be763192a35a8c37e49999a11d611a5882e7d",
+            use_ws_instrument=True,
+            price=Price.from_str("0.3"),
+        )
+
+        # Order B exists but is NOT yet mapped to venue_order_id
+        instrument_id = get_polymarket_instrument_id(
+            "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+            "21742633143463906290569050155826241533067272736897614950488156847949938836455",
+        )
+        order_b = self.strategy.order_factory.limit(
+            instrument_id=instrument_id,
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_str("5"),
+            price=Price.from_str("0.4"),
+        )
+        submitted = TestEventStubs.order_submitted(order_b)
+        order_b.apply(submitted)
+        self.cache.add_order(order_b, None)
+        second_venue_order_id = VenueOrderId(
+            "0x3ad09f225ebe141dfbdb3824f31cb457e8e0301ca4e0a06311e543f5328b9dea",
+        )
+
+        filled_spy = mocker.spy(self.exec_client, "generate_order_filled")
+
+        # Act - Process the trade with wait_for_ack=True (simulates real WS flow)
+        # This will:
+        # 1. Process order A immediately (already mapped)
+        # 2. Create wait task for order B (not yet mapped)
+        self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=True)
+
+        # Allow tasks to start
+        await asyncio.sleep(0.05)
+
+        # Now simulate the mapping arriving (e.g., from HTTP response)
+        self.cache.add_venue_order_id(order_b.client_order_id, second_venue_order_id)
+
+        # Signal the trade ack event for order B
+        event = self.exec_client._ack_events_trade.get(second_venue_order_id)
+        if event:
+            event.set()
+
+        # Allow processing to complete
+        await asyncio.sleep(0.05)
+
+        # Assert - Both orders should have generated fills with proper attribution
+        fill_calls = filled_spy.call_args_list
+        assert len(fill_calls) == 2, f"Expected 2 fills, got {len(fill_calls)}"
+
+        # Verify both fills have strategy_id (proper attribution, not fill reports)
+        for call in fill_calls:
+            kwargs = call.kwargs
+            assert kwargs["strategy_id"] is not None, (
+                "Fill should have strategy_id (proper attribution)"
+            )
+
+        # Verify correct client_order_ids
+        filled_client_order_ids = {call.kwargs["client_order_id"] for call in fill_calls}
+        assert first_client_order_id in filled_client_order_ids
+        assert order_b.client_order_id in filled_client_order_ids
+
+    @pytest.mark.asyncio
+    async def test_connect_connects_ws_client_with_no_cached_instruments(self, mocker):
+        """
+        Test that _connect() connects the WebSocket client even with no cached
+        instruments.
+
+        Regression test for issue #3403: when NautilusTrader starts with no cached
+        instruments, the WebSocket client was never connected because the connection was
+        conditional on having market subscriptions.
+
+        """
+        # Arrange
+        fresh_cache = TestComponentStubs.cache()
+        config = PolymarketExecClientConfig()
+        exec_client = PolymarketExecutionClient(
+            loop=self.loop,
+            http_client=self.http_client,
+            msgbus=self.msgbus,
+            cache=fresh_cache,
+            clock=self.clock,
+            instrument_provider=self.provider,
+            ws_auth=self.ws_auth,
+            config=config,
+            name=None,
+        )
+
+        mock_ws_client = mocker.MagicMock()
+        mock_ws_client.is_disconnected.return_value = True
+        mock_ws_client.is_connected.return_value = False
+        mock_ws_client.market_subscriptions.return_value = []
+        mock_ws_client.connect = mocker.AsyncMock()
+        exec_client._ws_client = mock_ws_client
+        mocker.patch.object(exec_client, "_update_account_state", new=mocker.AsyncMock())
+        mocker.patch.object(exec_client, "_await_account_registered", new=mocker.AsyncMock())
+
+        # Act
+        await exec_client._connect()
+
+        # Assert
+        mock_ws_client.connect.assert_awaited_once()

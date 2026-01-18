@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -224,14 +224,15 @@ class BinanceWebSocketClient:
 
         config = WebSocketConfig(
             url=ws_url,
-            handler=self._handler,
-            heartbeat=60,
             headers=[],
-            ping_handler=lambda raw: self._handle_ping(client_id, raw),
+            heartbeat=60,
         )
 
         self._clients[client_id] = await WebSocketClient.connect(
+            loop_=self._loop,
             config=config,
+            handler=self._handler,
+            ping_handler=lambda raw: self._handle_ping(client_id, raw),
             post_reconnection=lambda: self._handle_reconnect(client_id),
         )
         self._is_connecting[client_id] = False

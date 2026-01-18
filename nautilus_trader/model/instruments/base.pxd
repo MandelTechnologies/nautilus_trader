@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -109,7 +109,7 @@ cdef class Instrument(Data):
     cpdef list next_bid_prices(self, double value, int num_ticks=*)
     cpdef list next_ask_prices(self, double value, int num_ticks=*)
     cpdef Quantity make_qty(self, value, bint round_down=*)
-    cpdef Money notional_value(self, Quantity quantity, Price price, bint use_quote_for_inverse=*)
+    cpdef Money notional_value(self, Quantity quantity, Price price, bint use_quote_for_inverse=*, Currency target_currency=*, Price conversion_price=*)
     cpdef Quantity calculate_base_quantity(self, Quantity quantity, Price last_px)
 
 

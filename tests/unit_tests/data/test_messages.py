@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -227,9 +227,10 @@ class TestDataMessage:
             == "RequestData(data_type=TradeTick{'instrument_id': InstrumentId('SOMETHING.RANDOM')}, instrument_id=SOMETHING.RANDOM, "
             "start=None, end=None, limit=1000, client_id=None, venue=BINANCE)"
         )
-        assert (
-            f"RequestData(data_type=TradeTick{{'instrument_id': InstrumentId('SOMETHING.RANDOM'), 'limit': 1000}}, "
-            f"instrument_id=SOMETHING.RANDOM, start=None, end=None, client_id=None, venue=BINANCE, callback={handler!r}, id={request_id})"
+        assert repr(request) == (
+            f"RequestData(data_type=TradeTick{{'instrument_id': InstrumentId('SOMETHING.RANDOM')}}, "
+            f"instrument_id=SOMETHING.RANDOM, start=None, end=None, limit=1000, client_id=None, venue=BINANCE, "
+            f"callback={handler!r}, id={request_id}, correlation_id=None)"
         )
 
     def test_data_response_message_str_and_repr(self):

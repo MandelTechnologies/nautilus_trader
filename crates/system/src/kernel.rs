@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,41 +13,37 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-// Under development
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use std::{
     any::Any,
     cell::{Ref, RefCell},
     rc::Rc,
+    time::Duration,
 };
 
-#[cfg(feature = "live")]
-use nautilus_common::live::clock::LiveClock;
 use nautilus_common::{
     cache::{Cache, CacheConfig, database::CacheDatabaseAdapter},
     clock::{Clock, TestClock},
     component::Component,
     enums::Environment,
     logging::{
-        headers, init_logging, init_tracing,
+        headers, init_logging,
         logger::{LogGuard, LoggerConfig},
         writer::FileWriterConfig,
     },
-    messages::{DataResponse, data::DataCommand, execution::TradingCommand},
+    messages::{DataResponse, ExecutionReport, data::DataCommand, execution::TradingCommand},
     msgbus::{
-        self, MessageBus, get_message_bus,
-        handler::{ShareableMessageHandler, TypedMessageHandler},
-        set_message_bus,
+        self, MessageBus, handler::ShareableMessageHandler, set_message_bus,
         switchboard::MessagingSwitchboard,
     },
     runner::get_data_cmd_sender,
 };
-use nautilus_core::{UUID4, UnixNanos};
+use nautilus_core::{UUID4, UnixNanos, WeakCell};
 use nautilus_data::engine::DataEngine;
 use nautilus_execution::{engine::ExecutionEngine, order_emulator::adapter::OrderEmulatorAdapter};
-use nautilus_model::{events::OrderEventAny, identifiers::TraderId};
+use nautilus_model::{
+    events::OrderEventAny,
+    identifiers::{ClientId, TraderId},
+};
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_risk::engine::RiskEngine;
 use ustr::Ustr;
@@ -143,7 +139,7 @@ impl NautilusKernel {
 
         let risk_engine = RiskEngine::new(
             config.risk_engine().unwrap_or_default(),
-            Portfolio::new(cache.clone(), clock.clone(), config.portfolio()),
+            portfolio.borrow().clone_shallow(),
             clock.clone(),
             cache.clone(),
         );
@@ -153,122 +149,89 @@ impl NautilusKernel {
         let exec_engine = Rc::new(RefCell::new(exec_engine));
 
         // Create order emulator (auto-registers message handlers)
-        let order_emulator = OrderEmulatorAdapter::new(clock.clone(), cache.clone());
+        let order_emulator =
+            OrderEmulatorAdapter::new(config.trader_id(), clock.clone(), cache.clone());
 
         let data_engine = DataEngine::new(clock.clone(), cache.clone(), config.data_engine());
         let data_engine = Rc::new(RefCell::new(data_engine));
 
         // Register DataEngine command execution
-        use nautilus_core::WeakCell;
-
         let data_engine_weak = WeakCell::from(Rc::downgrade(&data_engine));
         let data_engine_weak_clone1 = data_engine_weak.clone();
         let endpoint = MessagingSwitchboard::data_engine_execute();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
-            move |cmd: &DataCommand| {
-                if let Some(engine_rc) = data_engine_weak_clone1.upgrade() {
-                    engine_rc.borrow_mut().execute(cmd);
-                }
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |cmd: &DataCommand| {
+            if let Some(engine_rc) = data_engine_weak_clone1.upgrade() {
+                engine_rc.borrow_mut().execute(cmd);
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
         // Register DataEngine command queueing
         let endpoint = MessagingSwitchboard::data_engine_queue_execute();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
-            move |cmd: &DataCommand| {
-                get_data_cmd_sender().clone().execute(cmd.clone());
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |cmd: &DataCommand| {
+            get_data_cmd_sender().clone().execute(cmd.clone());
+        });
+        msgbus::register_any(endpoint, handler);
 
         // Register DataEngine process handler
         let endpoint = MessagingSwitchboard::data_engine_process();
         let data_engine_weak2 = data_engine_weak.clone();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::with_any(
-            move |data: &dyn Any| {
-                if let Some(engine_rc) = data_engine_weak2.upgrade() {
-                    engine_rc.borrow_mut().process(data);
-                }
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_any(move |data: &dyn Any| {
+            if let Some(engine_rc) = data_engine_weak2.upgrade() {
+                engine_rc.borrow_mut().process(data);
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
         // Register DataEngine response handler
         let endpoint = MessagingSwitchboard::data_engine_response();
         let data_engine_weak3 = data_engine_weak;
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
-            move |resp: &DataResponse| {
-                if let Some(engine_rc) = data_engine_weak3.upgrade() {
-                    engine_rc.borrow_mut().response(resp.clone());
-                }
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |resp: &DataResponse| {
+            if let Some(engine_rc) = data_engine_weak3.upgrade() {
+                engine_rc.borrow_mut().response(resp.clone());
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
         // Register RiskEngine execute handler
         let risk_engine_weak = WeakCell::from(Rc::downgrade(&risk_engine));
         let endpoint = MessagingSwitchboard::risk_engine_execute();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
-            move |cmd: &TradingCommand| {
-                if let Some(engine_rc) = risk_engine_weak.upgrade() {
-                    engine_rc.borrow_mut().execute(cmd.clone());
-                }
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |cmd: &TradingCommand| {
+            if let Some(engine_rc) = risk_engine_weak.upgrade() {
+                engine_rc.borrow_mut().execute(cmd.clone());
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
         // Register ExecEngine execute handler
-        let exec_engine_weak = WeakCell::from(Rc::downgrade(&exec_engine));
-        let exec_engine_weak_clone = exec_engine_weak.clone();
+        let exec_engine_weak1 = WeakCell::from(Rc::downgrade(&exec_engine));
         let endpoint = MessagingSwitchboard::exec_engine_execute();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
-            move |cmd: &TradingCommand| {
-                if let Some(engine_rc) = exec_engine_weak.upgrade() {
-                    engine_rc.borrow().execute(cmd);
-                }
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |cmd: &TradingCommand| {
+            if let Some(engine_rc) = exec_engine_weak1.upgrade() {
+                engine_rc.borrow().execute(cmd);
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
         // Register ExecEngine process handler
+        let exec_engine_weak2 = WeakCell::from(Rc::downgrade(&exec_engine));
         let endpoint = MessagingSwitchboard::exec_engine_process();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::from(
-            move |event: &OrderEventAny| {
-                if let Some(engine_rc) = exec_engine_weak_clone.upgrade() {
-                    engine_rc.borrow_mut().process(event);
-                } else {
-                    log::error!(
-                        "ExecEngine dropped, cannot process order event: {:?}",
-                        event.client_order_id()
-                    );
-                }
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |event: &OrderEventAny| {
+            if let Some(engine_rc) = exec_engine_weak2.upgrade() {
+                engine_rc.borrow_mut().process(event);
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
-        // TODO: Implement actual reconciliation logic in ExecEngine
+        // Register ExecEngine report handler
+        let exec_engine_weak3 = WeakCell::from(Rc::downgrade(&exec_engine));
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::with_any(
-            move |report: &dyn Any| {
-                log::debug!(
-                    "Received execution report for reconciliation: {:?}",
-                    report.type_id()
-                );
-            },
-        )));
-        msgbus::register(endpoint, handler);
-
-        let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_mass_status();
-        let handler = ShareableMessageHandler(Rc::new(TypedMessageHandler::with_any(
-            move |report: &dyn Any| {
-                log::debug!(
-                    "Received execution mass status for reconciliation: {:?}",
-                    report.type_id()
-                );
-            },
-        )));
-        msgbus::register(endpoint, handler);
+        let handler = ShareableMessageHandler::from_typed(move |report: &ExecutionReport| {
+            if let Some(engine_rc) = exec_engine_weak3.upgrade() {
+                engine_rc.borrow_mut().reconcile_execution_report(report);
+            }
+        });
+        msgbus::register_any(endpoint, handler);
 
         let trader = Trader::new(
             config.trader_id(),
@@ -302,7 +265,7 @@ impl NautilusKernel {
     }
 
     fn determine_machine_id() -> anyhow::Result<String> {
-        Ok(hostname::get()?.to_string_lossy().into_owned())
+        sysinfo::System::host_name().ok_or_else(|| anyhow::anyhow!("Failed to determine hostname"))
     }
 
     fn initialize_logging(
@@ -317,8 +280,6 @@ impl NautilusKernel {
             FileWriterConfig::default(), // TODO: Properly incorporate file writer config
         )?;
 
-        init_tracing()?;
-
         Ok(log_guard)
     }
 
@@ -330,7 +291,7 @@ impl NautilusKernel {
             }
             #[cfg(feature = "live")]
             Environment::Live | Environment::Sandbox => {
-                let live_clock = LiveClock::default();
+                let live_clock = nautilus_common::live::clock::LiveClock::default(); // nautilus-import-ok
                 Rc::new(RefCell::new(live_clock))
             }
             #[cfg(not(feature = "live"))]
@@ -392,6 +353,12 @@ impl NautilusKernel {
         self.instance_id
     }
 
+    /// Returns the delay after stopping the node to await residual events before final shutdown.
+    #[must_use]
+    pub fn delay_post_stop(&self) -> Duration {
+        self.config.delay_post_stop()
+    }
+
     /// Returns the UNIX timestamp (ns) when the kernel was created.
     #[must_use]
     pub const fn ts_created(&self) -> UnixNanos {
@@ -432,12 +399,6 @@ impl NautilusKernel {
     #[must_use]
     pub fn cache(&self) -> Rc<RefCell<Cache>> {
         self.cache.clone()
-    }
-
-    /// Returns the kernel's message bus.  // TODO: TBD if this is necessary
-    #[must_use]
-    pub fn msgbus(&self) -> Rc<RefCell<MessageBus>> {
-        get_message_bus()
     }
 
     /// Returns the kernel's portfolio.
@@ -487,31 +448,43 @@ impl NautilusKernel {
         }
         log::info!("Clients started");
 
-        if let Err(e) = self.trader.start() {
-            log::error!("Error starting trader: {e:?}");
-        }
-
         self.ts_started = Some(self.clock.borrow().timestamp_ns());
         log::info!("Started");
     }
 
-    /// Stops the Nautilus system kernel.
-    pub async fn stop_async(&mut self) {
-        log::info!("Stopping");
+    /// Starts the trader (strategies and actors).
+    ///
+    /// This should be called after clients are connected and instruments are cached.
+    pub fn start_trader(&mut self) {
+        log::info!("Starting trader...");
+        if let Err(e) = self.trader.start() {
+            log::error!("Error starting trader: {e:?}");
+        }
+        log::info!("Trader started");
+    }
 
-        // Stop the trader (it will stop all registered components)
+    /// Stops the trader and its registered components.
+    ///
+    /// This method initiates a graceful shutdown of trading components (strategies, actors)
+    /// which may trigger residual events such as order cancellations. The caller should
+    /// continue processing events after calling this method to handle these residual events.
+    pub fn stop_trader(&mut self) {
+        if !self.trader.is_running() {
+            return;
+        }
+
+        log::info!("Stopping trader...");
+
         if let Err(e) = self.trader.stop() {
-            log::error!("Error stopping trader: {e:?}");
+            log::error!("Error stopping trader: {e}");
         }
+    }
 
-        // Wait for residual events to be processed (e.g., cancel orders on stop)
-        #[cfg(feature = "live")]
-        {
-            let delay = self.config.delay_post_stop();
-            log::info!("Awaiting residual events ({delay:?})...");
-            std::thread::sleep(delay);
-        }
-
+    /// Finalizes the kernel shutdown after the grace period.
+    ///
+    /// This method should be called after the residual events grace period has elapsed
+    /// and all remaining events have been processed. It disconnects clients and stops engines.
+    pub async fn finalize_stop(&mut self) {
         // Stop all adapter clients
         if let Err(e) = self.stop_all_clients() {
             log::error!("Error stopping clients: {e:?}");
@@ -532,9 +505,9 @@ impl NautilusKernel {
             log::error!("Error resetting trader: {e:?}");
         }
 
-        // Reset engines
         self.data_engine.borrow_mut().reset();
-        // TODO: Reset other engines when reset methods are available
+        self.exec_engine.borrow_mut().reset();
+        self.risk_engine.borrow_mut().reset();
 
         self.ts_started = None;
         self.ts_shutdown = None;
@@ -553,28 +526,24 @@ impl NautilusKernel {
         self.stop_engines();
 
         self.data_engine.borrow_mut().dispose();
-        // TODO: Implement dispose methods for other engines
+        self.exec_engine.borrow_mut().dispose();
+        self.risk_engine.borrow_mut().dispose();
 
         log::info!("Disposed");
-    }
-
-    /// Cancels all tasks currently running under the kernel.
-    ///
-    /// Intended for cleanup during shutdown.
-    const fn cancel_all_tasks(&self) {
-        // TODO: implement task cancellation logic for async contexts
     }
 
     /// Starts all engine components.
     fn start_engines(&self) {
         self.data_engine.borrow_mut().start();
-        // TODO: Start other engines when methods are available
+        self.exec_engine.borrow_mut().start();
+        self.risk_engine.borrow_mut().start();
     }
 
     /// Stops all engine components.
     fn stop_engines(&self) {
         self.data_engine.borrow_mut().stop();
-        // TODO: Stop other engines when methods are available
+        self.exec_engine.borrow_mut().stop();
+        self.risk_engine.borrow_mut().stop();
     }
 
     /// Starts all engine clients.
@@ -629,22 +598,14 @@ impl NautilusKernel {
         }
     }
 
-    /// Stops engine clients.
-    fn stop_clients(&self) {
-        self.data_engine.borrow_mut().stop();
-    }
-
     /// Connects all engine clients.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if any client fails to connect.
+    /// Connection failures are logged but do not prevent the node from running.
     #[allow(clippy::await_holding_refcell_ref)] // Single-threaded runtime, intentional design
-    pub async fn connect_clients(&mut self) -> anyhow::Result<()> {
+    pub async fn connect_clients(&mut self) {
         log::info!("Connecting clients...");
-        self.data_engine.borrow_mut().connect().await?;
-        self.exec_engine.borrow_mut().connect().await?;
-        Ok(())
+        self.data_engine.borrow_mut().connect().await;
+        self.exec_engine.borrow_mut().connect().await;
     }
 
     /// Disconnects all engine clients.
@@ -660,32 +621,6 @@ impl NautilusKernel {
         Ok(())
     }
 
-    /// Initializes the portfolio (orders & positions).
-    const fn initialize_portfolio(&self) {
-        // TODO: Placeholder: portfolio initialization to be implemented in next pass
-    }
-
-    /// Awaits execution engine state reconciliation.
-    ///
-    /// Blocks until executions are reconciled or timeout.
-    const fn await_execution_reconciliation(&self) {
-        // TODO: await execution reconciliation with timeout
-    }
-
-    /// Awaits portfolio initialization.
-    ///
-    /// Blocks until portfolio is initialized or timeout.
-    const fn await_portfolio_initialized(&self) {
-        // TODO: await portfolio initialization with timeout
-    }
-
-    /// Awaits post-stop trader residual events.
-    ///
-    /// Allows final cleanup before full shutdown.
-    const fn await_trader_residuals(&self) {
-        // TODO: await trader residual events after stop
-    }
-
     /// Returns `true` if all engine clients are connected.
     #[must_use]
     pub fn check_engines_connected(&self) -> bool {
@@ -699,13 +634,15 @@ impl NautilusKernel {
             && self.exec_engine.borrow().check_disconnected()
     }
 
-    /// Checks if the portfolio has been initialized.
-    const fn check_portfolio_initialized(&self) {
-        // TODO: check portfolio initialized status
+    /// Returns connection status for all data clients.
+    #[must_use]
+    pub fn data_client_connection_status(&self) -> Vec<(ClientId, bool)> {
+        self.data_engine.borrow().client_connection_status()
     }
 
-    /// Flushes the stream writer.
-    const fn flush_writer(&self) {
-        // TODO: No writer in this kernel version; placeholder for future streaming
+    /// Returns connection status for all execution clients.
+    #[must_use]
+    pub fn exec_client_connection_status(&self) -> Vec<(ClientId, bool)> {
+        self.exec_engine.borrow().client_connection_status()
     }
 }

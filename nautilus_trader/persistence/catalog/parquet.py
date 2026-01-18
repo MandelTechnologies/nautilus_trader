@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -339,18 +339,26 @@ class ParquetDataCatalog(BaseDataCatalog):
         end = end if end else data[-1].ts_init
         filename = _timestamps_to_filename(start, end)
         parquet_file = f"{directory}/{filename}"
+
+        if self.fs.exists(parquet_file):
+            print(f"File {parquet_file} already exists, skipping write")
+            return
+
+        if not skip_disjoint_check:
+            current_intervals = self._get_directory_intervals(directory)
+            new_intervals = [*current_intervals, (start, end)]
+            if not _are_intervals_disjoint(new_intervals):
+                raise ValueError(
+                    f"Writing file {filename} with interval ({start}, {end}) would create "
+                    f"non-disjoint intervals. Existing intervals: {current_intervals}",
+                )
+
         pq.write_table(
             table,
             where=parquet_file,
             filesystem=self.fs,
             row_group_size=self.max_rows_per_group,
         )
-
-        if not skip_disjoint_check:
-            intervals = self._get_directory_intervals(directory)
-            assert _are_intervals_disjoint(
-                intervals,
-            ), "Intervals are not disjoint after writing a new file"
 
     def _objects_to_table(self, data: list[Data], data_cls: type) -> pa.Table:
         PyCondition.not_empty(data, "data")
@@ -1795,10 +1803,10 @@ class ParquetDataCatalog(BaseDataCatalog):
         )
 
         # Ensure directory URI ends with / to be treated as a directory by some backends
-        # although DataFusion usually handles it.
         file_uri = self._build_file_uri(directory)
+        if not file_uri.endswith("/"):
+            file_uri = file_uri + "/"
         session.add_file(data_type, table, file_uri, query)
-
 
     def _build_file_uri(self, file: str) -> str:
         """
@@ -1931,7 +1939,7 @@ class ParquetDataCatalog(BaseDataCatalog):
         identifiers: list[str] | None = None,
         start: TimestampLike | None = None,
         end: TimestampLike | None = None,
-        filter_expr: str | None = None,
+        filter_expr: pds.Expression | None = None,
         files: list[str] | None = None,
         **kwargs: Any,
     ) -> list[Data]:
@@ -2052,10 +2060,7 @@ class ParquetDataCatalog(BaseDataCatalog):
             exact_match_file_paths = [
                 file_paths[i]
                 for i, file_instrument in enumerate(file_safe_identifiers)
-                if any(
-                    safe_identifier == file_instrument
-                    for safe_identifier in safe_identifiers
-                )
+                if any(safe_identifier == file_instrument for safe_identifier in safe_identifiers)
             ]
 
             if not exact_match_file_paths and data_cls in [Bar, *Bar.__subclasses__()]:

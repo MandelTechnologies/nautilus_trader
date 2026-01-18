@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -82,10 +82,10 @@ impl AuthTracker {
 
         if let Ok(mut guard) = self.tx.lock() {
             if let Some(old) = guard.take() {
-                tracing::warn!("New authentication request superseding previous pending request");
+                log::warn!("New authentication request superseding previous pending request");
                 let _ = old.send(Err("Authentication attempt superseded".to_string()));
             } else {
-                tracing::debug!("Starting new authentication request");
+                log::debug!("Starting new authentication request");
             }
             *guard = Some(sender);
         }
@@ -590,20 +590,20 @@ mod tests {
 
         // Verify auth completed before subscription
         tokio::select! {
-            _ = auth_completed.notified() => {
+            () = auth_completed.notified() => {
                 // Good - auth completed
             }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+            () = tokio::time::sleep(Duration::from_secs(1)) => {
                 panic!("Auth never completed");
             }
         }
 
         // Verify subscription completed
         tokio::select! {
-            _ = subscribed.notified() => {
+            () = subscribed.notified() => {
                 // Good - subscribed
             }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+            () = tokio::time::sleep(Duration::from_secs(1)) => {
                 panic!("Subscription never completed");
             }
         }

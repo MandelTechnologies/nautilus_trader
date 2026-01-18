@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -48,7 +48,7 @@ use crate::common::{
         BybitTriggerDirection,
     },
     parse::{
-        get_currency, parse_millis_timestamp, parse_price_with_precision,
+        get_currency, parse_book_level, parse_millis_timestamp, parse_price_with_precision,
         parse_quantity_with_precision,
     },
 };
@@ -343,8 +343,7 @@ pub fn parse_ticker_linear_funding(
     let funding_rate = funding_rate_str
         .as_str()
         .parse::<Decimal>()
-        .context("invalid funding_rate value")?
-        .normalize();
+        .context("invalid funding_rate value")?;
 
     let next_funding_ns = if let Some(next_funding_time) = &data.next_funding_time {
         let next_funding_millis = next_funding_time
@@ -374,23 +373,6 @@ pub(crate) fn parse_millis_i64(value: i64, field: &str) -> anyhow::Result<UnixNa
             .ok_or_else(|| anyhow::anyhow!("millisecond timestamp overflowed"))?;
         Ok(UnixNanos::from(nanos))
     }
-}
-
-fn parse_book_level(
-    level: &[String],
-    price_precision: u8,
-    size_precision: u8,
-    label: &str,
-) -> anyhow::Result<(Price, Quantity)> {
-    let price_str = level
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("missing price component in {label} level"))?;
-    let size_str = level
-        .get(1)
-        .ok_or_else(|| anyhow::anyhow!("missing size component in {label} level"))?;
-    let price = parse_price_with_precision(price_str, price_precision, label)?;
-    let size = parse_quantity_with_precision(size_str, size_precision, label)?;
-    Ok((price, size))
 }
 
 /// Parses a WebSocket kline payload into a [`Bar`].
@@ -446,12 +428,13 @@ pub fn parse_ws_order_status_report(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
+    use crate::common::enums::BybitOrderSide;
+
     let instrument_id = instrument.id();
     let venue_order_id = VenueOrderId::new(order.order_id.as_str());
     let order_side: OrderSide = order.side.into();
 
     // Bybit represents conditional orders using orderType + stopOrderType + triggerDirection + side
-    use crate::common::enums::BybitOrderSide;
     let order_type: OrderType = match (
         order.order_type,
         order.stop_order_type,
@@ -684,10 +667,10 @@ pub fn parse_ws_fill_report(
     let commission = Money::new(commission_amount, commission_currency);
     let ts_event = parse_millis_timestamp(&execution.exec_time, "execution.execTime")?;
 
-    let client_order_id = if !execution.order_link_id.is_empty() {
-        Some(ClientOrderId::new(execution.order_link_id.as_str()))
-    } else {
+    let client_order_id = if execution.order_link_id.is_empty() {
         None
+    } else {
+        Some(ClientOrderId::new(execution.order_link_id.as_str()))
     };
 
     Ok(FillReport::new(
@@ -987,7 +970,9 @@ mod tests {
     }
 
     #[rstest]
-    fn parse_ws_kline_into_bar() {
+    #[case::timestamp_on_open(false, 1_672_324_800_000_000_000)]
+    #[case::timestamp_on_close(true, 1_672_325_100_000_000_000)]
+    fn parse_ws_kline_into_bar(#[case] timestamp_on_close: bool, #[case] expected_ts_event: u64) {
         use std::num::NonZero;
 
         let instrument = linear_instrument();
@@ -1002,7 +987,7 @@ mod tests {
         };
         let bar_type = BarType::new(instrument.id(), bar_spec, AggregationSource::External);
 
-        let bar = parse_ws_kline_bar(kline, &instrument, bar_type, false, TS).unwrap();
+        let bar = parse_ws_kline_bar(kline, &instrument, bar_type, timestamp_on_close, TS).unwrap();
 
         assert_eq!(bar.bar_type, bar_type);
         assert_eq!(bar.open, instrument.make_price(16649.5));
@@ -1010,7 +995,7 @@ mod tests {
         assert_eq!(bar.low, instrument.make_price(16608.0));
         assert_eq!(bar.close, instrument.make_price(16677.0));
         assert_eq!(bar.volume, instrument.make_qty(2.081, None));
-        assert_eq!(bar.ts_event, UnixNanos::new(1_672_324_800_000_000_000));
+        assert_eq!(bar.ts_event, UnixNanos::new(expected_ts_event));
         assert_eq!(bar.ts_init, TS);
     }
 
@@ -1132,10 +1117,10 @@ mod tests {
             serde_json::from_str(&instruments_json).unwrap();
         let eth_def = &instruments_response.result.list[1]; // ETHUSDT is second in the list
         let fee_rate = crate::http::models::BybitFeeRate {
-            symbol: ustr::Ustr::from("ETHUSDT"),
+            symbol: Ustr::from("ETHUSDT"),
             taker_fee_rate: "0.00055".to_string(),
             maker_fee_rate: "0.0001".to_string(),
-            base_coin: Some(ustr::Ustr::from("ETH")),
+            base_coin: Some(Ustr::from("ETH")),
         };
         let instrument =
             crate::common::parse::parse_linear_instrument(eth_def, &fee_rate, TS, TS).unwrap();

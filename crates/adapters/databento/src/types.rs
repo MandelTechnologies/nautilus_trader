@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,6 +26,17 @@ use serde::Deserialize;
 use ustr::Ustr;
 
 use super::enums::{DatabentoStatisticType, DatabentoStatisticUpdateAction};
+
+/// Subscription acknowledgement event from the Databento gateway.
+#[derive(Debug, Clone)]
+pub struct SubscriptionAckEvent {
+    /// The schema that was acknowledged.
+    pub schema: String,
+    /// The raw message from the gateway.
+    pub message: String,
+    /// Timestamp when the ack was received.
+    pub ts_received: UnixNanos,
+}
 
 /// Represents a Databento publisher ID.
 pub type PublisherId = u16;

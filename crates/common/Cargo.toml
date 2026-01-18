@@ -66,11 +66,9 @@ log = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+smallvec = { workspace = true }
 strum = { workspace = true }
 sysinfo = { workspace = true }
-thousands = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 ustr = { workspace = true }
 
 alloy-primitives = { workspace = true, optional = true }
@@ -83,6 +81,8 @@ tokio = { workspace = true, optional = true }
 [dev-dependencies]
 capnp = { workspace = true }
 criterion = { workspace = true }
+futures = { workspace = true, features = ["executor"] }
+iai = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
@@ -97,11 +97,26 @@ path = "benches/cache/orders.rs"
 harness = false
 
 [[bench]]
+name = "cache_query_sets"
+path = "benches/cache/query_sets.rs"
+harness = false
+
+[[bench]]
 name = "matching"
 path = "benches/matching.rs"
 harness = false
 
 [[bench]]
-name = "cache_query_sets"
-path = "benches/cache/query_sets.rs"
+name = "matching_iai"
+path = "benches/matching_iai.rs"
+harness = false
+
+[[bench]]
+name = "msgbus"
+path = "benches/msgbus.rs"
+harness = false
+
+[[bench]]
+name = "mstr"
+path = "benches/mstr.rs"
 harness = false

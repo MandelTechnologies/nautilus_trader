@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,21 +17,32 @@
 //!
 //! dYdX v4 uses Cosmos SDK-style wallet signing rather than API key authentication.
 //! Trading operations require signing transactions with a secp256k1 private key.
+//!
+//! # Environment Variables
+//!
+//! Credentials can be resolved from environment variables:
+//!
+//! - Mainnet: `DYDX_MNEMONIC`, `DYDX_WALLET_ADDRESS`
+//! - Testnet: `DYDX_TESTNET_MNEMONIC`, `DYDX_TESTNET_WALLET_ADDRESS`
 
 #![allow(unused_assignments)] // Fields are accessed externally, false positive from nightly
 
-use std::fmt::{Debug, Formatter};
+use std::fmt::Debug;
 
 use anyhow::Context;
 use cosmrs::{AccountId, crypto::secp256k1::SigningKey, tx::SignDoc};
+use nautilus_core::env::get_or_env_var_opt;
 
 use crate::common::consts::DYDX_BECH32_PREFIX;
 
 /// dYdX wallet credentials for signing blockchain transactions.
 ///
 /// Uses secp256k1 for signing as per Cosmos SDK specifications.
-/// The underlying `SigningKey` from `cosmrs` (backed by `k256`) implements
-/// `Zeroize`, ensuring private key material is securely cleared from memory on drop.
+///
+/// # Security
+///
+/// The underlying `SigningKey` from cosmrs (backed by k256) securely zeroizes
+/// private key material from memory on drop.
 pub struct DydxCredential {
     /// The secp256k1 signing key.
     signing_key: SigningKey,
@@ -42,7 +53,7 @@ pub struct DydxCredential {
 }
 
 impl Debug for DydxCredential {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(DydxCredential))
             .field("address", &self.address)
             .field("authenticator_ids", &self.authenticator_ids)
@@ -67,6 +78,7 @@ impl DydxCredential {
         use bip32::{DerivationPath, Language, Mnemonic};
 
         // Derive seed from mnemonic
+        // Note: Both Mnemonic and Seed implement Drop for secure cleanup
         let mnemonic =
             Mnemonic::new(mnemonic_phrase, Language::English).context("Invalid mnemonic phrase")?;
         let seed = mnemonic.to_seed("");
@@ -76,7 +88,6 @@ impl DydxCredential {
         let derivation_path = format!("m/44'/118'/0'/0/{account_index}");
         let path = DerivationPath::from_str(&derivation_path).context("Invalid derivation path")?;
 
-        // Derive signing key
         let signing_key =
             SigningKey::derive_from_path(&seed, &path).context("Failed to derive signing key")?;
 
@@ -122,6 +133,71 @@ impl DydxCredential {
             address,
             authenticator_ids,
         })
+    }
+
+    /// Creates a [`DydxCredential`] from environment variables.
+    ///
+    /// Reads the mnemonic from:
+    /// - Mainnet: `DYDX_MNEMONIC`
+    /// - Testnet: `DYDX_TESTNET_MNEMONIC`
+    ///
+    /// Returns `None` if the environment variable is not set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the mnemonic is set but invalid.
+    pub fn from_env(
+        is_testnet: bool,
+        account_index: u32,
+        authenticator_ids: Vec<u64>,
+    ) -> anyhow::Result<Option<Self>> {
+        let env_var = if is_testnet {
+            "DYDX_TESTNET_MNEMONIC"
+        } else {
+            "DYDX_MNEMONIC"
+        };
+
+        match std::env::var(env_var).ok() {
+            Some(mnemonic) if !mnemonic.trim().is_empty() => Ok(Some(Self::from_mnemonic(
+                &mnemonic,
+                account_index,
+                authenticator_ids,
+            )?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Resolves a [`DydxCredential`] from config value or environment variable.
+    ///
+    /// Priority:
+    /// 1. If `mnemonic` is `Some`, use it directly.
+    /// 2. Otherwise, try to read from environment variable.
+    ///
+    /// Returns `None` if neither config nor env var provides a mnemonic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a mnemonic is provided but invalid.
+    pub fn resolve(
+        mnemonic: Option<String>,
+        is_testnet: bool,
+        account_index: u32,
+        authenticator_ids: Vec<u64>,
+    ) -> anyhow::Result<Option<Self>> {
+        let env_var = if is_testnet {
+            "DYDX_TESTNET_MNEMONIC"
+        } else {
+            "DYDX_MNEMONIC"
+        };
+
+        match get_or_env_var_opt(mnemonic, env_var) {
+            Some(m) if !m.trim().is_empty() => Ok(Some(Self::from_mnemonic(
+                &m,
+                account_index,
+                authenticator_ids,
+            )?)),
+            _ => Ok(None),
+        }
     }
 
     /// Returns the account ID for this credential.
@@ -174,6 +250,28 @@ impl DydxCredential {
     pub fn public_key(&self) -> cosmrs::crypto::PublicKey {
         self.signing_key.public_key()
     }
+}
+
+/// Resolves wallet address from config value or environment variable.
+///
+/// Priority:
+/// 1. If `wallet_address` is `Some`, use it directly.
+/// 2. Otherwise, try to read from environment variable.
+///
+/// Environment variables:
+/// - Mainnet: `DYDX_WALLET_ADDRESS`
+/// - Testnet: `DYDX_TESTNET_WALLET_ADDRESS`
+///
+/// Returns `None` if neither config nor env var provides a wallet address.
+#[must_use]
+pub fn resolve_wallet_address(wallet_address: Option<String>, is_testnet: bool) -> Option<String> {
+    let env_var = if is_testnet {
+        "DYDX_TESTNET_WALLET_ADDRESS"
+    } else {
+        "DYDX_WALLET_ADDRESS"
+    };
+
+    get_or_env_var_opt(wallet_address, env_var).filter(|s| !s.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -250,5 +348,53 @@ mod tests {
         assert!(debug_str.contains("DydxCredential"));
         // Should show address
         assert!(debug_str.contains(&credential.address));
+    }
+
+    #[rstest]
+    fn test_resolve_with_provided_mnemonic() {
+        let result = DydxCredential::resolve(Some(TEST_MNEMONIC.to_string()), false, 0, vec![])
+            .expect("Failed to resolve credential");
+
+        assert!(result.is_some());
+        let credential = result.unwrap();
+        assert!(credential.address.starts_with("dydx"));
+    }
+
+    #[rstest]
+    fn test_resolve_with_none_and_no_env_var() {
+        // Use testnet env var which is unlikely to be set in dev environment
+        let result = DydxCredential::resolve(None, true, 0, vec![])
+            .expect("Should not error when mnemonic not available");
+
+        // Will be None unless DYDX_TESTNET_MNEMONIC is set
+        if std::env::var("DYDX_TESTNET_MNEMONIC").is_err() {
+            assert!(result.is_none());
+        }
+    }
+
+    #[rstest]
+    fn test_resolve_wallet_address_with_provided_value() {
+        let result = resolve_wallet_address(Some("dydx1abc123".to_string()), false);
+        assert_eq!(result, Some("dydx1abc123".to_string()));
+    }
+
+    #[rstest]
+    fn test_resolve_wallet_address_empty_string_returns_none() {
+        let result = resolve_wallet_address(Some(String::new()), false);
+        assert!(result.is_none());
+
+        let result = resolve_wallet_address(Some("   ".to_string()), false);
+        assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_resolve_wallet_address_with_none_and_no_env_var() {
+        // Use testnet env var which is unlikely to be set in dev environment
+        let result = resolve_wallet_address(None, true);
+
+        // Will be None unless DYDX_TESTNET_WALLET_ADDRESS is set
+        if std::env::var("DYDX_TESTNET_WALLET_ADDRESS").is_err() {
+            assert!(result.is_none());
+        }
     }
 }

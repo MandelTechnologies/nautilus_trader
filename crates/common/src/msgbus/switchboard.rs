@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,16 +21,10 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
 };
 
-use super::core::{Endpoint, MStr, Topic};
+use super::mstr::{Endpoint, MStr, Topic};
 use crate::msgbus::get_message_bus;
 
 pub const CLOSE_TOPIC: &str = "CLOSE";
-
-////////////////////////////////////////////////////////////////////////////////
-// Built-in endpoint constants
-////////////////////////////////////////////////////////////////////////////////
-// These are static endpoint addresses.
-// They use OnceLock for thread-safe lazy initialization without instance state.
 
 static DATA_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
@@ -39,10 +33,10 @@ static DATA_RESPONSE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_RECONCILE_REPORT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
-static EXEC_RECONCILE_MASS_STATUS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static RISK_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static RISK_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
-static PORTFOLIO_UPDATE_ACCOUNT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static ORDER_EMULATOR_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static PORTFOLIO_ACCOUNT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 
 macro_rules! define_switchboard {
     ($(
@@ -120,13 +114,6 @@ macro_rules! define_switchboard {
 
             #[inline]
             #[must_use]
-            pub fn exec_engine_reconcile_execution_mass_status() -> MStr<Endpoint> {
-                *EXEC_RECONCILE_MASS_STATUS_ENDPOINT
-                    .get_or_init(|| "ExecEngine.reconcile_execution_mass_status".into())
-            }
-
-            #[inline]
-            #[must_use]
             pub fn risk_engine_execute() -> MStr<Endpoint> {
                 *RISK_EXECUTE_ENDPOINT.get_or_init(|| "RiskEngine.execute".into())
             }
@@ -139,8 +126,14 @@ macro_rules! define_switchboard {
 
             #[inline]
             #[must_use]
+            pub fn order_emulator_execute() -> MStr<Endpoint> {
+                *ORDER_EMULATOR_ENDPOINT.get_or_init(|| "OrderEmulator.execute".into())
+            }
+
+            #[inline]
+            #[must_use]
             pub fn portfolio_update_account() -> MStr<Endpoint> {
-                *PORTFOLIO_UPDATE_ACCOUNT_ENDPOINT.get_or_init(|| "Portfolio.update_account".into())
+                *PORTFOLIO_ACCOUNT_ENDPOINT.get_or_init(|| "Portfolio.update_account".into())
             }
 
             // Dynamic topics

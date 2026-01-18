@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,8 +20,9 @@ use pyo3::{Py, PyAny, PyResult, pyfunction, pymethods};
 
 use super::handler::PythonMessageHandler;
 use crate::msgbus::{
-    BusMessage, MStr, Topic, core::Endpoint, deregister, get_message_bus,
-    handler::ShareableMessageHandler, publish, register, send_any, subscribe, unsubscribe,
+    BusMessage, Endpoint, MStr, Topic, deregister_any, get_message_bus,
+    handler::ShareableMessageHandler, publish_any, register_any, send_any, subscribe_any,
+    unsubscribe_any,
 };
 
 #[pymethods]
@@ -84,7 +85,7 @@ pub fn py_msgbus_is_registered(endpoint: &str) -> bool {
 #[pyo3(name = "msgbus_publish")]
 pub fn py_msgbus_publish(topic: &str, message: Py<PyAny>) -> PyResult<()> {
     let topic = MStr::<Topic>::topic(topic).map_err(to_pyvalue_err)?;
-    publish(topic, &message);
+    publish_any(topic, &message);
     Ok(())
 }
 
@@ -100,7 +101,7 @@ pub fn py_msgbus_publish(topic: &str, message: Py<PyAny>) -> PyResult<()> {
 pub fn py_msgbus_register(endpoint: &str, handler: PythonMessageHandler) -> PyResult<()> {
     let endpoint = MStr::<Endpoint>::endpoint(endpoint).map_err(to_pyvalue_err)?;
     let handler = ShareableMessageHandler(Rc::new(handler));
-    register(endpoint, handler);
+    register_any(endpoint, handler);
     Ok(())
 }
 
@@ -128,7 +129,7 @@ pub fn py_msgbus_register(endpoint: &str, handler: PythonMessageHandler) -> PyRe
 pub fn py_msgbus_subscribe(topic: &str, handler: PythonMessageHandler, priority: Option<u8>) {
     let pattern = topic.into();
     let handler = ShareableMessageHandler(Rc::new(handler));
-    subscribe(pattern, handler, priority);
+    subscribe_any(pattern, handler, priority);
 }
 
 /// Unsubscribes the given `handler` from the `topic`.
@@ -137,7 +138,7 @@ pub fn py_msgbus_subscribe(topic: &str, handler: PythonMessageHandler, priority:
 pub fn py_msgbus_unsubscribe(topic: &str, handler: PythonMessageHandler) {
     let pattern = topic.into();
     let handler = ShareableMessageHandler(Rc::new(handler));
-    unsubscribe(pattern, handler);
+    unsubscribe_any(pattern, handler);
 }
 
 /// Deregisters the given `handler` for the `endpoint` address.
@@ -149,6 +150,6 @@ pub fn py_msgbus_unsubscribe(topic: &str, handler: PythonMessageHandler) {
 #[pyo3(name = "msgbus_deregister")]
 pub fn py_msgbus_deregister(endpoint: &str) -> PyResult<()> {
     let endpoint = MStr::<Endpoint>::endpoint(endpoint).map_err(to_pyvalue_err)?;
-    deregister(endpoint);
+    deregister_any(endpoint);
     Ok(())
 }

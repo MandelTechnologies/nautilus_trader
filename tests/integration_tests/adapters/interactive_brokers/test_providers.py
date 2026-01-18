@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -107,7 +107,7 @@ async def test_load_option_contract_instrument(mocker, instrument_provider):
     assert option.id == instrument_id
     assert option.asset_class == AssetClass.EQUITY
     assert option.multiplier == 100
-    assert option.expiration_ns == 1674172800000000000
+    assert option.expiration_ns == 1674248400000000000
     assert option.strike_price == Price.from_str("100.0")
     assert option.option_kind == OptionKind.CALL
     assert option.price_increment == Price.from_str("0.01")

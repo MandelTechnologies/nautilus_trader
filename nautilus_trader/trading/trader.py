@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -40,6 +40,7 @@ from nautilus_trader.common.component import remove_instance_component_clocks
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.engine import DataEngine
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ComponentId
 from nautilus_trader.model.identifiers import ExecAlgorithmId
 from nautilus_trader.model.identifiers import StrategyId
@@ -859,16 +860,30 @@ class Trader(Component):
         # Generate report with positions and snapshots
         return ReportProvider.generate_positions_report(positions, snapshots)
 
-    def generate_account_report(self, venue: Venue) -> pd.DataFrame:
+    def generate_account_report(
+        self,
+        venue: Venue = None,
+        account_id: AccountId = None,
+    ) -> pd.DataFrame:
         """
         Generate an account report.
+
+        Parameters
+        ----------
+        venue : Venue, optional
+            The venue for the account (used if account_id is not provided).
+        account_id : AccountId, optional
+            The account ID (takes priority if both venue and account_id are provided).
 
         Returns
         -------
         pd.DataFrame
 
         """
-        account = self._cache.account_for_venue(venue)
+        if account_id is None and venue is None:
+            raise ValueError("At least one of 'venue' or 'account_id' must be provided")
+
+        account = self._cache.account_for_venue(venue=venue, account_id=account_id)
 
         if account is None:
             return pd.DataFrame()

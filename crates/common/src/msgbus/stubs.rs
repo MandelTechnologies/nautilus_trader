@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,7 +27,7 @@ use std::{
 use nautilus_core::{UUID4, message::Message};
 use ustr::Ustr;
 
-use crate::msgbus::{ShareableMessageHandler, handler::MessageHandler};
+use crate::msgbus::{Handler, ShareableMessageHandler, TypedHandler, handler::MessageHandler};
 
 // Stub message handler which logs the data it receives
 pub struct StubMessageHandler {
@@ -60,9 +60,7 @@ impl MessageHandler for StubMessageHandler {
 #[must_use]
 #[allow(unused_must_use)]
 pub fn get_stub_shareable_handler(id: Option<Ustr>) -> ShareableMessageHandler {
-    // TODO: This reduces the need to come up with ID strings in tests.
-    // In Python we do something like `hash((self.topic, str(self.handler)))` for the hash
-    // which includes the memory address, just went with a UUID4 here.
+    // Use UUID4 for unique handler ID when none provided
     let unique_id = id.unwrap_or_else(|| Ustr::from(UUID4::new().as_str()));
     ShareableMessageHandler(Rc::new(StubMessageHandler {
         id: unique_id,
@@ -102,9 +100,7 @@ impl MessageHandler for CallCheckMessageHandler {
 
 #[must_use]
 pub fn get_call_check_shareable_handler(id: Option<Ustr>) -> ShareableMessageHandler {
-    // TODO: This reduces the need to come up with ID strings in tests.
-    // In Python we do something like `hash((self.topic, str(self.handler)))` for the hash
-    // which includes the memory address, just went with a UUID4 here.
+    // Use UUID4 for unique handler ID when none provided
     let unique_id = id.unwrap_or_else(|| Ustr::from(UUID4::new().as_str()));
     ShareableMessageHandler(Rc::new(CallCheckMessageHandler {
         id: unique_id,
@@ -167,9 +163,7 @@ impl<T: Clone + 'static> MessageHandler for MessageSavingHandler<T> {
 
 #[must_use]
 pub fn get_message_saving_handler<T: Clone + 'static>(id: Option<Ustr>) -> ShareableMessageHandler {
-    // TODO: This reduces the need to come up with ID strings in tests.
-    // In Python we do something like `hash((self.topic, str(self.handler)))` for the hash
-    // which includes the memory address, just went with a UUID4 here.
+    // Use UUID4 for unique handler ID when none provided
     let unique_id = id.unwrap_or_else(|| Ustr::from(UUID4::new().as_str()));
     ShareableMessageHandler(Rc::new(MessageSavingHandler::<T> {
         id: unique_id,
@@ -208,4 +202,54 @@ pub fn clear_saved_messages<T: Clone + 'static>(handler: ShareableMessageHandler
         .messages
         .borrow_mut()
         .clear();
+}
+
+/// Typed handler which saves the messages it receives (no downcast needed).
+#[derive(Debug, Clone)]
+pub struct TypedMessageSavingHandler<T> {
+    id: Ustr,
+    messages: Rc<RefCell<Vec<T>>>,
+}
+
+impl<T: Clone + 'static> TypedMessageSavingHandler<T> {
+    #[must_use]
+    pub fn new(id: Option<Ustr>) -> Self {
+        let unique_id = id.unwrap_or_else(|| Ustr::from(UUID4::new().as_str()));
+        Self {
+            id: unique_id,
+            messages: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn get_messages(&self) -> Vec<T> {
+        self.messages.borrow().clone()
+    }
+
+    /// Returns a `TypedHandler` that can be used for subscriptions.
+    #[must_use]
+    pub fn handler(&self) -> TypedHandler<T> {
+        TypedHandler::new(self.clone())
+    }
+}
+
+impl<T: Clone + 'static> Handler<T> for TypedMessageSavingHandler<T> {
+    fn id(&self) -> Ustr {
+        self.id
+    }
+
+    fn handle(&self, message: &T) {
+        self.messages.borrow_mut().push(message.clone());
+    }
+}
+
+/// Creates a typed message saving handler and returns both the handler for subscriptions
+/// and a clone that can be used to retrieve messages.
+#[must_use]
+pub fn get_typed_message_saving_handler<T: Clone + 'static>(
+    id: Option<Ustr>,
+) -> (TypedHandler<T>, TypedMessageSavingHandler<T>) {
+    let saving_handler = TypedMessageSavingHandler::new(id);
+    let typed_handler = saving_handler.handler();
+    (typed_handler, saving_handler)
 }

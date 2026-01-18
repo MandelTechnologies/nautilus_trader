@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -155,19 +155,13 @@ impl BaseAccount {
 
     /// Updates the account balances with the provided list of `AccountBalance` instances.
     ///
-    /// # Panics
-    ///
-    /// Panics if any updated `AccountBalance` has a total less than zero.
+    /// Note: This method does NOT validate negative balances. Derived account types
+    /// (CashAccount, MarginAccount) should perform their own validation in apply():
+    /// - MarginAccount: allows negative balances (normal for margin trading)
+    /// - CashAccount: rejects negative unless `allow_borrowing` is true
     pub fn update_balances(&mut self, balances: Vec<AccountBalance>) {
         for balance in balances {
-            // clone real balance without reference
-            if balance.total.raw < 0 {
-                // TODO raise AccountBalanceNegative event
-                panic!("Cannot update balances with total less than 0.0")
-            } else {
-                // clear asset balance
-                self.balances.insert(balance.currency, balance);
-            }
+            self.balances.insert(balance.currency, balance);
         }
     }
 
@@ -181,6 +175,23 @@ impl BaseAccount {
 
         self.commissions
             .insert(currency, total_commissions + commission.as_f64());
+    }
+
+    /// Returns the total commission for the specified currency.
+    #[must_use]
+    pub fn commission(&self, currency: &Currency) -> Option<Money> {
+        self.commissions
+            .get(currency)
+            .map(|&amount| Money::new(amount, *currency))
+    }
+
+    /// Returns a map of all commissions by currency.
+    #[must_use]
+    pub fn commissions(&self) -> AHashMap<Currency, Money> {
+        self.commissions
+            .iter()
+            .map(|(currency, &amount)| (*currency, Money::new(amount, *currency)))
+            .collect()
     }
 
     pub fn base_apply(&mut self, event: AccountState) {
@@ -258,6 +269,13 @@ impl BaseAccount {
 
     /// Calculates profit and loss amounts for a filled order.
     ///
+    /// For cash accounts, this calculates the balance impact of a fill:
+    /// - BUY: gain base currency quantity, lose quote currency notional.
+    /// - SELL: lose base currency quantity, gain quote currency notional.
+    ///
+    /// Note: Unlike betting accounts, cash accounts do NOT cap to position quantity.
+    /// The full fill quantity is used for PnL calculation.
+    ///
     /// # Errors
     ///
     /// This function never returns an error (TBD).
@@ -269,15 +287,14 @@ impl BaseAccount {
         &self,
         instrument: InstrumentAny,
         fill: OrderFilled,
-        position: Option<Position>,
+        _position: Option<Position>,
     ) -> anyhow::Result<Vec<Money>> {
         let mut pnls: AHashMap<Currency, Money> = AHashMap::new();
         let base_currency = instrument.base_currency();
 
-        let fill_qty_value = position.map_or(fill.last_qty.as_f64(), |pos| {
-            pos.quantity.as_f64().min(fill.last_qty.as_f64())
-        });
-        let fill_qty = Quantity::new(fill_qty_value, fill.last_qty.precision);
+        // No quantity capping (betting accounts cap to position qty, cash accounts don't)
+        let fill_qty = fill.last_qty;
+        let fill_qty_value = fill_qty.as_f64();
 
         let notional = instrument.calculate_notional_value(fill_qty, fill.last_px, None);
 

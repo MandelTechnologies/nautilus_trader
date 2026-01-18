@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -850,10 +850,10 @@ impl Hash for Position {
 
 impl Display for Position {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let quantity_str = if self.quantity != Quantity::zero(self.price_precision) {
-            self.quantity.to_formatted_string() + " "
-        } else {
+        let quantity_str = if self.quantity == Quantity::zero(self.price_precision) {
             String::new()
+        } else {
+            self.quantity.to_formatted_string() + " "
         };
         write!(
             f,
@@ -872,7 +872,7 @@ mod tests {
 
     use crate::{
         enums::{LiquiditySide, OrderSide, OrderType, PositionAdjustmentType, PositionSide},
-        events::OrderFilled,
+        events::{OrderFilled, PositionAdjusted},
         identifiers::{
             AccountId, ClientOrderId, PositionId, StrategyId, TradeId, VenueOrderId, stubs::uuid4,
         },
@@ -3260,7 +3260,6 @@ mod tests {
         assert_eq!(position.adjustments.len(), 1);
 
         // Apply a manual funding payment adjustment (no reason field)
-        use crate::events::PositionAdjusted;
         let funding_adjustment = PositionAdjusted::new(
             position.trader_id,
             position.strategy_id,

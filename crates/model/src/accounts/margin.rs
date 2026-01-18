@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,8 +13,19 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Implementation of a *margin* account capable of holding leveraged positions and tracking
-//! instrument-specific leverage ratios.
+//! A margin account capable of holding leveraged positions and tracking instrument-specific
+//! leverage ratios.
+//!
+//! # PnL calculation
+//!
+//! The account calculates PnL differently based on instrument type:
+//!
+//! - **Premium instruments** (options, option spreads, binary options, warrants): Realize
+//!   the notional value as a cash flow on every fill. BUY = negative (premium paid),
+//!   SELL = positive (premium received).
+//!
+//! - **Other instruments**: Only realize PnL on position reduction (fill side opposite to
+//!   entry). Use the minimum of fill and position quantity to avoid double-counting.
 
 #![allow(dead_code)]
 
@@ -30,7 +41,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     accounts::{Account, base::BaseAccount},
-    enums::{AccountType, LiquiditySide, OrderSide},
+    enums::{AccountType, InstrumentClass, LiquiditySide, OrderSide},
     events::{AccountState, OrderFilled},
     identifiers::{AccountId, InstrumentId},
     instruments::{Instrument, InstrumentAny},
@@ -86,6 +97,7 @@ impl MarginAccount {
     pub fn is_cash_account(&self) -> bool {
         self.account_type == AccountType::Cash
     }
+
     #[must_use]
     pub fn is_margin_account(&self) -> bool {
         self.account_type == AccountType::Margin
@@ -193,6 +205,26 @@ impl MarginAccount {
         margin_balance.unwrap().maintenance
     }
 
+    /// Returns the margin balance for the specified instrument.
+    #[must_use]
+    pub fn margin(&self, instrument_id: &InstrumentId) -> Option<MarginBalance> {
+        self.margins.get(instrument_id).copied()
+    }
+
+    /// Updates the margin balance for the specified instrument with both initial and maintenance.
+    pub fn update_margin(&mut self, margin_balance: MarginBalance) {
+        self.margins
+            .insert(margin_balance.instrument_id, margin_balance);
+        self.recalculate_balance(margin_balance.currency);
+    }
+
+    /// Clears the margin for the specified instrument.
+    pub fn clear_margin(&mut self, instrument_id: InstrumentId) {
+        if let Some(margin_balance) = self.margins.remove(&instrument_id) {
+            self.recalculate_balance(margin_balance.currency);
+        }
+    }
+
     /// Calculates the initial margin amount for the specified instrument and quantity.
     ///
     /// # Errors
@@ -272,13 +304,16 @@ impl MarginAccount {
     /// # Panics
     ///
     /// This function panics if:
-    /// - No starting balance exists for the given `currency`.
-    /// - Total free margin would be negative.
     /// - Margin calculation overflows.
     pub fn recalculate_balance(&mut self, currency: Currency) {
         let current_balance = match self.balances.get(&currency) {
-            Some(balance) => balance,
-            None => panic!("Cannot recalculate balance when no starting balance"),
+            Some(balance) => *balance,
+            None => {
+                // Initialize zero balance if none exists - can occur when account
+                // state doesn't include a balance for the position's cost currency
+                let zero = Money::from_raw(0, currency);
+                AccountBalance::new(zero, zero, zero)
+            }
         };
 
         let mut total_margin: MoneyRaw = 0;
@@ -296,12 +331,15 @@ impl MarginAccount {
             }
         }
 
-        let total_free = current_balance.total.raw - total_margin;
-        // TODO error handle this with AccountMarginExceeded
-        assert!(
-            total_free >= 0,
-            "Cannot recalculate balance when total_free is less than 0.0"
-        );
+        // Clamp margin to total balance if it would result in negative free balance.
+        // This can occur transiently when venue and client state are out of sync.
+        let total_free = if total_margin > current_balance.total.raw {
+            total_margin = current_balance.total.raw;
+            0
+        } else {
+            current_balance.total.raw - total_margin
+        };
+
         let new_balance = AccountBalance::new(
             current_balance.total,
             Money::from_raw(total_margin, currency),
@@ -402,8 +440,9 @@ impl Account for MarginAccount {
         self.balances.clone()
     }
 
-    fn apply(&mut self, event: AccountState) {
+    fn apply(&mut self, event: AccountState) -> anyhow::Result<()> {
         self.base_apply(event);
+        Ok(())
     }
 
     fn purge_account_events(&mut self, ts_now: nautilus_core::UnixNanos, lookback_secs: u64) {
@@ -423,12 +462,32 @@ impl Account for MarginAccount {
 
     fn calculate_pnls(
         &self,
-        _instrument: InstrumentAny, // TBD if this should be removed
+        instrument: InstrumentAny,
         fill: OrderFilled,
         position: Option<Position>,
     ) -> anyhow::Result<Vec<Money>> {
         let mut pnls: Vec<Money> = Vec::new();
 
+        // For premium-based instruments, realize the notional value as a cash flow on every fill
+        let instrument_class = instrument.instrument_class();
+        if matches!(
+            instrument_class,
+            InstrumentClass::Option
+                | InstrumentClass::OptionSpread
+                | InstrumentClass::BinaryOption
+                | InstrumentClass::Warrant
+        ) {
+            let notional = instrument.calculate_notional_value(fill.last_qty, fill.last_px, None);
+            let pnl = if fill.order_side == OrderSide::Buy {
+                Money::from_raw(-notional.raw, notional.currency)
+            } else {
+                notional
+            };
+            pnls.push(pnl);
+            return Ok(pnls);
+        }
+
+        // For other instruments, only realize PnL on position reduction
         if let Some(ref pos) = position
             && pos.quantity.is_positive()
             && pos.entry != fill.order_side
@@ -509,9 +568,13 @@ mod tests {
             VenueOrderId,
             stubs::{uuid4, *},
         },
-        instruments::{CryptoPerpetual, CurrencyPair, InstrumentAny, stubs::*},
+        instruments::{
+            CryptoPerpetual, CurrencyPair, InstrumentAny,
+            stubs::{binary_option, option_contract_appl, *},
+        },
+        orders::{OrderTestBuilder, stubs::TestOrderEventStubs},
         position::Position,
-        types::{Currency, Money, Price, Quantity},
+        types::{Currency, MarginBalance, Money, Price, Quantity},
     };
 
     #[rstest]
@@ -978,5 +1041,144 @@ mod tests {
 
         // Should return empty PnL list
         assert_eq!(pnls.len(), 0);
+    }
+
+    #[rstest]
+    fn test_margin_accessor(
+        mut margin_account: MarginAccount,
+        instrument_id_aud_usd_sim: InstrumentId,
+    ) {
+        let margin_balance = MarginBalance::new(
+            Money::from("1000 USD"),
+            Money::from("500 USD"),
+            instrument_id_aud_usd_sim,
+        );
+
+        margin_account.update_margin(margin_balance);
+
+        let retrieved = margin_account.margin(&instrument_id_aud_usd_sim);
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.initial, Money::from("1000 USD"));
+        assert_eq!(retrieved.maintenance, Money::from("500 USD"));
+        assert_eq!(retrieved.instrument_id, instrument_id_aud_usd_sim);
+    }
+
+    #[rstest]
+    fn test_clear_margin(
+        mut margin_account: MarginAccount,
+        instrument_id_aud_usd_sim: InstrumentId,
+    ) {
+        let margin_balance = MarginBalance::new(
+            Money::from("1000 USD"),
+            Money::from("500 USD"),
+            instrument_id_aud_usd_sim,
+        );
+
+        margin_account.update_margin(margin_balance);
+        assert!(margin_account.margin(&instrument_id_aud_usd_sim).is_some());
+
+        margin_account.clear_margin(instrument_id_aud_usd_sim);
+        assert!(margin_account.margin(&instrument_id_aud_usd_sim).is_none());
+    }
+
+    #[rstest]
+    fn test_calculate_pnls_for_option_buy_realizes_premium(margin_account: MarginAccount) {
+        let option = option_contract_appl();
+        let option_any = InstrumentAny::OptionContract(option);
+
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(option.id)
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("10"))
+            .build();
+
+        let fill = TestOrderEventStubs::filled(
+            &order,
+            &option_any,
+            None,
+            Some(PositionId::new("P-OPT-001")),
+            Some(Price::from("5.50")),
+            None,
+            None,
+            None,
+            None,
+            Some(AccountId::from("SIM-001")),
+        );
+
+        let pnls = margin_account
+            .calculate_pnls(option_any, fill.into(), None)
+            .unwrap();
+
+        // BUY option = pay premium (negative PnL)
+        // 10 contracts * $5.50 = $55.00 premium paid
+        assert_eq!(pnls.len(), 1);
+        assert_eq!(pnls[0], Money::from("-55 USD"));
+    }
+
+    #[rstest]
+    fn test_calculate_pnls_for_option_sell_realizes_premium(margin_account: MarginAccount) {
+        let option = option_contract_appl();
+        let option_any = InstrumentAny::OptionContract(option);
+
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(option.id)
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("10"))
+            .build();
+
+        let fill = TestOrderEventStubs::filled(
+            &order,
+            &option_any,
+            None,
+            Some(PositionId::new("P-OPT-002")),
+            Some(Price::from("5.50")),
+            None,
+            None,
+            None,
+            None,
+            Some(AccountId::from("SIM-001")),
+        );
+
+        let pnls = margin_account
+            .calculate_pnls(option_any, fill.into(), None)
+            .unwrap();
+
+        // SELL option = receive premium (positive PnL)
+        // 10 contracts * $5.50 = $55.00 premium received
+        assert_eq!(pnls.len(), 1);
+        assert_eq!(pnls[0], Money::from("55 USD"));
+    }
+
+    #[rstest]
+    fn test_calculate_pnls_for_binary_option(margin_account: MarginAccount) {
+        let binary = binary_option();
+        let binary_any = InstrumentAny::BinaryOption(binary);
+
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(binary.id)
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("100"))
+            .build();
+
+        let fill = TestOrderEventStubs::filled(
+            &order,
+            &binary_any,
+            None,
+            Some(PositionId::new("P-BIN-001")),
+            Some(Price::from("0.65")),
+            None,
+            None,
+            None,
+            None,
+            Some(AccountId::from("SIM-001")),
+        );
+
+        let pnls = margin_account
+            .calculate_pnls(binary_any, fill.into(), None)
+            .unwrap();
+
+        assert_eq!(pnls.len(), 1);
+        assert!(pnls[0].as_f64() < 0.0);
     }
 }

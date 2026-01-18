@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -128,6 +128,7 @@ pub struct BybitWebSocketClient {
     is_authenticated: Arc<AtomicBool>,
     account_id: Option<AccountId>,
     mm_level: Arc<AtomicU8>,
+    bars_timestamp_on_close: bool,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     funding_cache: FundingCache,
     cancellation_token: CancellationToken,
@@ -135,7 +136,7 @@ pub struct BybitWebSocketClient {
 
 impl Debug for BybitWebSocketClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BybitWebSocketClient")
+        f.debug_struct(stringify!(BybitWebSocketClient))
             .field("url", &self.url)
             .field("environment", &self.environment)
             .field("product_type", &self.product_type)
@@ -165,6 +166,7 @@ impl Clone for BybitWebSocketClient {
             is_authenticated: Arc::clone(&self.is_authenticated),
             account_id: self.account_id,
             mm_level: Arc::clone(&self.mm_level),
+            bars_timestamp_on_close: self.bars_timestamp_on_close,
             instruments_cache: Arc::clone(&self.instruments_cache),
             funding_cache: Arc::clone(&self.funding_cache),
             cancellation_token: self.cancellation_token.clone(),
@@ -217,9 +219,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -265,9 +268,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -313,9 +317,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -326,6 +331,9 @@ impl BybitWebSocketClient {
     /// Returns an error if the underlying WebSocket connection cannot be established,
     /// after retrying multiple times with exponential backoff.
     pub async fn connect(&mut self) -> BybitWsResult<()> {
+        const MAX_RETRIES: u32 = 5;
+        const CONNECTION_TIMEOUT_SECS: u64 = 10;
+
         self.signal.store(false, Ordering::Relaxed);
 
         let (raw_handler, raw_rx) = channel_message_handler();
@@ -344,10 +352,8 @@ impl BybitWebSocketClient {
         let config = WebSocketConfig {
             url: self.url.clone(),
             headers: Self::default_headers(),
-            message_handler: Some(raw_handler),
             heartbeat: self.heartbeat,
             heartbeat_msg: Some(ping_msg),
-            ping_handler: Some(ping_handler),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: Some(500),
             reconnect_delay_max_ms: Some(5_000),
@@ -358,9 +364,6 @@ impl BybitWebSocketClient {
 
         // Retry initial connection with exponential backoff to handle transient DNS/network issues
         // TODO: Eventually expose client config options for this
-        const MAX_RETRIES: u32 = 5;
-        const CONNECTION_TIMEOUT_SECS: u64 = 10;
-
         let mut backoff = ExponentialBackoff::new(
             Duration::from_millis(500),
             Duration::from_millis(5000),
@@ -378,35 +381,37 @@ impl BybitWebSocketClient {
 
             match tokio::time::timeout(
                 Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-                WebSocketClient::connect(config.clone(), None, vec![], None),
+                WebSocketClient::connect(
+                    config.clone(),
+                    Some(raw_handler.clone()),
+                    Some(ping_handler.clone()),
+                    None,
+                    vec![],
+                    None,
+                ),
             )
             .await
             {
                 Ok(Ok(client)) => {
                     if attempt > 1 {
-                        tracing::info!("WebSocket connection established after {attempt} attempts");
+                        log::info!("WebSocket connection established after {attempt} attempts");
                     }
                     break client;
                 }
                 Ok(Err(e)) => {
                     last_error = e.to_string();
-                    tracing::warn!(
-                        attempt,
-                        max_retries = MAX_RETRIES,
-                        url = %self.url,
-                        error = %last_error,
-                        "WebSocket connection attempt failed"
+                    log::warn!(
+                        "WebSocket connection attempt failed: attempt={attempt}, max_retries={MAX_RETRIES}, url={}, error={last_error}",
+                        self.url
                     );
                 }
                 Err(_) => {
                     last_error = format!(
                         "Connection timeout after {CONNECTION_TIMEOUT_SECS}s (possible DNS resolution failure)"
                     );
-                    tracing::warn!(
-                        attempt,
-                        max_retries = MAX_RETRIES,
-                        url = %self.url,
-                        "WebSocket connection attempt timed out"
+                    log::warn!(
+                        "WebSocket connection attempt timed out: attempt={attempt}, max_retries={MAX_RETRIES}, url={}",
+                        self.url
                     );
                 }
             }
@@ -425,7 +430,7 @@ impl BybitWebSocketClient {
             }
 
             let delay = backoff.next_duration();
-            tracing::debug!(
+            log::debug!(
                 "Retrying in {delay:?} (attempt {}/{MAX_RETRIES})",
                 attempt + 1
             );
@@ -462,6 +467,7 @@ impl BybitWebSocketClient {
         let funding_cache = Arc::clone(&self.funding_cache);
         let account_id = self.account_id;
         let product_type = self.product_type;
+        let bars_timestamp_on_close = self.bars_timestamp_on_close;
         let mm_level = Arc::clone(&self.mm_level);
         let cmd_tx_for_reconnect = cmd_tx.clone();
         let auth_tracker = self.auth_tracker.clone();
@@ -475,6 +481,7 @@ impl BybitWebSocketClient {
                 out_tx.clone(),
                 account_id,
                 product_type,
+                bars_timestamp_on_close,
                 mm_level.clone(),
                 auth_tracker,
                 subscriptions.clone(),
@@ -489,7 +496,10 @@ impl BybitWebSocketClient {
                     return;
                 }
 
-                tracing::debug!(count = topics.len(), "Resubscribing to confirmed subscriptions");
+                log::debug!(
+                    "Resubscribing to confirmed subscriptions: count={}",
+                    topics.len()
+                );
 
                 for topic in &topics {
                     subscriptions.mark_subscribe(topic.as_str());
@@ -509,7 +519,7 @@ impl BybitWebSocketClient {
                 let cmd = HandlerCommand::Subscribe { topics: payloads };
 
                 if let Err(e) = cmd_tx_for_reconnect.send(cmd) {
-                    tracing::error!("Failed to send resubscribe command: {e}");
+                    log::error!("Failed to send resubscribe command: {e}");
                 }
             };
 
@@ -521,7 +531,7 @@ impl BybitWebSocketClient {
                             continue;
                         }
 
-                        tracing::info!("WebSocket reconnected");
+                        log::info!("WebSocket reconnected");
 
                         // Mark all confirmed subscriptions as failed so they transition to pending state
                         let confirmed_topics: Vec<String> = {
@@ -541,7 +551,10 @@ impl BybitWebSocketClient {
                         };
 
                         if !confirmed_topics.is_empty() {
-                            tracing::debug!(count = confirmed_topics.len(), "Marking confirmed subscriptions as pending for replay");
+                            log::debug!(
+                                "Marking confirmed subscriptions as pending for replay: count={}",
+                                confirmed_topics.len()
+                            );
                             for topic in confirmed_topics {
                                 subscriptions.mark_failure(&topic);
                             }
@@ -552,10 +565,11 @@ impl BybitWebSocketClient {
 
                         if requires_auth {
                             is_authenticated.store(false, Ordering::Relaxed);
-                            tracing::debug!("Re-authenticating after reconnection");
+                            log::debug!("Re-authenticating after reconnection");
 
                             if let Some(cred) = &credential {
-                                let expires = chrono::Utc::now().timestamp_millis() + WEBSOCKET_AUTH_WINDOW_MS;
+                                let expires = chrono::Utc::now().timestamp_millis()
+                                    + WEBSOCKET_AUTH_WINDOW_MS;
                                 let signature = cred.sign_websocket_auth(expires);
 
                                 let auth_message = BybitAuthRequest {
@@ -570,10 +584,12 @@ impl BybitWebSocketClient {
                                 if let Ok(payload) = serde_json::to_string(&auth_message) {
                                     let cmd = HandlerCommand::Authenticate { payload };
                                     if let Err(e) = cmd_tx_for_reconnect.send(cmd) {
-                                        tracing::error!(error = %e, "Failed to send reconnection auth command");
+                                        log::error!(
+                                            "Failed to send reconnection auth command: error={e}"
+                                        );
                                     }
                                 } else {
-                                    tracing::error!("Failed to serialize reconnection auth message");
+                                    log::error!("Failed to serialize reconnection auth message");
                                 }
                             }
                         }
@@ -581,43 +597,43 @@ impl BybitWebSocketClient {
                         // Unauthenticated sessions resubscribe immediately after reconnection,
                         // authenticated sessions wait for Authenticated message
                         if !requires_auth {
-                            tracing::debug!("No authentication required, resubscribing immediately");
+                            log::debug!("No authentication required, resubscribing immediately");
                             resubscribe_all().await;
                         }
 
                         // Forward to out_tx so caller sees the Reconnected message
                         if out_tx.send(NautilusWsMessage::Reconnected).is_err() {
-                            tracing::debug!("Receiver dropped, stopping");
+                            log::debug!("Receiver dropped, stopping");
                             break;
                         }
                         continue;
                     }
                     Some(NautilusWsMessage::Authenticated) => {
-                        tracing::debug!("Authenticated, resubscribing");
+                        log::debug!("Authenticated, resubscribing");
                         is_authenticated.store(true, Ordering::Relaxed);
                         resubscribe_all().await;
                         continue;
                     }
                     Some(msg) => {
                         if out_tx.send(msg).is_err() {
-                            tracing::error!("Failed to send message (receiver dropped)");
+                            log::error!("Failed to send message (receiver dropped)");
                             break;
                         }
                     }
                     None => {
                         // Stream ended - check if it's a stop signal
                         if handler.is_stopped() {
-                            tracing::debug!("Stop signal received, ending message processing");
+                            log::debug!("Stop signal received, ending message processing");
                             break;
                         }
                         // Otherwise it's an unexpected stream end
-                        tracing::warn!("WebSocket stream ended unexpectedly");
+                        log::warn!("WebSocket stream ended unexpectedly");
                         break;
                     }
                 }
             }
 
-            tracing::debug!("Handler task exiting");
+            log::debug!("Handler task exiting");
         });
 
         self.task_handle = Some(Arc::new(stream_handle));
@@ -631,13 +647,13 @@ impl BybitWebSocketClient {
 
     /// Disconnects the WebSocket client and stops the background task.
     pub async fn close(&mut self) -> BybitWsResult<()> {
-        tracing::debug!("Starting close process");
+        log::debug!("Starting close process");
 
         self.signal.store(true, Ordering::Relaxed);
 
         let cmd = HandlerCommand::Disconnect;
         if let Err(e) = self.cmd_tx.read().await.send(cmd) {
-            tracing::debug!(
+            log::debug!(
                 "Failed to send disconnect command (handler may already be shut down): {e}"
             );
         }
@@ -645,12 +661,12 @@ impl BybitWebSocketClient {
         if let Some(task_handle) = self.task_handle.take() {
             match Arc::try_unwrap(task_handle) {
                 Ok(handle) => {
-                    tracing::debug!("Waiting for task handle to complete");
+                    log::debug!("Waiting for task handle to complete");
                     match tokio::time::timeout(Duration::from_secs(2), handle).await {
-                        Ok(Ok(())) => tracing::debug!("Task handle completed successfully"),
-                        Ok(Err(e)) => tracing::error!("Task handle encountered an error: {e:?}"),
+                        Ok(Ok(())) => log::debug!("Task handle completed successfully"),
+                        Ok(Err(e)) => log::error!("Task handle encountered an error: {e:?}"),
                         Err(_) => {
-                            tracing::warn!(
+                            log::warn!(
                                 "Timeout waiting for task handle, task may still be running"
                             );
                             // The task will be dropped and should clean up automatically
@@ -658,19 +674,19 @@ impl BybitWebSocketClient {
                     }
                 }
                 Err(arc_handle) => {
-                    tracing::debug!(
+                    log::debug!(
                         "Cannot take ownership of task handle - other references exist, aborting task"
                     );
                     arc_handle.abort();
                 }
             }
         } else {
-            tracing::debug!("No task handle to await");
+            log::debug!("No task handle to await");
         }
 
         self.is_authenticated.store(false, Ordering::Relaxed);
 
-        tracing::debug!("Closed");
+        log::debug!("Closed");
 
         Ok(())
     }
@@ -719,7 +735,7 @@ impl BybitWebSocketClient {
             return Ok(());
         }
 
-        tracing::debug!("Subscribing to topics: {topics:?}");
+        log::debug!("Subscribing to topics: {topics:?}");
 
         // Use reference counting to deduplicate subscriptions
         let mut topics_to_send = Vec::new();
@@ -730,7 +746,7 @@ impl BybitWebSocketClient {
                 self.subscriptions.mark_subscribe(&topic);
                 topics_to_send.push(topic.clone());
             } else {
-                tracing::debug!("Already subscribed to {topic}, skipping duplicate subscription");
+                log::debug!("Already subscribed to {topic}, skipping duplicate subscription");
             }
         }
 
@@ -767,10 +783,10 @@ impl BybitWebSocketClient {
             return Ok(());
         }
 
-        tracing::debug!("Attempting to unsubscribe from topics: {topics:?}");
+        log::debug!("Attempting to unsubscribe from topics: {topics:?}");
 
         if self.signal.load(Ordering::Relaxed) {
-            tracing::debug!("Shutdown signal detected, skipping unsubscribe");
+            log::debug!("Shutdown signal detected, skipping unsubscribe");
             return Ok(());
         }
 
@@ -783,7 +799,7 @@ impl BybitWebSocketClient {
                 self.subscriptions.mark_unsubscribe(&topic);
                 topics_to_send.push(topic.clone());
             } else {
-                tracing::debug!("Topic {topic} still has active subscriptions, not unsubscribing");
+                log::debug!("Topic {topic} still has active subscriptions, not unsubscribing");
             }
         }
 
@@ -805,7 +821,7 @@ impl BybitWebSocketClient {
 
         let cmd = HandlerCommand::Unsubscribe { topics: payloads };
         if let Err(e) = self.cmd_tx.read().await.send(cmd) {
-            tracing::debug!(error = %e, "Failed to send unsubscribe command");
+            log::debug!("Failed to send unsubscribe command: error={e}");
         }
 
         Ok(())
@@ -853,7 +869,7 @@ impl BybitWebSocketClient {
         if let Ok(cmd_tx) = self.cmd_tx.try_read() {
             let cmd = HandlerCommand::UpdateInstrument(instrument);
             if let Err(e) = cmd_tx.send(cmd) {
-                tracing::debug!("Failed to send instrument update to handler: {e}");
+                log::debug!("Failed to send instrument update to handler: {e}");
             }
         }
     }
@@ -865,16 +881,16 @@ impl BybitWebSocketClient {
         self.instruments_cache.clear();
         let mut count = 0;
 
-        tracing::debug!("Initializing Bybit instrument cache");
+        log::debug!("Initializing Bybit instrument cache");
 
         for inst in instruments {
             let symbol = inst.symbol().inner();
             self.instruments_cache.insert(symbol, inst.clone());
-            tracing::debug!("Cached instrument: {symbol}");
+            log::debug!("Cached instrument: {symbol}");
             count += 1;
         }
 
-        tracing::info!("Bybit instrument cache initialized with {count} instruments");
+        log::info!("Bybit instrument cache initialized with {count} instruments");
     }
 
     /// Sets the account ID for account message parsing.
@@ -885,6 +901,14 @@ impl BybitWebSocketClient {
     /// Sets the account market maker level.
     pub fn set_mm_level(&self, mm_level: u8) {
         self.mm_level.store(mm_level, Ordering::Relaxed);
+    }
+
+    /// Sets whether bar timestamps should use the close time.
+    ///
+    /// When `true` (default), bar `ts_event` is set to the bar's close time.
+    /// When `false`, bar `ts_event` is set to the bar's open time.
+    pub fn set_bars_timestamp_on_close(&mut self, value: bool) {
+        self.bars_timestamp_on_close = value;
     }
 
     /// Returns a reference to the instruments cache.
@@ -1265,7 +1289,7 @@ impl BybitWebSocketClient {
         }
 
         if orders.is_empty() {
-            tracing::warn!("Batch place orders called with empty orders list");
+            log::warn!("Batch place orders called with empty orders list");
             return Ok(());
         }
 
@@ -1315,7 +1339,7 @@ impl BybitWebSocketClient {
             };
             let cmd_tx = self.cmd_tx.read().await;
             if let Err(e) = cmd_tx.send(cmd) {
-                tracing::error!("Failed to send RegisterBatchPlace command: {e}");
+                log::error!("Failed to send RegisterBatchPlace command: {e}");
             }
         }
 
@@ -1395,7 +1419,7 @@ impl BybitWebSocketClient {
         }
 
         if orders.is_empty() {
-            tracing::warn!("Batch amend orders called with empty orders list");
+            log::warn!("Batch amend orders called with empty orders list");
             return Ok(());
         }
 
@@ -1443,7 +1467,7 @@ impl BybitWebSocketClient {
         }
 
         if orders.is_empty() {
-            tracing::warn!("Batch cancel orders called with empty orders list");
+            log::warn!("Batch cancel orders called with empty orders list");
             return Ok(());
         }
 
@@ -1516,7 +1540,7 @@ impl BybitWebSocketClient {
             };
             let cmd_tx = self.cmd_tx.read().await;
             if let Err(e) = cmd_tx.send(cmd) {
-                tracing::error!("Failed to send RegisterBatchCancel command: {e}");
+                log::error!("Failed to send RegisterBatchCancel command: {e}");
             }
         }
 

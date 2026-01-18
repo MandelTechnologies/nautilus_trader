@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -198,6 +198,14 @@ async def _fill_order(
 
 async def _accept_order(order, venue_order_id: VenueOrderId, exec_client, strategy, cache):
     await _submit_order(order, exec_client=exec_client, strategy=strategy, cache=cache)
+    # Generate OrderSubmitted to set the order's account_id (linked to the execution client)
+    exec_client.generate_order_submitted(
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        ts_event=0,
+    )
+    await asyncio.sleep(0)
     exec_client.generate_order_accepted(
         strategy_id=order.strategy_id,
         instrument_id=order.instrument_id,
@@ -538,7 +546,8 @@ async def test_order_stream_new_full_image(exec_client, setup_order_state, cache
     # Act
     exec_client.handle_order_stream_update(raw)
     await asyncio.sleep(0)
-    assert len(events) == 4
+    # Expect 5 events: OrderInitialized, OrderSubmitted, OrderAccepted, OrderFilled, PositionOpened
+    assert len(events) == 5
 
 
 @pytest.mark.asyncio
@@ -570,7 +579,8 @@ async def test_order_stream_update(exec_client, setup_order_state, events):
     await asyncio.sleep(0)
 
     # Assert
-    assert len(events) == 3
+    # Expect 4 events: OrderInitialized, OrderSubmitted, OrderAccepted, OrderUpdated
+    assert len(events) == 4
 
 
 @pytest.mark.asyncio
@@ -586,7 +596,8 @@ async def test_order_stream_filled(exec_client, setup_order_state, events, fill_
     await asyncio.sleep(0)
 
     # Assert
-    assert len(events) == 4
+    # Expect 5 events: OrderInitialized, OrderSubmitted, OrderAccepted, OrderFilled, PositionOpened
+    assert len(events) == 5
     fill: OrderFilled = fill_events[0]
     assert isinstance(fill, OrderFilled)
     assert fill.last_px == betfair_float_to_price(1.10)
@@ -630,7 +641,9 @@ async def test_order_stream_filled_multiple_prices(
     await asyncio.sleep(0)
 
     # Assert
-    assert len(events) == 8
+    # Expect 10 events: 2x (OrderInitialized, OrderSubmitted, OrderAccepted), 2x OrderFilled, PositionOpened, PositionChanged
+    # setup_order_state is called twice, so we get OrderSubmitted for each call
+    assert len(events) == 10
     fill1, fill2 = (event for event in events if isinstance(event, OrderFilled))
     assert isinstance(fill1, OrderFilled)
     assert isinstance(fill2, OrderFilled)
@@ -1044,7 +1057,10 @@ async def test_generate_order_status_reports_executable_limit_on_close(exec_clie
     # Back - BSP order with bspLiability=20.0 but sizeRemaining=10.0 (stake units)
     assert reports[0].order_side == OrderSide.SELL
     assert reports[0].price == Price(5.0, BETFAIR_PRICE_PRECISION)
-    assert reports[0].quantity == Quantity(10.0, BETFAIR_QUANTITY_PRECISION)  # Uses stake units, not liability
+    assert reports[0].quantity == Quantity(
+        10.0,
+        BETFAIR_QUANTITY_PRECISION,
+    )  # Uses stake units, not liability
     assert reports[0].order_status == OrderStatus.ACCEPTED
     assert reports[0].filled_qty == Quantity(0.0, BETFAIR_QUANTITY_PRECISION)  # sizeMatched=0.0
     assert reports[0].time_in_force == TimeInForce.DAY
@@ -1052,7 +1068,10 @@ async def test_generate_order_status_reports_executable_limit_on_close(exec_clie
     # Lay - BSP order with bspLiability=50.0 but sizeRemaining=10.0 (stake units)
     assert reports[1].order_side == OrderSide.BUY
     assert reports[1].price == Price(1.5, BETFAIR_PRICE_PRECISION)
-    assert reports[1].quantity == Quantity(10.0, BETFAIR_QUANTITY_PRECISION)  # Uses stake units, not liability
+    assert reports[1].quantity == Quantity(
+        10.0,
+        BETFAIR_QUANTITY_PRECISION,
+    )  # Uses stake units, not liability
     assert reports[1].order_status == OrderStatus.ACCEPTED
     assert reports[1].filled_qty == Quantity(0.0, BETFAIR_QUANTITY_PRECISION)  # sizeMatched=0.0
     assert reports[1].time_in_force == TimeInForce.DAY
@@ -1186,6 +1205,7 @@ def test_invalid_price_is_skipped(
     # guarantee is that we *did not* emit a fill.
     generate_mock.assert_not_called()
 
+
 # Tests for bug fixes - missing instrument rejection
 @pytest.mark.asyncio
 async def test_submit_order_missing_instrument_generates_denied(
@@ -1211,7 +1231,10 @@ async def test_submit_order_missing_instrument_generates_denied(
     denied_events = [e for e in order.events if e.__class__.__name__ == "OrderDenied"]
     assert len(denied_events) == 1
     # Check that the denial reason mentions the missing instrument
-    assert "not found" in denied_events[0].reason.lower() or "INSTRUMENT_NOT_FOUND" in denied_events[0].reason
+    assert (
+        "not found" in denied_events[0].reason.lower()
+        or "INSTRUMENT_NOT_FOUND" in denied_events[0].reason
+    )
 
 
 # Tests for bug fixes - pending update cleanup on exception
@@ -1227,7 +1250,11 @@ async def test_modify_order_exception_cleans_up_pending_updates(
     await asyncio.sleep(0)
 
     # Simulate exception during modify
-    with patch.object(exec_client._client, "replace_orders", side_effect=Exception("Network error")):
+    with patch.object(
+        exec_client._client,
+        "replace_orders",
+        side_effect=Exception("Network error"),
+    ):
         pending_key = (test_order.client_order_id, test_order.venue_order_id)
 
         # Act - modify should fail with exception
@@ -1284,7 +1311,9 @@ async def test_modify_order_handles_none_error_code(
         await exec_client._modify_price(command, test_order)
 
         # Assert - should generate modify_rejected (not order_rejected) with "UNKNOWN_ERROR"
-        modify_rejected_events = [e for e in test_order.events if e.__class__.__name__ == "OrderModifyRejected"]
+        modify_rejected_events = [
+            e for e in test_order.events if e.__class__.__name__ == "OrderModifyRejected"
+        ]
         assert len(modify_rejected_events) > 0
         assert "UNKNOWN_ERROR" in modify_rejected_events[-1].reason
 
@@ -1468,7 +1497,9 @@ async def test_submit_order_result_level_failure_no_instruction_reports(
         assert len(test_order.events) >= 2
         rejected_events = [e for e in test_order.events if e.__class__.__name__ == "OrderRejected"]
         assert len(rejected_events) == 1
-        expected_error = "INSUFFICIENT_FUNDS (Account has exceeded its exposure limit or available to bet limit)"
+        expected_error = (
+            "INSUFFICIENT_FUNDS (Account has exceeded its exposure limit or available to bet limit)"
+        )
         assert rejected_events[0].reason == expected_error
 
 
@@ -1547,7 +1578,10 @@ async def test_sync_fill_caches_from_orders_populates_caches(
 
     # Assert
     assert order.client_order_id in exec_client._filled_qty_cache
-    assert exec_client._filled_qty_cache[order.client_order_id] == Quantity(5.0, BETFAIR_QUANTITY_PRECISION)
+    assert exec_client._filled_qty_cache[order.client_order_id] == Quantity(
+        5.0,
+        BETFAIR_QUANTITY_PRECISION,
+    )
     assert TradeId("TRADE-001") in exec_client._published_executions[order.client_order_id]
 
 
@@ -2024,7 +2058,9 @@ def test_sync_fill_caches_ignores_orders_without_fills(
     # Assert
     assert order_with_fill.client_order_id in exec_client._filled_qty_cache
     assert order_no_fill.client_order_id not in exec_client._filled_qty_cache
-    assert TradeId("TRADE-001") in exec_client._published_executions[order_with_fill.client_order_id]
+    assert (
+        TradeId("TRADE-001") in exec_client._published_executions[order_with_fill.client_order_id]
+    )
     assert len(exec_client._published_executions[order_no_fill.client_order_id]) == 0
 
 

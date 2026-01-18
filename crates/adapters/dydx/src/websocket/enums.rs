@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -71,6 +71,7 @@ pub enum DydxWsOperation {
     Clone,
     Copy,
     Debug,
+    Default,
     PartialEq,
     Eq,
     Hash,
@@ -112,7 +113,8 @@ pub enum DydxWsChannel {
     #[serde(rename = "v4_block_height")]
     #[strum(serialize = "v4_block_height")]
     BlockHeight,
-    /// Unknown/unrecognized channel type.
+    /// Unknown/unrecognized channel type (default when field is missing).
+    #[default]
     #[serde(other)]
     #[strum(to_string = "unknown")]
     Unknown,
@@ -143,6 +145,7 @@ impl DydxWsChannel {
     Clone,
     Copy,
     Debug,
+    Default,
     PartialEq,
     Eq,
     Hash,
@@ -162,7 +165,8 @@ pub enum DydxWsMessageType {
     Subscribed,
     /// Unsubscription confirmed.
     Unsubscribed,
-    /// Channel data update.
+    /// Channel data update (default for missing type field).
+    #[default]
     ChannelData,
     /// Batch channel data update.
     ChannelBatchData,

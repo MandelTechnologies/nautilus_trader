@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -28,6 +28,7 @@ from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.data.messages import RequestBars
+from nautilus_trader.data.messages import RequestOrderBookSnapshot
 from nautilus_trader.data.messages import RequestQuoteTicks
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
@@ -44,7 +45,9 @@ from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOU
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import FundingRateUpdate
+from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import BookType
@@ -149,6 +152,7 @@ class BybitDataClient(LiveMarketDataClient):
                 url=config.base_url_http,
                 heartbeat=None,
             )
+            ws_client.set_bars_timestamp_on_close(self._bars_timestamp_on_close)
             self._ws_clients[product_type] = ws_client
 
         self._depths: dict[nautilus_pyo3.InstrumentId, int] = {}
@@ -311,10 +315,6 @@ class BybitDataClient(LiveMarketDataClient):
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
         await ws_client.subscribe_orderbook(pyo3_instrument_id, depth)
 
-    async def _subscribe_order_book_snapshots(self, command: SubscribeOrderBook) -> None:
-        # Bybit doesn't differentiate between snapshots and deltas at subscription level
-        await self._subscribe_order_book_deltas(command)
-
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         product_type = nautilus_pyo3.bybit_product_type_from_symbol(
@@ -380,9 +380,6 @@ class BybitDataClient(LiveMarketDataClient):
 
         # Remove from tracking
         self._depths.pop(pyo3_instrument_id, None)
-
-    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
-        await self._unsubscribe_order_book_deltas(command)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -500,6 +497,50 @@ class BybitDataClient(LiveMarketDataClient):
             request.start,
             request.end,
             request.params,
+        )
+
+    async def _request_order_book_snapshot(self, request: RequestOrderBookSnapshot) -> None:
+        limit = request.limit
+
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(request.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        if limit is not None:
+            match product_type:
+                case nautilus_pyo3.BybitProductType.SPOT:
+                    max_limit = 200
+                case nautilus_pyo3.BybitProductType.OPTION:
+                    max_limit = 25
+                case nautilus_pyo3.BybitProductType.LINEAR | nautilus_pyo3.BybitProductType.INVERSE:
+                    max_limit = 500
+
+            if limit > max_limit:
+                self._log.warning(
+                    "Bybit orderbook snapshot request depth limit exceeds venue maximum; clamping",
+                )
+
+            limit = min(limit, max_limit)
+
+        pyo3_deltas = await self._http_client.request_orderbook_snapshot(
+            product_type=product_type,
+            instrument_id=pyo3_instrument_id,
+            limit=limit,
+        )
+        snapshot = OrderBookDeltas.from_pyo3(pyo3_deltas)
+
+        data_type = DataType(
+            OrderBookDeltas,
+            metadata={"instrument_id": request.instrument_id},
+        )
+        self._handle_data_response(
+            data_type=data_type,
+            data=[snapshot],
+            correlation_id=request.id,
+            start=None,
+            end=None,
+            params=request.params,
         )
 
     async def _request_bars(self, request: RequestBars) -> None:

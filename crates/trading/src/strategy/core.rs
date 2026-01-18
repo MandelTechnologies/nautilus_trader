@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -27,7 +27,6 @@ use nautilus_common::{
     clock::Clock,
     factories::OrderFactory,
 };
-use nautilus_core::time::get_atomic_clock_static;
 use nautilus_execution::order_manager::manager::OrderManager;
 use nautilus_model::identifiers::{ActorId, ClientOrderId, StrategyId, TraderId};
 use nautilus_portfolio::portfolio::Portfolio;
@@ -58,7 +57,7 @@ pub struct StrategyCore {
 
 impl Debug for StrategyCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StrategyCore")
+        f.debug_struct(stringify!(StrategyCore))
             .field("actor", &self.actor)
             .field("config", &self.config)
             .field("order_manager", &self.order_manager)
@@ -112,14 +111,12 @@ impl StrategyCore {
             strategy_id,
             None,
             None,
-            get_atomic_clock_static(),
+            clock.clone(),
             self.config.use_uuid_client_order_ids,
             self.config.use_hyphens_in_client_order_ids,
         ));
 
-        self.order_manager = Some(OrderManager::new(
-            clock, cache, false, // active_local
-        ));
+        self.order_manager = Some(OrderManager::new(clock, cache, false, None, None, None));
 
         self.portfolio = Some(portfolio);
 

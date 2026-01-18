@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -233,7 +233,7 @@ where
     pub fn to_actor(self) -> Rc<UnsafeCell<Self>> {
         // Register process endpoint
         let process_handler = ThrottlerProcess::<T, F>::new(self.actor_id);
-        msgbus::register(
+        msgbus::register_any(
             process_handler.id().as_str().into(),
             ShareableMessageHandler::from(Rc::new(process_handler) as Rc<dyn MessageHandler>),
         );

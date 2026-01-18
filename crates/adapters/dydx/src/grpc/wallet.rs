@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,11 +18,9 @@
 //! This module provides wallet functionality for deriving accounts from BIP-39 mnemonics
 //! and managing signing keys for Cosmos SDK transactions.
 
-use std::{
-    fmt::{Debug, Formatter},
-    str::FromStr,
-};
+use std::{fmt::Debug, str::FromStr};
 
+use anyhow::Context;
 use cosmrs::{
     AccountId,
     bip32::{DerivationPath, Language, Mnemonic, Seed},
@@ -44,14 +42,21 @@ const BECH32_PREFIX_DYDX: &str = "dydx";
 ///
 /// This `Wallet` uses the Cosmos ATOM derivation path to generate dYdX addresses.
 ///
+/// # Security
+///
+/// The `Seed` type from bip32 implements `Drop` for secure cleanup of seed material.
+///
+/// Note: Deriving `zeroize::ZeroizeOnDrop` is not possible because `bip32::Seed` does not
+/// expose the `zeroize::Zeroize` trait (it uses internal Drop-based cleanup).
+///
 /// See also [Mastering Bitcoin](https://github.com/bitcoinbook/bitcoinbook/blob/develop/ch05_wallets.adoc).
 pub struct Wallet {
     seed: Seed,
 }
 
 impl Debug for Wallet {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Wallet")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(Wallet))
             .field("seed", &"<redacted>")
             .finish()
     }
@@ -63,8 +68,15 @@ impl Wallet {
     /// # Errors
     ///
     /// Returns an error if the mnemonic is invalid or cannot be converted to a seed.
-    pub fn from_mnemonic(mnemonic: &str) -> Result<Self, anyhow::Error> {
-        let seed = Mnemonic::new(mnemonic, Language::English)?.to_seed("");
+    pub fn from_mnemonic(mnemonic: &str) -> anyhow::Result<Self> {
+        let word_count = mnemonic.split_whitespace().count();
+        let mnemonic_obj = Mnemonic::new(mnemonic, Language::English).with_context(|| {
+            format!(
+                "Invalid BIP-39 mnemonic: expected 12, 15, 18, 21, or 24 words, got {word_count}. \
+                 Ensure words are space-separated and from the BIP-39 English wordlist"
+            )
+        })?;
+        let seed = mnemonic_obj.to_seed("");
         Ok(Self { seed })
     }
 
@@ -122,8 +134,8 @@ pub struct Account {
 }
 
 impl Debug for Account {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Account")
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(Account))
             .field("index", &self.index)
             .field("address", &self.address)
             .field("account_id", &self.account_id)

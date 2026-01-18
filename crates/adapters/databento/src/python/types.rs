@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -288,5 +288,30 @@ impl DatabentoStatistics {
         let dict = PyDict::new(py);
         dict.set_item("type", stringify!(DatabentoStatistics))?;
         Ok(dict.into())
+    }
+}
+
+/// Subscription acknowledgement from the Databento gateway.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.databento")
+)]
+#[derive(Debug, Clone)]
+pub struct DatabentoSubscriptionAck {
+    #[pyo3(get)]
+    pub schema: String,
+    #[pyo3(get)]
+    pub message: String,
+    #[pyo3(get)]
+    pub ts_received: u64,
+}
+
+impl From<crate::types::SubscriptionAckEvent> for DatabentoSubscriptionAck {
+    fn from(event: crate::types::SubscriptionAckEvent) -> Self {
+        Self {
+            schema: event.schema,
+            message: event.message,
+            ts_received: event.ts_received.as_u64(),
+        }
     }
 }

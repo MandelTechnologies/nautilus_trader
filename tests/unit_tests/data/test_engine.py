@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -72,6 +72,7 @@ from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import AggregationSource
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BarAggregation
@@ -796,30 +797,6 @@ class TestDataEngine:
         assert handler1 == [ETHUSDT_BINANCE]
         assert handler2 == [ETHUSDT_BINANCE]
 
-    def test_execute_subscribe_order_book_snapshots_then_adds_handler(self):
-        # Arrange
-        self.data_engine.register_client(self.binance_client)
-        self.binance_client.start()
-
-        subscribe = SubscribeOrderBook(
-            book_data_type=OrderBookDelta,
-            client_id=None,  # Will route to the Binance venue
-            venue=BINANCE,
-            instrument_id=ETHUSDT_BINANCE.id,
-            book_type=2,
-            depth=10,
-            interval_ms=1000,
-            managed=True,
-            command_id=UUID4(),
-            ts_init=self.clock.timestamp_ns(),
-        )
-
-        # Act
-        self.data_engine.execute(subscribe)
-
-        # Assert
-        assert self.data_engine.subscribed_order_book_deltas() == [ETHUSDT_BINANCE.id]
-
     def test_execute_subscribe_order_book_deltas_then_adds_handler(self):
         # Arrange
         self.data_engine.register_client(self.binance_client)
@@ -902,7 +879,7 @@ class TestDataEngine:
         self.data_engine.execute(unsubscribe)
 
         # Assert
-        assert self.data_engine.subscribed_order_book_snapshots() == []
+        assert self.data_engine.subscribed_order_book_depth() == []
         assert self.binance_client.subscribed_order_book_deltas() == []
 
     def test_execute_unsubscribe_order_book_at_interval_then_removes_handler(self):
@@ -925,7 +902,7 @@ class TestDataEngine:
 
         self.data_engine.execute(subscribe)
 
-        assert self.binance_client.subscribed_order_book_snapshots() == []
+        assert self.binance_client.subscribed_order_book_depth() == []
         assert self.binance_client.subscribed_order_book_deltas() == [ETHUSDT_BINANCE.id]
 
         unsubscribe = UnsubscribeOrderBook(
@@ -941,8 +918,8 @@ class TestDataEngine:
         self.data_engine.execute(unsubscribe)
 
         # Assert
-        assert self.data_engine.subscribed_order_book_snapshots() == []
-        assert self.binance_client.subscribed_order_book_snapshots() == []
+        assert self.data_engine.subscribed_order_book_depth() == []
+        assert self.binance_client.subscribed_order_book_depth() == []
         assert self.binance_client.subscribed_order_book_deltas() == []
 
     def test_order_book_snapshots_when_book_not_updated_does_not_send_(self):
@@ -2435,6 +2412,63 @@ class TestDataEngine:
         assert len(handler) == 1
         assert handler[0].data == []  # Data is published to message bus, not in response
         assert instruments_received == [BTCUSDT_BINANCE, ETHUSDT_BINANCE]
+
+    def test_request_option_instrument_with_tick_scheme_sets_tick_scheme_on_instrument(self):
+        # Arrange
+        option_instrument = TestInstrumentProvider.aapl_option()
+        assert option_instrument.tick_scheme_name is None
+
+        # Create mock market data client with the instrument
+        client = MockMarketDataClient(
+            client_id=ClientId("MOCK"),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+        client.instrument = option_instrument
+        self.data_engine.register_client(client)
+
+        handler = []
+        instruments_received = []
+
+        # Subscribe to instrument topic to receive the instrument
+        self.msgbus.subscribe(
+            topic=f"data.instrument.{option_instrument.id.venue}.{option_instrument.id.symbol}",
+            handler=instruments_received.append,
+        )
+
+        # Create request with tick_scheme_name in params
+        tick_scheme_name = "FIXED_PRECISION_2"
+        request = RequestInstrument(
+            instrument_id=option_instrument.id,
+            start=None,
+            end=None,
+            client_id=client.id,
+            venue=None,
+            callback=handler.append,
+            request_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params={"instrument_properties": {"tick_scheme_name": tick_scheme_name}},
+        )
+
+        # Act
+        self.msgbus.request(endpoint="DataEngine.request", request=request)
+
+        # Assert
+        assert self.data_engine.request_count == 1
+        assert len(instruments_received) == 1
+        instrument_from_cache = self.cache.instrument(option_instrument.id)
+        assert instrument_from_cache is not None
+        assert instrument_from_cache.tick_scheme_name == tick_scheme_name
+        # Verify tick scheme is functional - FIXED_PRECISION_2 rounds to 2 decimal places (0.01 increments)
+        # For value 100.123, next_bid_price should round down to 100.12 (nearest tick below)
+        result = instrument_from_cache.next_bid_price(100.123)
+        assert result is not None
+        assert result == Price.from_str("100.12")
+        # Verify it also works for ask prices
+        ask_result = instrument_from_cache.next_ask_price(100.127)
+        assert ask_result is not None
+        assert ask_result == Price.from_str("100.13")  # Rounds up to nearest tick
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Failing on windows")
     def test_request_instrument_when_catalog_registered(self):
@@ -3949,7 +3983,7 @@ class TestDataEngine:
             Price.from_str("5528.75"),
             Price.from_str("5528.50"),
             Price.from_str("5528.75"),
-            Quantity.from_int(5777),
+            Quantity.from_int(5806),
             1719878400000000000,
             1719878400000000000,
         )
@@ -4067,10 +4101,10 @@ class TestDataEngine:
         expected_last_1_minute_bar = Bar(
             BarType.from_str("ESU4.GLBX-1-MINUTE-LAST-INTERNAL"),
             Price.from_str("5528.50"),
-            Price.from_str("5529.00"),
+            Price.from_str("5528.75"),
             Price.from_str("5528.50"),
-            Price.from_str("5529.00"),
-            Quantity.from_int(31),
+            Price.from_str("5528.75"),
+            Quantity.from_int(23),
             1719878400000000000,
             1719878400000000000,
         )
@@ -4078,10 +4112,10 @@ class TestDataEngine:
         expected_last_2_minute_bar = Bar(
             BarType.from_str("ESU4.GLBX-2-MINUTE-LAST-INTERNAL"),
             Price.from_str("5528.75"),
-            Price.from_str("5529.00"),
+            Price.from_str("5528.75"),
             Price.from_str("5528.50"),
-            Price.from_str("5529.00"),
-            Quantity.from_int(50),
+            Price.from_str("5528.75"),
+            Quantity.from_int(41),
             1719878400000000000,
             1719878400000000000,
         )
@@ -4097,6 +4131,396 @@ class TestDataEngine:
         # Verify last bars match expected values
         assert bars_1_received[-1] == expected_last_1_minute_bar
         assert bars_2_received[-1] == expected_last_2_minute_bar
+
+    def test_request_aggregated_bars_does_not_pollute_subscription_aggregator(self):
+        # Test that requesting aggregated bars (with update_subscriptions=False) for the same
+        # bar type as an active subscription does not pollute/interfere with the subscription aggregator.
+        # Previously, the request would have polluted the live aggregation.
+        # Arrange
+        loader = DatabentoDataLoader()
+
+        path = (
+            TEST_DATA_DIR
+            / "databento"
+            / "historical_bars_catalog"
+            / "databento"
+            / "futures_trades_2024-07-01T23-58_2024-07-02T00-02.dbn.zst"
+        )
+        data = loader.from_dbn_file(path, as_legacy_cython=True)
+
+        definition_path = (
+            TEST_DATA_DIR
+            / "databento"
+            / "historical_bars_catalog"
+            / "databento"
+            / "futures_definition.dbn.zst"
+        )
+        definition = loader.from_dbn_file(definition_path, as_legacy_cython=True)
+
+        catalog = setup_catalog(protocol="file", path=self.tmp_path / "catalog")
+        catalog.write_data(data)
+        catalog.write_data(definition)
+
+        self.data_engine.register_catalog(catalog)
+        self.data_engine.process(definition[0])
+
+        symbol_id = InstrumentId.from_str("ESU4.GLBX")
+        bar_type = BarType.from_str("ESU4.GLBX-1-MINUTE-LAST-INTERNAL")
+
+        # Get trade ticks from the data
+        trade_ticks = [d for d in data if isinstance(d, TradeTick)]
+        assert len(trade_ticks) > 0, "No trade ticks found in test data"
+
+        # Create a client for GLBX venue
+        glbx_client = BacktestMarketDataClient(
+            client_id=ClientId("GLBX"),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+        self.data_engine.register_client(glbx_client)
+        glbx_client.start()
+
+        utc_now = pd.Timestamp("2024-07-02T00:00:01")
+        self.clock.advance_time(utc_now.value)
+
+        start = utc_now - pd.Timedelta(minutes=2, seconds=1)
+        end = utc_now - pd.Timedelta(minutes=0, seconds=0)
+
+        # Run 1: Subscribe to bars and process ticks WITHOUT a request
+        subscription_bars_without_request = []
+
+        self.msgbus.subscribe(
+            topic=f"data.bars.{bar_type.standard()}",
+            handler=subscription_bars_without_request.append,
+        )
+
+        subscribe = SubscribeBars(
+            client_id=ClientId("GLBX"),
+            venue=symbol_id.venue,
+            bar_type=bar_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+        self.data_engine.execute(subscribe)
+
+        # Process trade ticks
+        for tick in trade_ticks[:10]:  # Process first 10 ticks
+            self.data_engine.process(tick)
+
+        # Advance clock to trigger any pending timers
+        events = self.clock.advance_time(utc_now.value + 1)
+        for event in events:
+            event.handle()
+
+        # Unsubscribe to clean up for next run
+        unsubscribe = UnsubscribeBars(
+            client_id=ClientId("GLBX"),
+            venue=symbol_id.venue,
+            bar_type=bar_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+        self.data_engine.execute(unsubscribe)
+
+        # Run 2: Subscribe to bars, make a request, and process ticks WITH a request
+        # This tests that historical ticks from the request don't pollute subscription aggregator
+        subscription_bars_with_request = []
+        request_historical_bars = []
+
+        self.msgbus.subscribe(
+            topic=f"data.bars.{bar_type.standard()}",
+            handler=subscription_bars_with_request.append,
+        )
+
+        # Subscribe to historical bars from the request aggregator
+        self.msgbus.subscribe(
+            topic=f"historical.data.bars.{bar_type.standard()}",
+            handler=request_historical_bars.append,
+        )
+
+        subscribe = SubscribeBars(
+            client_id=ClientId("GLBX"),
+            venue=symbol_id.venue,
+            bar_type=bar_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+        self.data_engine.execute(subscribe)
+
+        # Process first batch of subscription ticks
+        for tick in trade_ticks[:5]:  # Process first 5 ticks as subscription ticks
+            self.data_engine.process(tick)
+
+        # Make a request for aggregated bars (with update_subscriptions=False)
+        handler = []
+        params = {}
+        params["bar_types"] = (bar_type,)
+        params["include_external_data"] = False
+        params["update_subscriptions"] = False
+        params["update_catalog"] = False
+
+        request = RequestTradeTicks(
+            instrument_id=bar_type.instrument_id,
+            start=start,
+            end=end,
+            limit=0,
+            client_id=None,
+            venue=symbol_id.venue,
+            callback=handler.append,
+            request_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params=params,
+        )
+
+        # Send request (this creates a request aggregator with request_id in key)
+        self.msgbus.request(endpoint="DataEngine.request", request=request)
+
+        # Process historical ticks from the request (these should only go to request aggregator)
+        # Get historical ticks that fall within the request time range
+        historical_ticks = [
+            tick for tick in trade_ticks if start.value <= tick.ts_init <= end.value
+        ]
+        assert len(historical_ticks) > 0, "No historical ticks found in request range"
+
+        for tick in historical_ticks[:10]:  # Process historical ticks
+            self.data_engine.process_historical(tick)
+
+        # Advance clock to trigger any pending timers for historical aggregator
+        events = self.clock.advance_time(utc_now.value + 1)
+        for event in events:
+            event.handle()
+
+        # Process more subscription ticks (these should only go to subscription aggregator)
+        for tick in trade_ticks[5:10]:  # Process next 5 ticks as subscription ticks
+            self.data_engine.process(tick)
+
+        # Advance clock to trigger any pending timers for subscription aggregator
+        events = self.clock.advance_time(utc_now.value + 2)
+        for event in events:
+            event.handle()
+
+        # Finalize the request
+        response = DataResponse(
+            client_id=request.client_id,
+            venue=request.venue,
+            data_type=DataType(TradeTick),
+            data=[],
+            correlation_id=request.id,
+            response_id=UUID4(),
+            start=request.start,
+            end=request.end,
+            ts_init=self.clock.timestamp_ns(),
+            params=params,
+        )
+        self.msgbus.response(response)
+
+        # Assert: Subscription bars should be identical in both runs
+        # The request aggregator should not have polluted the subscription aggregator
+        assert len(subscription_bars_without_request) == len(
+            subscription_bars_with_request,
+        ), "Number of subscription bars should be the same with and without request"
+
+        for i, (bar_without, bar_with) in enumerate(
+            zip(subscription_bars_without_request, subscription_bars_with_request, strict=True),
+        ):
+            assert bar_without == bar_with, (
+                f"Subscription bar {i} should be identical: without_request={bar_without}, with_request={bar_with}"
+            )
+
+        # Assert: Historical bars should be received from the request aggregator
+        assert len(request_historical_bars) > 0, "Request aggregator should produce historical bars"
+        assert all(bar.bar_type == bar_type.standard() for bar in request_historical_bars), (
+            "All historical bars should have the correct bar type"
+        )
+
+    def test_backfill_with_update_subscriptions_restores_live_mode(self):
+        # Arrange
+        self.data_engine.register_client(self.mock_market_data_client)
+        self.mock_market_data_client.start()
+
+        bar_spec = BarSpecification(1, BarAggregation.MINUTE, PriceType.LAST)
+        bar_type = BarType(ETHUSDT_BINANCE.id, bar_spec, AggregationSource.INTERNAL)
+
+        # Set up time for testing
+        # Strategy: Request historical data at the START of a bar period (12:00:00-12:00:30)
+        # Then subscribe and add live data in the SAME bar period (12:00:30-12:00:45)
+        # This ensures both contribute to the same bar, demonstrating continuity
+        bar_start_time = pd.Timestamp("2024-01-01T12:00:00", tz="UTC")
+        self.clock.advance_time(bar_start_time.value)
+
+        # Request historical data from the start of the bar period (12:00:00 to 12:00:30)
+        # This ensures historical ticks are in the same bar as live ticks
+        start = bar_start_time
+        end = bar_start_time + pd.Timedelta(seconds=30)
+
+        # Create historical ticks with LOWER prices (these will set the LOW and OPEN of the bar)
+        # These are at the start of the bar period (12:00:00 - 12:00:30)
+        historical_ticks = []
+        base_time = start.value
+        historical_prices = ["2500.0", "2501.0", "2500.5", "2502.0", "2501.5"]  # Low prices
+        for i, price_str in enumerate(historical_prices):
+            tick = TradeTick(
+                instrument_id=ETHUSDT_BINANCE.id,
+                price=Price.from_str(price_str),
+                size=Quantity.from_int(100),
+                aggressor_side=AggressorSide.BUYER,
+                trade_id=TradeId(f"HIST_{i}"),
+                ts_event=base_time + i * 6_000_000_000,  # 6 seconds apart, starting at 12:00:00
+                ts_init=base_time + i * 6_000_000_000,
+            )
+            historical_ticks.append(tick)
+
+        # Set up mock client to return historical ticks
+        self.mock_market_data_client.trade_ticks = historical_ticks
+
+        # Create live ticks with HIGHER prices (these will set the HIGH and CLOSE of the bar)
+        # These will be processed after subscription, still within the same bar period (12:00:30-12:00:45)
+        live_ticks = []
+        live_base_time = (bar_start_time + pd.Timedelta(seconds=30)).value  # Start at 12:00:30
+        live_prices = ["2505.0", "2506.0", "2507.0", "2506.5", "2508.0"]  # High prices
+        for i, price_str in enumerate(live_prices):
+            tick = TradeTick(
+                instrument_id=ETHUSDT_BINANCE.id,
+                price=Price.from_str(price_str),
+                size=Quantity.from_int(100),
+                aggressor_side=AggressorSide.BUYER,
+                trade_id=TradeId(f"LIVE_{i}"),
+                ts_event=live_base_time
+                + i * 3_000_000_000,  # 3 seconds apart, starting at 12:00:30
+                ts_init=live_base_time + i * 3_000_000_000,
+            )
+            live_ticks.append(tick)
+
+        # Collect bars from subscription to test continuity
+        subscription_bars = []
+
+        self.msgbus.subscribe(
+            topic=f"data.bars.{bar_type.standard()}",
+            handler=subscription_bars.append,
+        )
+
+        # Act: Make a request with update_subscriptions=True
+        handler = []
+        params = {}
+        params["bar_types"] = (bar_type,)
+        params["include_external_data"] = False
+        params["update_subscriptions"] = True
+        params["update_catalog"] = False
+
+        request = RequestTradeTicks(
+            instrument_id=bar_type.instrument_id,
+            start=start,
+            end=end,
+            limit=0,
+            client_id=None,
+            venue=self.mock_market_data_client.venue,
+            callback=handler.append,
+            request_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params=params,
+        )
+
+        # Send request (this creates a request aggregator with update_subscriptions=True)
+        # MockMarketDataClient will automatically handle the request, publish ticks to historical topic, and send the response
+        self.msgbus.request(endpoint="DataEngine.request", request=request)
+
+        # Get the aggregator key (with update_subscriptions=True, key should be (bar_type, None))
+        key = (bar_type.standard(), None)
+        aggregator = self.data_engine._bar_aggregators.get(key)
+        assert aggregator is not None, (
+            "Aggregator should exist after request with update_subscriptions=True"
+        )
+
+        # Manually process historical ticks to ensure they're included in the aggregator
+        # The MockMarketDataClient publishes them, but we process them explicitly to ensure
+        # they're in the same bar period and processed before switching to live mode
+        for tick in historical_ticks:
+            self.data_engine.process_historical(tick)
+
+        # Advance clock slightly to ensure any timers are processed
+        events = self.clock.advance_time(bar_start_time.value + 1_000_000_000)  # Advance 1 second
+        for event in events:
+            event.handle()
+
+        # Assert: After request finalization, aggregator should be in historical_mode=True and is_running=False
+        assert aggregator.historical_mode, (
+            "Aggregator should remain in historical_mode after request with update_subscriptions=True"
+        )
+        assert not aggregator.is_running, (
+            "Aggregator should have is_running=False after request finalization"
+        )
+
+        # Act: Make a subscription (this should reuse the aggregator and switch it to live mode)
+        subscribe = SubscribeBars(
+            client_id=None,
+            venue=self.mock_market_data_client.venue,
+            bar_type=bar_type,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+        self.data_engine.execute(subscribe)
+
+        # Assert: After subscription, aggregator should be in historical_mode=False and is_running=True
+        assert not aggregator.historical_mode, (
+            "Aggregator should switch to historical_mode=False after subscription"
+        )
+        assert aggregator.is_running, "Aggregator should have is_running=True after subscription"
+
+        # Process live ticks after subscription (these are in the same bar period as the request)
+        # The aggregator should continue building the bar with this new data
+        for tick in live_ticks:
+            self.data_engine.process(tick)
+
+        # Advance clock to 12:01:00 to trigger bar completion (1-minute bar closes)
+        bar_end_time = bar_start_time + pd.Timedelta(minutes=1)
+        events = self.clock.advance_time(bar_end_time.value)
+        for event in events:
+            event.handle()
+
+        # Assert: Test data continuity - the bar should combine data from both request and subscription
+        assert len(subscription_bars) > 0, (
+            "Subscription should produce bars that depend on data from the request"
+        )
+
+        # Find the bar that was completed after subscription
+        # This bar should have:
+        # - LOW from historical request data (2500.0)
+        # - HIGH from live subscription data (2508.0)
+        # - OPEN from historical data (2500.0)
+        # - CLOSE from live data (2508.0)
+        completed_bar = subscription_bars[-1] if subscription_bars else None
+        assert completed_bar is not None, (
+            "A bar should have been completed after processing live ticks"
+        )
+
+        # Verify the bar contains data from both sources
+        expected_low = Price.from_str("2500.0")  # From historical ticks
+        expected_high = Price.from_str("2508.0")  # From live ticks
+        expected_open = Price.from_str("2500.0")  # First historical tick
+        expected_close = Price.from_str("2508.0")  # Last live tick
+
+        assert completed_bar.low == expected_low, (
+            f"Bar low should be {expected_low} from historical request data, "
+            f"but got {completed_bar.low}"
+        )
+        assert completed_bar.high == expected_high, (
+            f"Bar high should be {expected_high} from live subscription data, "
+            f"but got {completed_bar.high}"
+        )
+        assert completed_bar.open == expected_open, (
+            f"Bar open should be {expected_open} from first historical tick, "
+            f"but got {completed_bar.open}"
+        )
+        assert completed_bar.close == expected_close, (
+            f"Bar close should be {expected_close} from last live tick, "
+            f"but got {completed_bar.close}"
+        )
+
+        # Verify the bar type is correct
+        assert completed_bar.bar_type == bar_type.standard(), (
+            f"Bar type should be {bar_type.standard()}, but got {completed_bar.bar_type}"
+        )
 
     # TODO: Implement with new Rust datafusion backend"
     # def test_request_quote_ticks_when_catalog_registered_using_rust(self) -> None:
@@ -4430,6 +4854,7 @@ class TestDataEngine:
             instrument_id=spread_instrument_id,
             command_id=UUID4(),
             ts_init=self.clock.timestamp_ns(),
+            params={"aggregate_spread_quotes": True},
         )
 
         # Act
@@ -4440,6 +4865,90 @@ class TestDataEngine:
         assert self.data_engine.command_count == 3
         # Note: The actual spread quote aggregator creation is now handled by the data client
         # This test verifies that the subscription command is processed correctly
+
+    def test_subscribe_spread_quotes_without_aggregation_flag(self):
+        # Arrange
+        xcme_client = BacktestMarketDataClient(
+            client_id=ClientId("XCME"),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+        self.data_engine.register_client(xcme_client)
+        xcme_client.start()
+
+        option1 = OptionContract(
+            instrument_id=InstrumentId(Symbol("ESM4 P5230"), Venue("XCME")),
+            raw_symbol=Symbol("ESM4 P5230"),
+            asset_class=AssetClass.EQUITY,
+            currency=Currency.from_str("USD"),
+            price_precision=2,
+            price_increment=Price.from_str("0.01"),
+            multiplier=Quantity.from_int(100),
+            lot_size=Quantity.from_int(1),
+            underlying="ESM4",
+            option_kind=OptionKind.PUT,
+            activation_ns=0,
+            expiration_ns=1719792000000000000,
+            strike_price=Price.from_str("5230.0"),
+            ts_event=0,
+            ts_init=0,
+        )
+        option2 = OptionContract(
+            instrument_id=InstrumentId(Symbol("ESM4 P5250"), Venue("XCME")),
+            raw_symbol=Symbol("ESM4 P5250"),
+            asset_class=AssetClass.EQUITY,
+            currency=Currency.from_str("USD"),
+            price_precision=2,
+            price_increment=Price.from_str("0.01"),
+            multiplier=Quantity.from_int(100),
+            lot_size=Quantity.from_int(1),
+            underlying="ESM4",
+            option_kind=OptionKind.PUT,
+            activation_ns=0,
+            expiration_ns=1719792000000000000,
+            strike_price=Price.from_str("5250.0"),
+            ts_event=0,
+            ts_init=0,
+        )
+        self.data_engine.process(option1)
+        self.data_engine.process(option2)
+
+        spread_instrument_id = new_generic_spread_id(
+            [(option1.id, 1), (option2.id, -1)],
+        )
+        spread_instrument = OptionSpread(
+            instrument_id=spread_instrument_id,
+            raw_symbol=spread_instrument_id.symbol,
+            asset_class=option1.asset_class,
+            currency=option1.quote_currency,
+            price_precision=option1.price_precision,
+            price_increment=option1.price_increment,
+            multiplier=option1.multiplier,
+            lot_size=option1.lot_size,
+            underlying="ES",
+            strategy_type="SPREAD",
+            activation_ns=0,
+            expiration_ns=0,
+            ts_event=0,
+            ts_init=0,
+        )
+        self.data_engine.process(spread_instrument)
+
+        # Subscribe WITHOUT aggregate_spread_quotes flag (default behavior)
+        subscribe = SubscribeQuoteTicks(
+            client_id=None,
+            venue=Venue("XCME"),
+            instrument_id=spread_instrument_id,
+            command_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        # Act
+        self.data_engine.execute(subscribe)
+
+        # Assert - Only 1 command (no leg subscriptions created)
+        assert self.data_engine.command_count == 1
 
     def test_unsubscribe_spread_quotes_removes_aggregator(self):
         # Arrange
@@ -4527,6 +5036,7 @@ class TestDataEngine:
             instrument_id=spread_instrument_id,
             command_id=UUID4(),
             ts_init=self.clock.timestamp_ns(),
+            params={"aggregate_spread_quotes": True},
         )
         self.data_engine.execute(subscribe)
 
@@ -4541,6 +5051,7 @@ class TestDataEngine:
             instrument_id=spread_instrument_id,
             command_id=UUID4(),
             ts_init=self.clock.timestamp_ns(),
+            params={"aggregate_spread_quotes": True},
         )
         self.data_engine.execute(unsubscribe)
 
@@ -4640,6 +5151,7 @@ class TestDataEngine:
             instrument_id=spread_instrument_id,
             command_id=UUID4(),
             ts_init=self.clock.timestamp_ns(),
+            params={"aggregate_spread_quotes": True},
         )
         self.data_engine.execute(subscribe)
 
@@ -4905,6 +5417,134 @@ class TestDataEngine:
         # Verify spread is preserved
         spread = quote_tick.ask_price - quote_tick.bid_price
         assert spread == Price.from_str("0.25")
+
+    def test_disable_historical_cache_flag_prevents_cache_updates(self):
+        # Arrange
+        self.data_engine.register_client(self.binance_client)
+        self.binance_client.start()
+        self.data_engine.process(ETHUSDT_BINANCE)
+
+        # Create initial quote tick to establish baseline in cache
+        initial_tick = TestDataStubs.quote_tick(
+            instrument=ETHUSDT_BINANCE,
+            bid_price=100.0,
+            ask_price=101.0,
+            ts_event=1_000_000_000,
+            ts_init=1_000_000_000,
+        )
+        self.data_engine.process_historical(initial_tick)
+
+        # Verify initial tick is in cache
+        cached_tick_before = self.cache.quote_tick(ETHUSDT_BINANCE.id)
+        assert cached_tick_before is not None
+        assert cached_tick_before.bid_price == Price.from_str("100.0")
+
+        # Create a request
+        request = RequestQuoteTicks(
+            instrument_id=ETHUSDT_BINANCE.id,
+            start=None,
+            end=None,
+            limit=1000,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            callback=None,
+            request_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params=None,
+        )
+
+        # Send request to register it
+        self.data_engine.request(request)
+
+        # Create new quote ticks that should update the cache when flag is False
+        new_tick = TestDataStubs.quote_tick(
+            instrument=ETHUSDT_BINANCE,
+            bid_price=102.0,
+            ask_price=103.0,
+            ts_event=2_000_000_000,
+            ts_init=2_000_000_000,
+        )
+
+        # Test 1: With disable_historical_cache=False, cache should be updated
+        response_with_cache = DataResponse(
+            client_id=request.client_id,
+            venue=request.venue,
+            data_type=DataType(QuoteTick),
+            data=[new_tick],
+            correlation_id=request.id,
+            response_id=UUID4(),
+            start=None,
+            end=None,
+            ts_init=self.clock.timestamp_ns(),
+            params={"disable_historical_cache": False},
+        )
+        self.data_engine.response(response_with_cache)
+
+        # Verify cache was updated
+        cached_tick_after_false = self.cache.quote_tick(ETHUSDT_BINANCE.id)
+        assert cached_tick_after_false is not None
+        assert cached_tick_after_false.bid_price == Price.from_str("102.0")
+        assert cached_tick_after_false.ask_price == Price.from_str("103.0")
+
+        # Reset cache state for next test
+        # Process a new tick directly to establish new baseline
+        baseline_tick = TestDataStubs.quote_tick(
+            instrument=ETHUSDT_BINANCE,
+            bid_price=200.0,
+            ask_price=201.0,
+            ts_event=3_000_000_000,
+            ts_init=3_000_000_000,
+        )
+        self.data_engine.process_historical(baseline_tick)
+        cached_tick_baseline = self.cache.quote_tick(ETHUSDT_BINANCE.id)
+        assert cached_tick_baseline.bid_price == Price.from_str("200.0")
+
+        # Create another request
+        request2 = RequestQuoteTicks(
+            instrument_id=ETHUSDT_BINANCE.id,
+            start=None,
+            end=None,
+            limit=1000,
+            client_id=ClientId(BINANCE.value),
+            venue=BINANCE,
+            callback=None,
+            request_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            params=None,
+        )
+
+        # Send request to register it
+        self.data_engine.request(request2)
+
+        # Create new quote tick that should NOT update the cache when flag is True
+        new_tick2 = TestDataStubs.quote_tick(
+            instrument=ETHUSDT_BINANCE,
+            bid_price=205.0,
+            ask_price=206.0,
+            ts_event=4_000_000_000,
+            ts_init=4_000_000_000,
+        )
+
+        # Test 2: With disable_historical_cache=True, cache should NOT be updated
+        response_without_cache = DataResponse(
+            client_id=request2.client_id,
+            venue=request2.venue,
+            data_type=DataType(QuoteTick),
+            data=[new_tick2],
+            correlation_id=request2.id,
+            response_id=UUID4(),
+            start=None,
+            end=None,
+            ts_init=self.clock.timestamp_ns(),
+            params={"disable_historical_cache": True},
+        )
+        self.data_engine.response(response_without_cache)
+
+        # Verify cache was NOT updated (should still have the baseline tick)
+        cached_tick_after_true = self.cache.quote_tick(ETHUSDT_BINANCE.id)
+        assert cached_tick_after_true is not None
+        assert cached_tick_after_true.bid_price == Price.from_str("200.0")
+        assert cached_tick_after_true.ask_price == Price.from_str("201.0")
 
 
 class TestDataEngineQuoteFromDepth:

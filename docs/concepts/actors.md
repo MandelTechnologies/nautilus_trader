@@ -107,7 +107,7 @@ Actors have access to core system components:
 
 | Property          | Description                                              |
 |-------------------|----------------------------------------------------------|
-| `self.cache`      | Read-only access to instruments, orders, positions, etc. |
+| `self.cache`      | Shared state for instruments, orders, positions, etc.    |
 | `self.portfolio`  | Portfolio state and calculations.                        |
 | `self.clock`      | Current time and timer/alert scheduling.                 |
 | `self.log`        | Structured logging.                                      |
@@ -331,3 +331,9 @@ class CancelMonitorActor(Actor):
 Order cancel subscriptions are message bus-only subscriptions and do not involve the data engine.
 The `on_order_canceled()` handler will only receive events while the actor is in a running state.
 :::
+
+## Related guides
+
+- [Strategies](strategies.md) - Strategies extend actors with order management capabilities.
+- [Data](data.md) - Data types and subscriptions available to actors.
+- [Message Bus](message_bus.md) - The messaging system actors use for communication.

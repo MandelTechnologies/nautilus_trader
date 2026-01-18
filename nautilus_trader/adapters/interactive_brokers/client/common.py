@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,7 +25,7 @@ from typing import NamedTuple
 
 import msgspec
 from ibapi.client import EClient
-from ibapi.commission_report import CommissionReport
+from ibapi.commission_and_fees_report import CommissionAndFeesReport
 from ibapi.common import BarData
 from ibapi.execution import Execution
 
@@ -540,7 +540,7 @@ class BaseMixin:
     _next_valid_order_id: int
     _exec_id_details: dict[
         str,
-        dict[str, Execution | (CommissionReport | str)],
+        dict[str, Execution | (CommissionAndFeesReport | str)],
     ]
 
 

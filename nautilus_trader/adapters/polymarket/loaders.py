@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -45,6 +45,9 @@ class PolymarketDataLoader:
     - Polymarket Gamma API (market information)
     - Polymarket CLOB API (price/trade history and orderbook history)
 
+    If no `http_client` is provided, the loader creates one with a default rate limit
+    of 100 requests per minute, matching Polymarket's public endpoint limit.
+
     Parameters
     ----------
     instrument : BinaryOption
@@ -64,7 +67,12 @@ class PolymarketDataLoader:
     ) -> None:
         self._instrument = instrument
         self._token_id = token_id
-        self._http_client = http_client or nautilus_pyo3.HttpClient()
+
+        if http_client is None:
+            http_client = nautilus_pyo3.HttpClient(
+                default_quota=nautilus_pyo3.Quota.rate_per_minute(100),
+            )
+        self._http_client = http_client
 
     @classmethod
     async def from_market_slug(

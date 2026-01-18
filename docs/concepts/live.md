@@ -330,7 +330,7 @@ For a complete parameter list see the `StrategyConfig` [API Reference](../api_re
 | `oms_type`                  | None    | Specifies the [OMS type](../concepts/execution#oms-configuration), for position ID handling and order processing flow. |
 | `use_uuid_client_order_ids` | False   | If UUID4's should be used for client order ID values (required for some venues such as Coinbase Intx). |
 | `external_order_claims`     | None    | Lists instrument IDs for external orders the strategy should claim, aiding accurate order management. |
-| `manage_contingent_orders`  | False   | If enabled, the strategy automatically manages contingent orders, reducing manual intervention. |
+| `manage_contingent_orders`  | False   | If enabled, the strategy automatically manages OTO, OCO, and OUO contingent orders. |
 | `manage_gtd_expiry`         | False   | If enabled, the strategy manages GTD expirations, ensuring orders remain active as intended. |
 
 ### Windows signal handling
@@ -570,3 +570,9 @@ the system analyzes position lifecycles from fills - and applies adjustments to 
 - **Lifecycle**: A sequence of fills between zero-crossings representing a continuous position open-close cycle.
 - **Synthetic fill**: A calculated fill report created by the system to represent missing trading activity, using reconciliation price calculations to achieve correct average positions.
 - **Tolerance**: Position matching uses configurable price tolerance (default: 0.0001 = 0.01% relative difference) to account for minor calculation differences.
+
+## Related guides
+
+- [Adapters](adapters.md) - Venue connectivity for live trading.
+- [Execution](execution.md) - Order execution in live environments.
+- [Backtesting](backtesting.md) - Test strategies before live deployment.

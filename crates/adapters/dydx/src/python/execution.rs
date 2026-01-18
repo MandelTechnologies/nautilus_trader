@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,6 +14,8 @@
 // -------------------------------------------------------------------------------------------------
 
 //! Python bindings for dYdX execution components.
+
+#![allow(clippy::missing_errors_doc)]
 
 use std::{str::FromStr, sync::Arc};
 
@@ -205,7 +207,6 @@ impl PyDydxOrderSubmitter {
         })
     }
 
-    /// Submit a stop market order to dYdX via gRPC.
     #[pyo3(name = "submit_stop_market_order")]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_stop_market_order<'py>(
@@ -246,7 +247,6 @@ impl PyDydxOrderSubmitter {
         })
     }
 
-    /// Submit a stop limit order to dYdX via gRPC.
     #[pyo3(name = "submit_stop_limit_order")]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_stop_limit_order<'py>(
@@ -297,7 +297,6 @@ impl PyDydxOrderSubmitter {
         })
     }
 
-    /// Submit a take profit market order to dYdX via gRPC.
     #[pyo3(name = "submit_take_profit_market_order")]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_take_profit_market_order<'py>(
@@ -338,7 +337,6 @@ impl PyDydxOrderSubmitter {
         })
     }
 
-    /// Submit a take profit limit order to dYdX via gRPC.
     #[pyo3(name = "submit_take_profit_limit_order")]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_take_profit_limit_order<'py>(
@@ -389,7 +387,6 @@ impl PyDydxOrderSubmitter {
         })
     }
 
-    /// Cancel an order on dYdX via gRPC.
     #[pyo3(name = "cancel_order")]
     fn py_cancel_order<'py>(
         &self,
@@ -412,7 +409,6 @@ impl PyDydxOrderSubmitter {
         })
     }
 
-    /// Cancel multiple orders on dYdX via gRPC.
     #[pyo3(name = "cancel_orders_batch")]
     fn py_cancel_orders_batch<'py>(
         &self,
@@ -442,7 +438,6 @@ impl PyDydxOrderSubmitter {
     }
 }
 
-/// Python wrapper for DydxGrpcClient.
 #[pyclass(name = "DydxGrpcClient")]
 #[derive(Debug, Clone)]
 pub struct PyDydxGrpcClient {

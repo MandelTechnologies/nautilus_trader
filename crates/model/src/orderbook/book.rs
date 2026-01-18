@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -30,7 +30,10 @@ use crate::{
     data::{BookOrder, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick},
     enums::{BookAction, BookType, OrderSide, OrderSideSpecified, OrderStatus},
     identifiers::InstrumentId,
-    orderbook::{BookIntegrityError, InvalidBookOperation, ladder::BookLadder},
+    orderbook::{
+        BookIntegrityError, InvalidBookOperation,
+        ladder::{BookLadder, BookPrice},
+    },
     types::{
         Price, Quantity,
         price::{PRICE_ERROR, PRICE_UNDEF},
@@ -693,15 +696,48 @@ impl OrderBook {
         analysis::get_avg_px_qty_for_exposure(target_exposure, levels)
     }
 
-    /// Returns the total quantity available at specified price level.
+    /// Returns the cumulative quantity available at or better than the specified price.
+    ///
+    /// For a BUY order, sums ask levels at or below the price.
+    /// For a SELL order, sums bid levels at or above the price.
     #[must_use]
     pub fn get_quantity_for_price(&self, price: Price, order_side: OrderSide) -> f64 {
-        let levels = match order_side.as_specified() {
+        let side = order_side.as_specified();
+        let levels = match side {
             OrderSideSpecified::Buy => &self.asks.levels,
             OrderSideSpecified::Sell => &self.bids.levels,
         };
 
-        analysis::get_quantity_for_price(price, order_side, levels)
+        analysis::get_quantity_for_price(price, side, levels)
+    }
+
+    /// Returns the quantity at a specific price level only, or 0 if no level exists.
+    ///
+    /// Unlike `get_quantity_for_price` which returns cumulative quantity across
+    /// multiple levels, this returns only the quantity at the exact price level.
+    #[must_use]
+    pub fn get_quantity_at_level(
+        &self,
+        price: Price,
+        order_side: OrderSide,
+        size_precision: u8,
+    ) -> Quantity {
+        let side = order_side.as_specified();
+
+        // For a BUY order, we look in asks (sell side); for SELL order, we look in bids (buy side)
+        // BookPrice keys use the side of orders IN the book, not the incoming order side
+        let (levels, book_side) = match side {
+            OrderSideSpecified::Buy => (&self.asks.levels, OrderSideSpecified::Sell),
+            OrderSideSpecified::Sell => (&self.bids.levels, OrderSideSpecified::Buy),
+        };
+
+        let book_price = BookPrice::new(price, book_side);
+
+        levels
+            .get(&book_price)
+            .map_or(Quantity::zero(size_precision), |level| {
+                Quantity::from_raw(level.size_raw(), size_precision)
+            })
     }
 
     /// Simulates fills for an order, returning list of (price, quantity) tuples.
@@ -711,6 +747,27 @@ impl OrderBook {
             OrderSideSpecified::Buy => self.asks.simulate_fills(order),
             OrderSideSpecified::Sell => self.bids.simulate_fills(order),
         }
+    }
+
+    /// Returns all price levels crossed by an order at the given price and side.
+    ///
+    /// Unlike `simulate_fills`, this returns ALL crossed levels regardless of
+    /// order quantity. Used when liquidity consumption tracking needs visibility
+    /// into all available levels.
+    #[must_use]
+    pub fn get_all_crossed_levels(
+        &self,
+        order_side: OrderSide,
+        price: Price,
+        size_precision: u8,
+    ) -> Vec<(Price, Quantity)> {
+        let side = order_side.as_specified();
+        let levels = match side {
+            OrderSideSpecified::Buy => &self.asks.levels,
+            OrderSideSpecified::Sell => &self.bids.levels,
+        };
+
+        analysis::get_levels_for_price(price, side, levels, size_precision)
     }
 
     /// Return a formatted string representation of the order book.

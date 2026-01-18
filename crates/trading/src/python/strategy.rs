@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -175,7 +175,7 @@ pub struct PyStrategyInner {
 
 impl Debug for PyStrategyInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PyStrategyInner")
+        f.debug_struct(stringify!(PyStrategyInner))
             .field("core", &self.core)
             .field("py_self", &self.py_self.as_ref().map(|_| "<Py<PyAny>>"))
             .field("clock", &self.clock)
@@ -733,7 +733,7 @@ pub struct PyStrategy {
 
 impl Debug for PyStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PyStrategy")
+        f.debug_struct(stringify!(PyStrategy))
             .field("inner", &self.inner())
             .finish()
     }
@@ -864,12 +864,12 @@ impl PyStrategy {
     #[pyo3(name = "clock")]
     fn py_clock(&self) -> PyResult<PyClock> {
         let inner = self.inner();
-        if !inner.core.actor.is_registered() {
+        if inner.core.actor.is_registered() {
+            Ok(inner.clock.clone())
+        } else {
             Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Strategy must be registered with a trader before accessing clock",
             ))
-        } else {
-            Ok(inner.clock.clone())
         }
     }
 
@@ -877,12 +877,12 @@ impl PyStrategy {
     #[pyo3(name = "cache")]
     fn py_cache(&self) -> PyResult<PyCache> {
         let inner = self.inner();
-        if !inner.core.actor.is_registered() {
+        if inner.core.actor.is_registered() {
+            Ok(PyCache::from_rc(inner.core.actor.cache_rc()))
+        } else {
             Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
                 "Strategy must be registered with a trader before accessing cache",
             ))
-        } else {
-            Ok(PyCache::from_rc(inner.core.actor.cache_rc()))
         }
     }
 

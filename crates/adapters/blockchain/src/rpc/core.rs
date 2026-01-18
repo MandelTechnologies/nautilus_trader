@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -62,7 +62,7 @@ pub struct CoreBlockchainRpcClient {
 
 impl Debug for CoreBlockchainRpcClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CoreBlockchainRpcClient")
+        f.debug_struct(stringify!(CoreBlockchainRpcClient))
             .field("chain", &self.chain)
             .field("wss_rpc_url", &self.wss_rpc_url)
             .field("request_id", &self.request_id)
@@ -117,10 +117,8 @@ impl CoreBlockchainRpcClient {
         let config = WebSocketConfig {
             url: self.wss_rpc_url.clone(),
             headers: vec![user_agent],
-            message_handler: Some(handler),
             heartbeat: Some(heartbeat_interval),
             heartbeat_msg: None,
-            ping_handler: None,
             reconnect_timeout_ms: Some(10_000),
             reconnect_delay_initial_ms: Some(1_000),
             reconnect_delay_max_ms: Some(30_000),
@@ -129,7 +127,8 @@ impl CoreBlockchainRpcClient {
             reconnect_max_attempts: None,
         };
 
-        let client = WebSocketClient::connect(config, None, vec![], None).await?;
+        let client =
+            WebSocketClient::connect(config, Some(handler), None, None, vec![], None).await?;
 
         self.wss_client = Some(Arc::new(client));
         self.wss_consumer_rx = Some(rx);

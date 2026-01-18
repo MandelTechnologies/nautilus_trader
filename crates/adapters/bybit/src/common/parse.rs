@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,17 +13,22 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Conversion helpers that translate Bybit API schemas into Nautilus instruments.
+//! Conversion functions that translate Bybit API schemas into Nautilus instruments.
 
 use std::{convert::TryFrom, str::FromStr};
 
 use anyhow::Context;
+pub use nautilus_core::serialization::{
+    deserialize_decimal_or_zero, deserialize_optional_decimal,
+    deserialize_optional_decimal_or_zero, deserialize_string_to_u8,
+};
 use nautilus_core::{UUID4, datetime::NANOSECONDS_IN_MILLISECOND, nanos::UnixNanos};
 use nautilus_model::{
-    data::{Bar, BarType, TradeTick},
+    data::{Bar, BarType, BookOrder, OrderBookDelta, OrderBookDeltas, TradeTick},
     enums::{
-        AccountType, AggressorSide, AssetClass, BarAggregation, LiquiditySide, OptionKind,
-        OrderSide, OrderStatus, OrderType, PositionSideSpecified, TimeInForce, TriggerType,
+        AccountType, AggressorSide, AssetClass, BarAggregation, BookAction, LiquiditySide,
+        OptionKind, OrderSide, OrderStatus, OrderType, PositionSideSpecified, RecordFlag,
+        TimeInForce, TriggerType,
     },
     events::account::state::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, TradeId, Venue, VenueOrderId},
@@ -36,7 +41,6 @@ use nautilus_model::{
     types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
-use serde::{Deserialize, Deserializer};
 use ustr::Ustr;
 
 use crate::{
@@ -50,69 +54,14 @@ use crate::{
     },
     http::models::{
         BybitExecution, BybitFeeRate, BybitInstrumentInverse, BybitInstrumentLinear,
-        BybitInstrumentOption, BybitInstrumentSpot, BybitKline, BybitPosition, BybitTrade,
-        BybitWalletBalance,
+        BybitInstrumentOption, BybitInstrumentSpot, BybitKline, BybitOrderbookResult,
+        BybitPosition, BybitTrade, BybitWalletBalance,
     },
+    websocket::parse::parse_millis_i64,
 };
 
 const BYBIT_MINUTE_INTERVALS: &[u64] = &[1, 3, 5, 15, 30, 60, 120, 240, 360, 720];
 const BYBIT_HOUR_INTERVALS: &[u64] = &[1, 2, 4, 6, 12];
-
-/// Deserializes an optional Decimal from a string field.
-/// Returns `None` if the string is empty or "0", otherwise parses to `Decimal`.
-pub fn deserialize_optional_decimal<'de, D>(deserializer: D) -> Result<Option<Decimal>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    if s.is_empty() || s == "0" {
-        Ok(None)
-    } else {
-        Decimal::from_str(&s)
-            .map(Some)
-            .map_err(serde::de::Error::custom)
-    }
-}
-
-/// Deserializes a Decimal from an optional string field, defaulting to zero.
-/// Handles Bybit's edge cases: None, empty string "", or "0" all become Decimal::ZERO.
-pub fn deserialize_optional_decimal_or_zero<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt: Option<String> = Deserialize::deserialize(deserializer)?;
-    match opt {
-        None => Ok(Decimal::ZERO),
-        Some(s) if s.is_empty() || s == "0" => Ok(Decimal::ZERO),
-        Some(s) => Decimal::from_str(&s).map_err(serde::de::Error::custom),
-    }
-}
-
-/// Deserializes a Decimal from a string field that might be empty.
-/// Handles Bybit's edge case where empty string "" becomes Decimal::ZERO.
-pub fn deserialize_decimal_or_zero<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    if s.is_empty() || s == "0" {
-        Ok(Decimal::ZERO)
-    } else {
-        Decimal::from_str(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Deserializes a u8 from a string field.
-pub fn deserialize_string_to_u8<'de, D>(deserializer: D) -> Result<u8, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s: String = Deserialize::deserialize(deserializer)?;
-    if s.is_empty() {
-        return Ok(0);
-    }
-    s.parse::<u8>().map_err(serde::de::Error::custom)
-}
 
 /// Extracts the raw symbol from a Bybit symbol by removing the product type suffix.
 #[must_use]
@@ -611,6 +560,85 @@ pub fn parse_trade_tick(
         ts_init,
     )
     .context("failed to construct TradeTick from Bybit trade payload")
+}
+
+/// Parses an order book response into [`OrderBookDeltas`].
+pub fn parse_orderbook(
+    result: &BybitOrderbookResult,
+    instrument: &InstrumentAny,
+    ts_init: UnixNanos,
+) -> anyhow::Result<OrderBookDeltas> {
+    let ts_event = parse_millis_i64(result.ts, "orderbook.timestamp")?;
+
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    let update_id = u64::try_from(result.u)
+        .context("received negative update id in Bybit order book message")?;
+    let sequence = u64::try_from(result.seq)
+        .context("received negative sequence in Bybit order book message")?;
+
+    let total_levels = result.b.len() + result.a.len();
+    let mut deltas = Vec::with_capacity(total_levels + 1);
+
+    let mut clear = OrderBookDelta::clear(instrument_id, sequence, ts_event, ts_init);
+    if total_levels == 0 {
+        clear.flags |= RecordFlag::F_LAST as u8;
+    }
+    deltas.push(clear);
+
+    let mut processed = 0_usize;
+
+    let mut push_level = |values: &[String], side: OrderSide| -> anyhow::Result<()> {
+        let (price, size) = parse_book_level(values, price_precision, size_precision, "orderbook")?;
+
+        processed += 1;
+        let mut flags = RecordFlag::F_MBP as u8;
+        if processed == total_levels {
+            flags |= RecordFlag::F_LAST as u8;
+        }
+
+        let order = BookOrder::new(side, price, size, update_id);
+        let delta = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Add,
+            order,
+            flags,
+            sequence,
+            ts_event,
+            ts_init,
+        )
+        .context("failed to construct OrderBookDelta from Bybit book level")?;
+        deltas.push(delta);
+        Ok(())
+    };
+
+    for level in &result.b {
+        push_level(level, OrderSide::Buy)?;
+    }
+    for level in &result.a {
+        push_level(level, OrderSide::Sell)?;
+    }
+
+    OrderBookDeltas::new_checked(instrument_id, deltas)
+        .context("failed to assemble OrderBookDeltas from Bybit message")
+}
+
+pub fn parse_book_level(
+    level: &[String],
+    price_precision: u8,
+    size_precision: u8,
+    label: &str,
+) -> anyhow::Result<(Price, Quantity)> {
+    let price_str = level
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing price component in {label} level"))?;
+    let size_str = level
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("missing size component in {label} level"))?;
+    let price = parse_price_with_precision(price_str, price_precision, label)?;
+    let size = parse_quantity_with_precision(size_str, size_precision, label)?;
+    Ok((price, size))
 }
 
 /// Parses a kline entry into a [`Bar`].

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -176,13 +176,14 @@ class DYDXWebsocketClient:
         self._log.debug(f"Connecting to {self._base_url} websocket stream")
         config = WebSocketConfig(
             url=self._base_url,
-            handler=self._handle_msg,
-            heartbeat=10,
             headers=[],
-            ping_handler=self._handle_ping,
+            heartbeat=10,
         )
         client = await WebSocketClient.connect(
+            loop_=self._loop,
             config=config,
+            handler=self._handle_msg,
+            ping_handler=self._handle_ping,
             post_reconnection=self.reconnect,
             default_quota=Quota.rate_per_second(self._subscription_rate_limit_per_second),
         )

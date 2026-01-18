@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -529,7 +529,7 @@ mod serial_tests {
         // Update account
         let new_account_state_event =
             cash_account_state_million_usd("1000000 USD", "100000 USD", "900000 USD");
-        account.apply(new_account_state_event);
+        account.apply(new_account_state_event).unwrap();
         pg_cache.update_account(&account).unwrap();
         wait_until_async(
             || async {

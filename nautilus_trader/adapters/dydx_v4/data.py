@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -61,6 +61,7 @@ from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOUT
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import bar_aggregation_to_str
@@ -238,10 +239,6 @@ class DYDXv4DataClient(LiveMarketDataClient):
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.subscribe_orderbook(pyo3_instrument_id)
 
-    async def _subscribe_order_book_snapshots(self, command: SubscribeOrderBook) -> None:
-        # dYdX provides deltas with initial snapshot, no separate snapshot subscription
-        await self._subscribe_order_book_deltas(command)
-
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         # dYdX doesn't have a dedicated quote tick channel
         # Quotes are synthesized from orderbook data
@@ -274,9 +271,6 @@ class DYDXv4DataClient(LiveMarketDataClient):
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
         await self._ws_client.unsubscribe_orderbook(pyo3_instrument_id)
-
-    async def _unsubscribe_order_book_snapshots(self, command: UnsubscribeOrderBook) -> None:
-        await self._unsubscribe_order_book_deltas(command)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         # Quotes are synthesized from orderbook, unsubscribe orderbook
@@ -468,7 +462,18 @@ class DYDXv4DataClient(LiveMarketDataClient):
 
             deltas = OrderBookDeltas.from_pyo3(pyo3_deltas)
 
-            self._handle_order_book_deltas(deltas)
+            data_type = DataType(
+                OrderBookDeltas,
+                metadata={"instrument_id": request.instrument_id},
+            )
+            self._handle_data_response(
+                data_type=data_type,
+                data=[deltas],
+                correlation_id=request.id,
+                start=None,
+                end=None,
+                params=request.params,
+            )
 
         except Exception as e:
             self._log.error(

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -45,8 +45,10 @@ from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import VenueOrderId
@@ -2172,7 +2174,9 @@ async def test_position_flip_netting_mode(
         )
 
         # Wait for position to be flipped to SHORT
-        await eventually(lambda: len(cache.positions()) > 0 and cache.positions()[0].side == PositionSide.SHORT)
+        await eventually(
+            lambda: len(cache.positions()) > 0 and cache.positions()[0].side == PositionSide.SHORT,
+        )
 
         # Assert - verify position flip
         flipped_pos = cache.positions()[0]
@@ -2240,5 +2244,262 @@ async def test_position_flip_netting_mode(
 
     finally:
         # Cleanup
+        exec_engine.stop()
+        await eventually(lambda: exec_engine.is_stopped)
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_indexes_venue_order_id_for_accepted_orders(
+    exec_engine,
+    exec_client,
+    cache,
+    clock,
+    account_id,
+):
+    """
+    Test that venue_order_id is properly indexed during reconciliation for orders that
+    are already in ACCEPTED state.
+
+    This verifies the fix ensures venue_order_ids are indexed during reconciliation even
+    when orders don't generate new OrderAccepted events.
+
+    """
+    # Arrange
+    client_order_id = ClientOrderId("O-ACCEPTED-001")
+    venue_order_id = VenueOrderId("VENUE-123")
+
+    order_report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=AUDUSD_SIM.id,
+        client_order_id=client_order_id,
+        venue_order_id=venue_order_id,
+        order_side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.ACCEPTED,
+        price=None,
+        quantity=Quantity.from_int(100_000),
+        filled_qty=Quantity.from_int(0),
+        report_id=UUID4(),
+        ts_accepted=clock.timestamp_ns(),
+        ts_last=clock.timestamp_ns(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    exec_client.add_order_status_report(order_report)
+
+    # Act
+    result = await exec_engine.reconcile_execution_state()
+
+    # Assert
+    assert result is True
+    assert cache.client_order_id(venue_order_id) == client_order_id
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_indexes_venue_order_id_for_external_orders(
+    exec_engine,
+    exec_client,
+    cache,
+    clock,
+    account_id,
+):
+    """
+    Test that venue_order_id is properly indexed for external orders discovered during
+    reconciliation.
+    """
+    # Arrange
+    external_client_id = ClientOrderId("EXTERNAL-001")
+    venue_order_id = VenueOrderId("VENUE-EXT-001")
+
+    external_report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=AUDUSD_SIM.id,
+        client_order_id=external_client_id,
+        venue_order_id=venue_order_id,
+        order_side=OrderSide.BUY,
+        order_type=OrderType.LIMIT,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.ACCEPTED,
+        price=Price.from_str("0.99000"),
+        quantity=Quantity.from_int(25_000),
+        filled_qty=Quantity.from_int(0),
+        report_id=UUID4(),
+        ts_accepted=clock.timestamp_ns(),
+        ts_last=clock.timestamp_ns(),
+        ts_init=clock.timestamp_ns(),
+    )
+    exec_client.add_order_status_report(external_report)
+
+    # Act
+    result = await exec_engine.reconcile_execution_state()
+
+    # Assert
+    assert result is True
+    external_order = cache.order(external_client_id)
+    assert external_order is not None
+    assert cache.client_order_id(venue_order_id) == external_client_id
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_indexes_venue_order_id_for_filled_orders(
+    exec_engine,
+    exec_client,
+    cache,
+    clock,
+    account_id,
+):
+    """
+    Test that venue_order_id is properly indexed for orders that are already FILLED.
+
+    This ensures indexing happens even for closed orders during reconciliation.
+
+    """
+    # Arrange
+    client_order_id = ClientOrderId("O-FILLED-001")
+    venue_order_id = VenueOrderId("VENUE-456")
+
+    order_report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=AUDUSD_SIM.id,
+        client_order_id=client_order_id,
+        venue_order_id=venue_order_id,
+        order_side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.FILLED,
+        price=None,
+        quantity=Quantity.from_int(100_000),
+        filled_qty=Quantity.from_int(100_000),
+        avg_px=Decimal("1.00000"),
+        report_id=UUID4(),
+        ts_accepted=clock.timestamp_ns(),
+        ts_last=clock.timestamp_ns(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    exec_client.add_order_status_report(order_report)
+
+    # Act
+    result = await exec_engine.reconcile_execution_state()
+
+    # Assert
+    assert result is True
+    assert cache.client_order_id(venue_order_id) == client_order_id
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_validation_skips_non_reconciled_instruments(
+    msgbus,
+    cache,
+    clock,
+):
+    """
+    Test that reconciliation validation only checks orders that were actually
+    reconciled, and skips orders for filtered/non-loaded instruments.
+
+    This ensures the validation doesn't produce false warnings for orders that were
+    intentionally skipped during reconciliation.
+
+    """
+    # Arrange
+    instrument_provider = InstrumentProvider()
+    instrument_provider.add(AUDUSD_SIM)
+
+    exec_client = MockLiveExecutionClient(
+        loop=asyncio.get_event_loop(),
+        client_id=ClientId("BROKER"),
+        venue=AUDUSD_SIM.id.venue,
+        account_type=AccountType.MARGIN,
+        base_currency=USD,
+        instrument_provider=instrument_provider,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+    )
+
+    cache.add_instrument(AUDUSD_SIM)
+
+    config = LiveExecEngineConfig(
+        reconciliation=True,
+        reconciliation_lookback_mins=1440,
+    )
+
+    exec_engine = LiveExecutionEngine(
+        loop=asyncio.get_event_loop(),
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        config=config,
+    )
+
+    exec_engine.register_client(exec_client)
+
+    account_id = AccountId("BROKER-001")
+
+    # AUDUSD order (instrument loaded - should be reconciled)
+    audusd_order_report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=AUDUSD_SIM.id,
+        client_order_id=ClientOrderId("O-AUDUSD-001"),
+        venue_order_id=VenueOrderId("V-AUDUSD-001"),
+        order_side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.FILLED,
+        price=None,
+        quantity=Quantity.from_int(100_000),
+        filled_qty=Quantity.from_int(100_000),
+        avg_px=Decimal("1.00000"),
+        report_id=UUID4(),
+        ts_accepted=clock.timestamp_ns(),
+        ts_last=clock.timestamp_ns(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    # BTCUSD order (instrument not loaded - should be skipped)
+    btcusd_id = InstrumentId.from_str("BTCUSD.SIM")
+    btcusd_order_report = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=btcusd_id,
+        client_order_id=ClientOrderId("O-BTCUSD-001"),
+        venue_order_id=VenueOrderId("V-BTCUSD-001"),
+        order_side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.GTC,
+        order_status=OrderStatus.FILLED,
+        price=None,
+        quantity=Quantity.from_int(1),
+        filled_qty=Quantity.from_int(1),
+        avg_px=Decimal("50000.00"),
+        report_id=UUID4(),
+        ts_accepted=clock.timestamp_ns(),
+        ts_last=clock.timestamp_ns(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    exec_client.add_order_status_report(audusd_order_report)
+    exec_client.add_order_status_report(btcusd_order_report)
+
+    try:
+        exec_engine.start()
+        await eventually(lambda: exec_engine.is_running)
+
+        # Act
+        result = await exec_engine.reconcile_execution_state()
+
+        # Assert
+        assert result is True
+
+        audusd_order = cache.order(ClientOrderId("O-AUDUSD-001"))
+        assert audusd_order is not None
+        assert cache.client_order_id(VenueOrderId("V-AUDUSD-001")) == ClientOrderId("O-AUDUSD-001")
+
+        btcusd_order = cache.order(ClientOrderId("O-BTCUSD-001"))
+        assert btcusd_order is None
+
+        assert cache.client_order_id(VenueOrderId("V-BTCUSD-001")) is None
+
+    finally:
         exec_engine.stop()
         await eventually(lambda: exec_engine.is_stopped)

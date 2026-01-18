@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -430,10 +430,6 @@ async fn wait_for_connection_count(state: &TestServerState, expected: usize, tim
     .await;
 }
 
-// ============================================================================
-// Core Connectivity Tests
-// ============================================================================
-
 #[rstest]
 #[tokio::test]
 async fn test_client_creation() {
@@ -573,10 +569,6 @@ async fn test_close_connection() {
 
     wait_for_connection_count(&state, 0, Duration::from_secs(5)).await;
 }
-
-// ============================================================================
-// Subscription Tests
-// ============================================================================
 
 #[rstest]
 #[tokio::test]
@@ -817,10 +809,6 @@ async fn test_multiple_subscriptions() {
     client.disconnect().await.expect("close failed");
 }
 
-// ============================================================================
-// Reconnection Tests
-// ============================================================================
-
 #[rstest]
 #[tokio::test]
 async fn test_reconnection_scenario() {
@@ -1006,10 +994,6 @@ async fn test_true_auto_reconnect_with_verification() {
     client.disconnect().await.expect("close failed");
 }
 
-// ============================================================================
-// Edge Case Tests
-// ============================================================================
-
 #[rstest]
 #[tokio::test]
 async fn test_rapid_consecutive_reconnections() {
@@ -1171,7 +1155,7 @@ async fn test_subscribe_after_next_event_call() {
     // Try to get an event
     tokio::select! {
         _ = client.next_event() => {},
-        _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        () = tokio::time::sleep(Duration::from_millis(200)) => {}
     }
 
     // Subscribe should still work after next_event

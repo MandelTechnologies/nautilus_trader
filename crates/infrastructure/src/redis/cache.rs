@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{collections::VecDeque, fmt::Debug, time::Duration};
+use std::{collections::VecDeque, fmt::Debug, ops::ControlFlow, pin::Pin, time::Duration};
 
 use ahash::AHashMap;
 use bytes::Bytes;
@@ -47,7 +47,7 @@ use nautilus_model::{
 use redis::{Pipeline, aio::ConnectionManager};
 use ustr::Ustr;
 
-use super::{REDIS_DELIMITER, REDIS_FLUSHDB};
+use super::{REDIS_DELIMITER, REDIS_FLUSHDB, get_index_key};
 use crate::redis::{create_redis_connection, queries::DatabaseQueries};
 
 // Task and connection names
@@ -388,7 +388,7 @@ impl RedisCacheDatabase {
         _account_id: &AccountId,
         _event_id: &str,
     ) -> anyhow::Result<()> {
-        tracing::warn!("Deleting account events currently a no-op (pending redesign)");
+        log::warn!("Deleting account events currently a no-op (pending redesign)");
         Ok(())
     }
 }
@@ -408,24 +408,32 @@ async fn process_commands(
 
     // Buffering
     let mut buffer: VecDeque<DatabaseCommand> = VecDeque::new();
-    let mut last_drain = std::time::Instant::now();
     let buffer_interval = Duration::from_millis(config.buffer_interval_ms.unwrap_or(0) as u64);
+
+    // A sleep used to trigger periodic flushing of the buffer.
+    // When `buffer_interval` is zero we skip using the timer and flush immediately
+    // after every message.
+    let flush_timer = tokio::time::sleep(buffer_interval);
+    tokio::pin!(flush_timer);
 
     // Continue to receive and handle messages until channel is hung up
     loop {
-        if last_drain.elapsed() >= buffer_interval && !buffer.is_empty() {
-            drain_buffer(&mut con, &trader_key, &mut buffer).await;
-            last_drain = std::time::Instant::now();
-        } else if let Some(cmd) = rx.recv().await {
-            tracing::trace!("Received {cmd:?}");
-
-            if matches!(cmd.op_type, DatabaseOperation::Close) {
-                break;
+        tokio::select! {
+            maybe_cmd = rx.recv() => {
+                let result = handle_command(
+                    maybe_cmd,
+                    &mut buffer,
+                    buffer_interval,
+                    &mut con,
+                    &trader_key,
+                ).await;
+                if result.is_break() {
+                    break;
+                }
             }
-            buffer.push_back(cmd);
-        } else {
-            tracing::debug!("Command channel closed");
-            break;
+            () = &mut flush_timer, if !buffer_interval.is_zero() => {
+                flush_buffer(&mut buffer, &mut con, &trader_key, &mut flush_timer, buffer_interval).await;
+            }
         }
     }
 
@@ -436,6 +444,51 @@ async fn process_commands(
 
     log_task_stopped(CACHE_PROCESS);
     Ok(())
+}
+
+async fn handle_command(
+    maybe_cmd: Option<DatabaseCommand>,
+    buffer: &mut VecDeque<DatabaseCommand>,
+    buffer_interval: Duration,
+    con: &mut ConnectionManager,
+    trader_key: &str,
+) -> ControlFlow<()> {
+    let Some(cmd) = maybe_cmd else {
+        log::debug!("Command channel closed");
+        return ControlFlow::Break(());
+    };
+
+    log::trace!("Received {cmd:?}");
+
+    if matches!(cmd.op_type, DatabaseOperation::Close) {
+        if !buffer.is_empty() {
+            drain_buffer(con, trader_key, buffer).await;
+        }
+        return ControlFlow::Break(());
+    }
+
+    buffer.push_back(cmd);
+
+    if buffer_interval.is_zero() {
+        drain_buffer(con, trader_key, buffer).await;
+    }
+
+    ControlFlow::Continue(())
+}
+
+async fn flush_buffer(
+    buffer: &mut VecDeque<DatabaseCommand>,
+    con: &mut ConnectionManager,
+    trader_key: &str,
+    flush_timer: &mut Pin<&mut tokio::time::Sleep>,
+    buffer_interval: Duration,
+) {
+    if !buffer.is_empty() {
+        drain_buffer(con, trader_key, buffer).await;
+    }
+    flush_timer
+        .as_mut()
+        .reset(tokio::time::Instant::now() + buffer_interval);
 }
 
 async fn drain_buffer(
@@ -456,7 +509,7 @@ async fn drain_buffer(
         let collection = match get_collection_key(&key) {
             Ok(collection) => collection,
             Err(e) => {
-                tracing::error!("{e}");
+                log::error!("{e}");
                 continue; // Continue to next message
             }
         };
@@ -468,24 +521,24 @@ async fn drain_buffer(
                 if let Some(payload) = msg.payload {
                     log::debug!("Processing INSERT for collection: {collection}, key: {key}");
                     if let Err(e) = insert(&mut pipe, collection, &key, payload) {
-                        tracing::error!("{e}");
+                        log::error!("{e}");
                     }
                 } else {
-                    tracing::error!("Null `payload` for `insert`");
+                    log::error!("Null `payload` for `insert`");
                 }
             }
             DatabaseOperation::Update => {
                 if let Some(payload) = msg.payload {
                     log::debug!("Processing UPDATE for collection: {collection}, key: {key}");
                     if let Err(e) = update(&mut pipe, collection, &key, payload) {
-                        tracing::error!("{e}");
+                        log::error!("{e}");
                     }
                 } else {
-                    tracing::error!("Null `payload` for `update`");
+                    log::error!("Null `payload` for `update`");
                 }
             }
             DatabaseOperation::Delete => {
-                tracing::debug!(
+                log::debug!(
                     "Processing DELETE for collection: {}, key: {}, payload: {:?}",
                     collection,
                     key,
@@ -493,7 +546,7 @@ async fn drain_buffer(
                 );
                 // `payload` can be `None` for a delete operation
                 if let Err(e) = delete(&mut pipe, collection, &key, msg.payload) {
-                    tracing::error!("{e}");
+                    log::error!("{e}");
                 }
             }
             DatabaseOperation::Close => panic!("Close command should not be drained"),
@@ -501,7 +554,7 @@ async fn drain_buffer(
     }
 
     if let Err(e) = pipe.query_async::<()>(conn).await {
-        tracing::error!("{e}");
+        log::error!("{e}");
     }
 }
 
@@ -665,7 +718,7 @@ fn delete(
     key: &str,
     value: Option<Vec<Bytes>>,
 ) -> anyhow::Result<()> {
-    tracing::debug!(
+    log::debug!(
         "delete: collection={}, key={}, has_payload={}",
         collection,
         key,
@@ -792,14 +845,6 @@ fn get_collection_key(key: &str) -> anyhow::Result<&str> {
         })
 }
 
-fn get_index_key(key: &str) -> anyhow::Result<&str> {
-    key.split_once(REDIS_DELIMITER)
-        .map(|(_, index_key)| index_key)
-        .ok_or_else(|| {
-            anyhow::anyhow!("Invalid `key`, missing a '{REDIS_DELIMITER}' delimiter, was {key}")
-        })
-}
-
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct RedisCacheDatabaseAdapter {
@@ -822,7 +867,7 @@ impl CacheDatabaseAdapter for RedisCacheDatabaseAdapter {
     }
 
     async fn load_all(&self) -> anyhow::Result<CacheMap> {
-        tracing::debug!("Loading all data");
+        log::debug!("Loading all data");
 
         let (
             currencies,
@@ -1260,17 +1305,5 @@ mod tests {
     fn test_get_collection_key_invalid() {
         let key = "no_delimiter";
         assert!(get_collection_key(key).is_err());
-    }
-
-    #[rstest]
-    fn test_get_index_key_valid() {
-        let key = "index:123";
-        assert_eq!(get_index_key(key).unwrap(), "123");
-    }
-
-    #[rstest]
-    fn test_get_index_key_invalid() {
-        let key = "no_delimiter";
-        assert!(get_index_key(key).is_err());
     }
 }

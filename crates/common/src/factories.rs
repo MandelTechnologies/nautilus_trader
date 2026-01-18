@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,8 +15,10 @@
 
 //! Factories for constructing domain objects such as orders.
 
+use std::{cell::RefCell, rc::Rc};
+
 use indexmap::IndexMap;
-use nautilus_core::{AtomicTime, UUID4};
+use nautilus_core::UUID4;
 use nautilus_model::{
     enums::{ContingencyType, OrderSide, TimeInForce, TriggerType},
     identifiers::{
@@ -30,14 +32,14 @@ use nautilus_model::{
 };
 use ustr::Ustr;
 
-use crate::generators::{
-    client_order_id::ClientOrderIdGenerator, order_list_id::OrderListIdGenerator,
+use crate::{
+    clock::Clock,
+    generators::{client_order_id::ClientOrderIdGenerator, order_list_id::OrderListIdGenerator},
 };
 
-#[repr(C)]
 #[derive(Debug)]
 pub struct OrderFactory {
-    clock: &'static AtomicTime,
+    clock: Rc<RefCell<dyn Clock>>,
     trader_id: TraderId,
     strategy_id: StrategyId,
     order_id_generator: ClientOrderIdGenerator,
@@ -51,7 +53,7 @@ impl OrderFactory {
         strategy_id: StrategyId,
         init_order_id_count: Option<usize>,
         init_order_list_id_count: Option<usize>,
-        clock: &'static AtomicTime,
+        clock: Rc<RefCell<dyn Clock>>,
         use_uuids_for_client_order_ids: bool,
         use_hyphens_in_client_order_ids: bool,
     ) -> Self {
@@ -59,7 +61,7 @@ impl OrderFactory {
             trader_id,
             strategy_id,
             init_order_id_count.unwrap_or(0),
-            clock,
+            clock.clone(),
             use_uuids_for_client_order_ids,
             use_hyphens_in_client_order_ids,
         );
@@ -68,7 +70,7 @@ impl OrderFactory {
             trader_id,
             strategy_id,
             init_order_list_id_count.unwrap_or(0),
-            clock,
+            clock.clone(),
         );
 
         Self {
@@ -136,7 +138,7 @@ impl OrderFactory {
             quantity,
             time_in_force.unwrap_or(TimeInForce::Gtc),
             UUID4::new(),
-            self.clock.get_time_ns(),
+            self.clock.borrow().timestamp_ns(),
             reduce_only.unwrap_or(false),
             quote_quantity.unwrap_or(false),
             Some(ContingencyType::NoContingency),
@@ -203,7 +205,7 @@ impl OrderFactory {
             exec_spawn_id,
             tags,
             UUID4::new(),
-            self.clock.get_time_ns(),
+            self.clock.borrow().timestamp_ns(),
         );
         OrderAny::Limit(order)
     }
@@ -260,7 +262,7 @@ impl OrderFactory {
             exec_spawn_id,
             tags,
             UUID4::new(),
-            self.clock.get_time_ns(),
+            self.clock.borrow().timestamp_ns(),
         );
         OrderAny::StopMarket(order)
     }
@@ -321,7 +323,7 @@ impl OrderFactory {
             exec_spawn_id,
             tags,
             UUID4::new(),
-            self.clock.get_time_ns(),
+            self.clock.borrow().timestamp_ns(),
         );
         OrderAny::StopLimit(order)
     }
@@ -376,7 +378,7 @@ impl OrderFactory {
             exec_spawn_id,
             tags,
             UUID4::new(),
-            self.clock.get_time_ns(),
+            self.clock.borrow().timestamp_ns(),
         );
         OrderAny::MarketIfTouched(order)
     }
@@ -437,7 +439,7 @@ impl OrderFactory {
             exec_spawn_id,
             tags,
             UUID4::new(),
-            self.clock.get_time_ns(),
+            self.clock.borrow().timestamp_ns(),
         );
         OrderAny::LimitIfTouched(order)
     }
@@ -451,6 +453,7 @@ impl OrderFactory {
         quantity: Quantity,
         entry_price: Option<Price>,
         sl_trigger_price: Price,
+        sl_trigger_type: Option<TriggerType>,
         tp_price: Price,
         entry_trigger_price: Option<Price>,
         time_in_force: Option<TimeInForce>,
@@ -465,7 +468,7 @@ impl OrderFactory {
         tags: Option<Vec<Ustr>>,
     ) -> OrderList {
         let order_list_id = self.generate_order_list_id();
-        let ts_init = self.clock.get_time_ns();
+        let ts_init = self.clock.borrow().timestamp_ns();
 
         let entry_client_order_id = self.generate_client_order_id();
         let sl_client_order_id = self.generate_client_order_id();
@@ -614,7 +617,7 @@ impl OrderFactory {
             sl_tp_side,
             quantity,
             sl_trigger_price,
-            TriggerType::Default,
+            sl_trigger_type.unwrap_or(TriggerType::Default),
             time_in_force.unwrap_or(TimeInForce::Gtc),
             expire_time,
             true, // SL/TP should only reduce positions
@@ -680,7 +683,8 @@ impl OrderFactory {
 
 #[cfg(test)]
 pub mod tests {
-    use nautilus_core::time::get_atomic_clock_static;
+    use std::{cell::RefCell, rc::Rc};
+
     use nautilus_model::{
         enums::{ContingencyType, OrderSide, TimeInForce, TriggerType},
         identifiers::{
@@ -692,18 +696,19 @@ pub mod tests {
     };
     use rstest::{fixture, rstest};
 
-    use crate::factories::OrderFactory;
+    use crate::{clock::TestClock, factories::OrderFactory};
 
     #[fixture]
     pub fn order_factory() -> OrderFactory {
         let trader_id = trader_id();
         let strategy_id = strategy_id_ema_cross();
+        let clock = Rc::new(RefCell::new(TestClock::new()));
         OrderFactory::new(
             trader_id,
             strategy_id,
             None,
             None,
-            get_atomic_clock_static(),
+            clock,
             false, // use_uuids_for_client_order_ids
             true,  // use_hyphens_in_client_order_ids
         )
@@ -768,12 +773,13 @@ pub mod tests {
     pub fn order_factory_with_uuids() -> OrderFactory {
         let trader_id = trader_id();
         let strategy_id = strategy_id_ema_cross();
+        let clock = Rc::new(RefCell::new(TestClock::new()));
         OrderFactory::new(
             trader_id,
             strategy_id,
             None,
             None,
-            get_atomic_clock_static(),
+            clock,
             true, // use_uuids_for_client_order_ids
             true, // use_hyphens_in_client_order_ids
         )
@@ -783,12 +789,13 @@ pub mod tests {
     pub fn order_factory_with_hyphens_removed() -> OrderFactory {
         let trader_id = trader_id();
         let strategy_id = strategy_id_ema_cross();
+        let clock = Rc::new(RefCell::new(TestClock::new()));
         OrderFactory::new(
             trader_id,
             strategy_id,
             None,
             None,
-            get_atomic_clock_static(),
+            clock,
             false, // use_uuids_for_client_order_ids
             false, // use_hyphens_in_client_order_ids
         )
@@ -798,12 +805,13 @@ pub mod tests {
     pub fn order_factory_with_uuids_and_hyphens_removed() -> OrderFactory {
         let trader_id = trader_id();
         let strategy_id = strategy_id_ema_cross();
+        let clock = Rc::new(RefCell::new(TestClock::new()));
         OrderFactory::new(
             trader_id,
             strategy_id,
             None,
             None,
-            get_atomic_clock_static(),
+            clock,
             true,  // use_uuids_for_client_order_ids
             false, // use_hyphens_in_client_order_ids
         )
@@ -1085,6 +1093,7 @@ pub mod tests {
             100.into(),
             None,                    // market entry
             Price::from("45000.00"), // SL trigger
+            None,                    // sl_trigger_type
             Price::from("55000.00"), // TP price
             None,                    // no entry trigger
             Some(TimeInForce::Gtc),
@@ -1125,6 +1134,7 @@ pub mod tests {
             100.into(),
             Some(Price::from("49000.00")), // limit entry
             Price::from("45000.00"),       // SL trigger
+            None,                          // sl_trigger_type
             Price::from("55000.00"),       // TP price
             None,                          // no entry trigger
             Some(TimeInForce::Gtc),
@@ -1153,6 +1163,7 @@ pub mod tests {
             100.into(),
             None,                          // no limit price (stop-market entry)
             Price::from("45000.00"),       // SL trigger
+            None,                          // sl_trigger_type
             Price::from("55000.00"),       // TP price
             Some(Price::from("51000.00")), // entry trigger (stop entry)
             Some(TimeInForce::Gtc),
@@ -1184,6 +1195,7 @@ pub mod tests {
             100.into(),
             Some(Price::from("51000.00")), // limit entry
             Price::from("55000.00"),       // SL trigger (above entry for sell)
+            None,                          // sl_trigger_type
             Price::from("45000.00"),       // TP price (below entry for sell)
             None,
             Some(TimeInForce::Gtc),
@@ -1216,10 +1228,11 @@ pub mod tests {
             InstrumentId::from("BTCUSDT.BINANCE"),
             OrderSide::Buy,
             100.into(),
-            Some(Price::from("50000.00")),
-            Price::from("45000.00"),
-            Price::from("55000.00"),
-            None,
+            Some(Price::from("50000.00")), // entry_price
+            Price::from("45000.00"),       // sl_trigger_price
+            None,                          // sl_trigger_type
+            Price::from("55000.00"),       // tp_price
+            None,                          // entry_trigger_price
             Some(TimeInForce::Gtc),
             None,
             Some(false),
