@@ -161,7 +161,7 @@ impl HttpClient {
     ) -> Result<HttpResponse, HttpClientError> {
         let keys = keys.map(into_ustr_vec);
         let rate_limiter = self.rate_limiter.clone();
-        rate_limiter.await_keys_ready(keys).await;
+        rate_limiter.await_keys_ready(keys.as_deref()).await;
 
         self.client
             .send_request_with_query(method, url, params, headers, body, timeout_secs)
@@ -185,7 +185,7 @@ impl HttpClient {
         keys: Option<Vec<Ustr>>,
     ) -> Result<HttpResponse, HttpClientError> {
         let rate_limiter = self.rate_limiter.clone();
-        rate_limiter.await_keys_ready(keys).await;
+        rate_limiter.await_keys_ready(keys.as_deref()).await;
 
         self.client
             .send_request(method, url, params, headers, body, timeout_secs)

@@ -21,17 +21,16 @@ use std::{
 use nautilus_common::{
     cache::Cache,
     clock::Clock,
-    msgbus::{TypedHandler, handler::ShareableMessageHandler, register_any},
+    msgbus::{
+        MessagingSwitchboard, TypedHandler, TypedIntoHandler, register_trading_command_endpoint,
+    },
 };
 use nautilus_core::{UUID4, WeakCell};
 use nautilus_model::identifiers::TraderId;
 use ustr::Ustr;
 
 use crate::{
-    order_emulator::{
-        emulator::OrderEmulator,
-        handlers::{OrderEmulatorExecuteHandler, OrderEmulatorOnEventHandler},
-    },
+    order_emulator::{emulator::OrderEmulator, handlers::OrderEmulatorOnEventHandler},
     order_manager::handlers::{
         CancelOrderHandlerAny, ModifyOrderHandlerAny, SubmitOrderHandlerAny,
     },
@@ -99,12 +98,15 @@ impl OrderEmulatorAdapter {
     }
 
     fn initialize_execute_handler(emulator: Rc<RefCell<OrderEmulator>>) {
-        let handler = ShareableMessageHandler(Rc::new(OrderEmulatorExecuteHandler::new(
-            Ustr::from(UUID4::new().as_str()),
-            WeakCell::from(Rc::downgrade(&emulator)),
-        )));
+        let emulator_weak = WeakCell::from(Rc::downgrade(&emulator));
+        let handler = TypedIntoHandler::from(move |cmd| {
+            if let Some(emulator_rc) = emulator_weak.upgrade() {
+                emulator_rc.borrow_mut().execute(cmd);
+            }
+        });
 
-        register_any("OrderEmulator.execute".into(), handler);
+        let endpoint = MessagingSwitchboard::order_emulator_execute();
+        register_trading_command_endpoint(endpoint, handler);
     }
 
     fn initialize_on_event_handler(emulator: Rc<RefCell<OrderEmulator>>) {

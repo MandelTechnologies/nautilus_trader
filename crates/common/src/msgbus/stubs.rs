@@ -27,7 +27,10 @@ use std::{
 use nautilus_core::{UUID4, message::Message};
 use ustr::Ustr;
 
-use crate::msgbus::{Handler, ShareableMessageHandler, TypedHandler, handler::MessageHandler};
+use crate::msgbus::{
+    Handler, IntoHandler, ShareableMessageHandler, TypedHandler, TypedIntoHandler,
+    handler::MessageHandler,
+};
 
 // Stub message handler which logs the data it receives
 pub struct StubMessageHandler {
@@ -250,6 +253,69 @@ pub fn get_typed_message_saving_handler<T: Clone + 'static>(
     id: Option<Ustr>,
 ) -> (TypedHandler<T>, TypedMessageSavingHandler<T>) {
     let saving_handler = TypedMessageSavingHandler::new(id);
+    let typed_handler = saving_handler.handler();
+    (typed_handler, saving_handler)
+}
+
+/// Ownership-based typed handler which saves the messages it receives.
+///
+/// Unlike [`TypedMessageSavingHandler`] which borrows messages, this handler
+/// takes ownership which is required for `IntoEndpointMap` endpoints.
+#[derive(Debug, Clone)]
+pub struct TypedIntoMessageSavingHandler<T> {
+    id: Ustr,
+    messages: Rc<RefCell<Vec<T>>>,
+}
+
+impl<T: 'static> TypedIntoMessageSavingHandler<T> {
+    #[must_use]
+    pub fn new(id: Option<Ustr>) -> Self {
+        let unique_id = id.unwrap_or_else(|| Ustr::from(UUID4::new().as_str()));
+        Self {
+            id: unique_id,
+            messages: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    #[must_use]
+    pub fn get_messages(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.messages.borrow().clone()
+    }
+
+    /// Returns a `TypedIntoHandler` that can be used for endpoint registration.
+    #[must_use]
+    pub fn handler(&self) -> TypedIntoHandler<T> {
+        TypedIntoHandler::new(Self {
+            id: self.id,
+            messages: self.messages.clone(),
+        })
+    }
+
+    pub fn clear(&self) {
+        self.messages.borrow_mut().clear();
+    }
+}
+
+impl<T: 'static> IntoHandler<T> for TypedIntoMessageSavingHandler<T> {
+    fn id(&self) -> Ustr {
+        self.id
+    }
+
+    fn handle(&self, message: T) {
+        self.messages.borrow_mut().push(message);
+    }
+}
+
+/// Creates an ownership-based typed message saving handler and returns both the handler
+/// for endpoint registration and a clone that can be used to retrieve messages.
+#[must_use]
+pub fn get_typed_into_message_saving_handler<T: 'static>(
+    id: Option<Ustr>,
+) -> (TypedIntoHandler<T>, TypedIntoMessageSavingHandler<T>) {
+    let saving_handler = TypedIntoMessageSavingHandler::new(id);
     let typed_handler = saving_handler.handler();
     (typed_handler, saving_handler)
 }

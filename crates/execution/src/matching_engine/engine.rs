@@ -18,7 +18,6 @@
 #![allow(unused_variables)]
 
 use std::{
-    any::Any,
     cell::RefCell,
     cmp::min,
     fmt::Debug,
@@ -33,6 +32,7 @@ use nautilus_common::{
     clock::Clock,
     messages::execution::{BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder},
     msgbus,
+    msgbus::MessagingSwitchboard,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -3228,7 +3228,8 @@ impl OrderMatchingEngine {
             false,
             due_post_only,
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     fn generate_order_accepted(&self, order: &mut OrderAny, venue_order_id: VenueOrderId) {
@@ -3248,10 +3249,14 @@ impl OrderMatchingEngine {
             ts_now,
             false,
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
 
         // TODO: Remove when tests wire up ExecutionEngine to process events
-        order.apply(event).expect("Failed to apply order event");
+        order
+            .apply(event.clone())
+            .expect("Failed to apply order event");
+
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3279,7 +3284,8 @@ impl OrderMatchingEngine {
             venue_order_id,
             account_id,
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3307,7 +3313,8 @@ impl OrderMatchingEngine {
             venue_order_id,
             Some(account_id),
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     fn generate_order_updated(
@@ -3335,10 +3342,14 @@ impl OrderMatchingEngine {
             trigger_price,
             protection_price,
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
 
         // TODO: Remove when tests wire up ExecutionEngine to process events
-        order.apply(event).expect("Failed to apply order event");
+        order
+            .apply(event.clone())
+            .expect("Failed to apply order event");
+
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     fn generate_order_canceled(&self, order: &OrderAny, venue_order_id: VenueOrderId) {
@@ -3355,7 +3366,8 @@ impl OrderMatchingEngine {
             Some(venue_order_id),
             order.account_id(),
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     fn generate_order_triggered(&self, order: &OrderAny) {
@@ -3372,7 +3384,8 @@ impl OrderMatchingEngine {
             order.venue_order_id(),
             order.account_id(),
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     fn generate_order_expired(&self, order: &OrderAny) {
@@ -3389,7 +3402,8 @@ impl OrderMatchingEngine {
             order.venue_order_id(),
             order.account_id(),
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3436,9 +3450,13 @@ impl OrderMatchingEngine {
             venue_position_id,
             Some(commission),
         ));
-        msgbus::send_any("ExecEngine.process".into(), &event as &dyn Any);
 
         // TODO: Remove when tests wire up ExecutionEngine to process events
-        order.apply(event).expect("Failed to apply order event");
+        order
+            .apply(event.clone())
+            .expect("Failed to apply order event");
+
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 }

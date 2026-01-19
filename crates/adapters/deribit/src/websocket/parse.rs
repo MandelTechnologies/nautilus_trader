@@ -35,7 +35,7 @@ use nautilus_model::{
     reports::{FillReport, OrderStatusReport, PositionStatusReport},
     types::{Currency, Money, Price, Quantity},
 };
-use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use rust_decimal::prelude::ToPrimitive;
 use ustr::Ustr;
 
 use super::{
@@ -401,10 +401,8 @@ pub fn parse_ticker_to_funding_rate(
     ts_init: UnixNanos,
 ) -> Option<FundingRateUpdate> {
     // current_funding is only available for perpetual instruments
-    let funding_rate = msg.current_funding?;
-
+    let rate = msg.current_funding?;
     let instrument_id = instrument.id();
-    let rate = rust_decimal::Decimal::from_f64(funding_rate)?;
     let ts_event = UnixNanos::new(msg.timestamp * NANOSECONDS_IN_MILLISECOND);
 
     // Deribit ticker doesn't include next_funding_time, set to None
@@ -426,18 +424,17 @@ pub fn parse_perpetual_to_funding_rate(
     msg: &DeribitPerpetualMsg,
     instrument: &InstrumentAny,
     ts_init: UnixNanos,
-) -> Option<FundingRateUpdate> {
+) -> FundingRateUpdate {
     let instrument_id = instrument.id();
-    let rate = rust_decimal::Decimal::from_f64(msg.interest)?;
     let ts_event = UnixNanos::new(msg.timestamp * NANOSECONDS_IN_MILLISECOND);
 
-    Some(FundingRateUpdate::new(
+    FundingRateUpdate::new(
         instrument_id,
-        rate,
+        msg.interest,
         None, // next_funding_ns not available in perpetual channel
         ts_event,
         ts_init,
-    ))
+    )
 }
 
 /// Converts a Deribit chart resolution and instrument to a Nautilus BarType.

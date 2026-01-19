@@ -19,11 +19,10 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use std::{any::Any, cell::RefCell, fmt::Debug, rc::Rc};
+use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
 use nautilus_common::{
-    cache::Cache, clock::Clock, messages::ExecutionReport, msgbus,
-    msgbus::switchboard::MessagingSwitchboard,
+    cache::Cache, clock::Clock, messages::ExecutionReport, msgbus, msgbus::MessagingSwitchboard,
 };
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
@@ -475,30 +474,30 @@ impl ExecutionClientCore {
 
     fn send_order_event(&self, event: OrderEventAny) {
         let endpoint = MessagingSwitchboard::exec_engine_process();
-        msgbus::send_any(endpoint, &event as &dyn Any);
+        msgbus::send_order_event(endpoint, event);
     }
 
     fn send_mass_status_report(&self, report: ExecutionMassStatus) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         let report = ExecutionReport::MassStatus(Box::new(report));
-        msgbus::send_any(endpoint, &report as &dyn Any);
+        msgbus::send_execution_report(endpoint, report);
     }
 
     fn send_order_status_report(&self, report: OrderStatusReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         let report = ExecutionReport::Order(Box::new(report));
-        msgbus::send_any(endpoint, &report as &dyn Any);
+        msgbus::send_execution_report(endpoint, report);
     }
 
     fn send_fill_report(&self, report: FillReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         let report = ExecutionReport::Fill(Box::new(report));
-        msgbus::send_any(endpoint, &report as &dyn Any);
+        msgbus::send_execution_report(endpoint, report);
     }
 
     fn send_position_report(&self, report: PositionStatusReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
         let report = ExecutionReport::Position(Box::new(report));
-        msgbus::send_any(endpoint, &report as &dyn Any);
+        msgbus::send_execution_report(endpoint, report);
     }
 }

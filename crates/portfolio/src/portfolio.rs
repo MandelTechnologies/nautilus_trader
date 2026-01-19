@@ -23,7 +23,7 @@ use nautilus_common::{
     cache::Cache,
     clock::Clock,
     enums::LogColor,
-    msgbus::{self, TypedHandler},
+    msgbus::{self, MessagingSwitchboard, TypedHandler},
 };
 use nautilus_core::{WeakCell, datetime::NANOSECONDS_IN_MILLISECOND};
 use nautilus_model::{
@@ -37,7 +37,7 @@ use nautilus_model::{
     position::Position,
     types::{Currency, Money, Price},
 };
-use rust_decimal::{Decimal, prelude::FromPrimitive};
+use rust_decimal::Decimal;
 
 use crate::{config::PortfolioConfig, manager::AccountsManager};
 
@@ -263,13 +263,9 @@ impl Portfolio {
             })
         };
 
-        // Typed endpoint for direct sends
-        msgbus::register_account_state_endpoint(
-            "Portfolio.update_account".into(),
-            update_account_handler.clone(),
-        );
+        let endpoint = MessagingSwitchboard::portfolio_update_account();
+        msgbus::register_account_state_endpoint(endpoint, update_account_handler.clone());
 
-        // Typed subscriptions
         msgbus::subscribe_quotes("data.quotes.*".into(), update_quote_handler, Some(10));
         if config.bar_updates {
             msgbus::subscribe_bars("data.bars.*EXTERNAL".into(), update_bar_handler, Some(10));
@@ -870,7 +866,7 @@ impl Portfolio {
                     .collect()
             };
 
-            self.update_net_position(&instrument_id, positions_open);
+            self.update_net_position(&instrument_id, &positions_open);
 
             if let Some(calculated_unrealized_pnl) = self.calculate_unrealized_pnl(&instrument_id) {
                 self.inner
@@ -1012,12 +1008,12 @@ impl Portfolio {
         );
     }
 
-    fn update_net_position(&mut self, instrument_id: &InstrumentId, positions_open: Vec<Position>) {
+    fn update_net_position(&mut self, instrument_id: &InstrumentId, positions_open: &[Position]) {
         let mut net_position = Decimal::ZERO;
 
         for open_position in positions_open {
             log::debug!("open_position: {open_position}");
-            net_position += Decimal::from_f64(open_position.signed_qty).unwrap_or(Decimal::ZERO);
+            net_position += open_position.signed_decimal_qty();
         }
 
         let existing_position = self.net_position(instrument_id);
@@ -1895,7 +1891,7 @@ fn update_position(
         config: PortfolioConfig::default(), // TODO: TBD
     };
 
-    portfolio_clone.update_net_position(&instrument_id, positions_open.clone());
+    portfolio_clone.update_net_position(&instrument_id, &positions_open);
 
     if let Some(calculated_unrealized_pnl) =
         portfolio_clone.calculate_unrealized_pnl(&instrument_id)

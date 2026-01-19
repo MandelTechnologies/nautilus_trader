@@ -24,7 +24,7 @@ use indexmap::IndexMap;
 
 use super::{
     mstr::{Endpoint, MStr},
-    typed_handler::TypedHandler,
+    typed_handler::{TypedHandler, TypedIntoHandler},
 };
 
 /// Maps endpoints to typed handlers for point-to-point messaging.
@@ -116,6 +116,109 @@ impl<T: 'static> EndpointMap<T> {
             true
         } else {
             false
+        }
+    }
+
+    /// Clears all registered endpoints.
+    pub fn clear(&mut self) {
+        self.handlers.clear();
+    }
+}
+
+/// Maps endpoints to ownership-based typed handlers for point-to-point messaging.
+///
+/// Unlike [`EndpointMap`] which borrows messages, this map transfers ownership
+/// of messages to handlers, enabling zero-copy processing.
+#[derive(Debug)]
+pub struct IntoEndpointMap<T: 'static> {
+    handlers: IndexMap<MStr<Endpoint>, TypedIntoHandler<T>>,
+}
+
+impl<T: 'static> Default for IntoEndpointMap<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: 'static> IntoEndpointMap<T> {
+    /// Creates a new empty endpoint map.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            handlers: IndexMap::new(),
+        }
+    }
+
+    /// Returns the number of registered endpoints.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
+
+    /// Returns whether there are any registered endpoints.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+
+    /// Returns all registered endpoint addresses.
+    #[must_use]
+    pub fn endpoints(&self) -> Vec<&str> {
+        self.handlers.keys().map(|e| e.as_str()).collect()
+    }
+
+    /// Returns whether an endpoint is registered.
+    #[must_use]
+    pub fn is_registered(&self, endpoint: MStr<Endpoint>) -> bool {
+        self.handlers.contains_key(&endpoint)
+    }
+
+    /// Registers a handler at an endpoint.
+    ///
+    /// If the endpoint already has a handler, it will be replaced.
+    pub fn register(&mut self, endpoint: MStr<Endpoint>, handler: TypedIntoHandler<T>) {
+        log::debug!(
+            "Registering endpoint '{endpoint}' with handler ID {}",
+            handler.id()
+        );
+        self.handlers.insert(endpoint, handler);
+    }
+
+    /// Deregisters the handler at an endpoint.
+    pub fn deregister(&mut self, endpoint: MStr<Endpoint>) {
+        log::debug!("Deregistering endpoint '{endpoint}'");
+        self.handlers.shift_remove(&endpoint);
+    }
+
+    /// Gets the handler registered at an endpoint.
+    #[must_use]
+    pub fn get(&self, endpoint: MStr<Endpoint>) -> Option<&TypedIntoHandler<T>> {
+        self.handlers.get(&endpoint)
+    }
+
+    /// Sends a message to an endpoint, transferring ownership.
+    ///
+    /// Logs an error if no handler is registered for the endpoint.
+    pub fn send(&self, endpoint: MStr<Endpoint>, message: T) {
+        if let Some(handler) = self.handlers.get(&endpoint) {
+            handler.handle(message);
+        } else {
+            log::error!("send: no registered endpoint '{endpoint}'");
+        }
+    }
+
+    /// Sends a message to an endpoint, returning whether a handler was found.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(message)` if no handler is registered, allowing the caller
+    /// to recover the message.
+    pub fn try_send(&self, endpoint: MStr<Endpoint>, message: T) -> Result<(), T> {
+        if let Some(handler) = self.handlers.get(&endpoint) {
+            handler.handle(message);
+            Ok(())
+        } else {
+            Err(message)
         }
     }
 

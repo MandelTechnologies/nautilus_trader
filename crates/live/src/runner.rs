@@ -13,14 +13,14 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::{any::Any, fmt::Debug, sync::Arc};
+use std::{fmt::Debug, sync::Arc};
 
 use nautilus_common::{
     live::runner::{set_data_event_sender, set_exec_event_sender},
     messages::{
         DataEvent, ExecutionEvent, ExecutionReport, data::DataCommand, execution::TradingCommand,
     },
-    msgbus::{self, switchboard::MessagingSwitchboard},
+    msgbus::{self, MessagingSwitchboard},
     runner::{
         DataCommandSender, TimeEventSender, TradingCommandSender, set_data_cmd_sender,
         set_exec_cmd_sender, set_time_event_sender,
@@ -263,7 +263,7 @@ impl AsyncRunner {
     /// Handles a data command by sending to the DataEngine.
     #[inline]
     pub fn handle_data_command(cmd: DataCommand) {
-        msgbus::send_any(MessagingSwitchboard::data_engine_execute(), &cmd);
+        msgbus::send_data_command(MessagingSwitchboard::data_engine_execute(), cmd);
     }
 
     /// Handles a data event by sending to the appropriate DataEngine endpoint.
@@ -271,20 +271,20 @@ impl AsyncRunner {
     pub fn handle_data_event(event: DataEvent) {
         match event {
             DataEvent::Data(data) => {
-                msgbus::send_any(MessagingSwitchboard::data_engine_process(), &data);
+                msgbus::send_data(MessagingSwitchboard::data_engine_process_data(), data);
             }
             DataEvent::Instrument(data) => {
                 msgbus::send_any(MessagingSwitchboard::data_engine_process(), &data);
             }
             DataEvent::Response(resp) => {
-                msgbus::send_any(MessagingSwitchboard::data_engine_response(), &resp);
+                msgbus::send_data_response(MessagingSwitchboard::data_engine_response(), resp);
             }
             DataEvent::FundingRate(funding_rate) => {
                 msgbus::send_any(MessagingSwitchboard::data_engine_process(), &funding_rate);
             }
             #[cfg(feature = "defi")]
             DataEvent::DeFi(data) => {
-                msgbus::send_any(MessagingSwitchboard::data_engine_process(), &data);
+                msgbus::send_defi_data(MessagingSwitchboard::data_engine_process_defi_data(), data);
             }
         }
     }
@@ -292,15 +292,15 @@ impl AsyncRunner {
     /// Handles an execution command by sending to the ExecEngine.
     #[inline]
     pub fn handle_exec_command(cmd: TradingCommand) {
-        msgbus::send_any(MessagingSwitchboard::exec_engine_execute(), &cmd);
+        msgbus::send_trading_command(MessagingSwitchboard::exec_engine_execute(), cmd);
     }
 
     /// Handles an execution event by sending to the appropriate engine endpoint.
     #[inline]
     pub fn handle_exec_event(event: ExecutionEvent) {
         match event {
-            ExecutionEvent::Order(ref order_event) => {
-                msgbus::send_any(MessagingSwitchboard::exec_engine_process(), order_event);
+            ExecutionEvent::Order(order_event) => {
+                msgbus::send_order_event(MessagingSwitchboard::exec_engine_process(), order_event);
             }
             ExecutionEvent::Report(report) => {
                 Self::handle_exec_report(report);
@@ -317,7 +317,7 @@ impl AsyncRunner {
     #[inline]
     pub fn handle_exec_report(report: ExecutionReport) {
         let endpoint = MessagingSwitchboard::exec_engine_reconcile_execution_report();
-        msgbus::send_any(endpoint, &report as &dyn Any);
+        msgbus::send_execution_report(endpoint, report);
     }
 }
 

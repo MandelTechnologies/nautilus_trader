@@ -239,6 +239,11 @@ impl DeribitExecutionClient {
             } else {
                 None
             },
+            reject_post_only: if order.is_post_only() {
+                Some(true)
+            } else {
+                None
+            },
             reduce_only: if order.is_reduce_only() {
                 Some(true)
             } else {
@@ -488,7 +493,7 @@ impl ExecutionClient for DeribitExecutionClient {
 
         // Check if credentials are available before requesting account state
         if !self.config.has_api_credentials() {
-            anyhow::bail!("Missing Deribit API credentials. Set Deribit environment variables.");
+            anyhow::bail!("Missing API credentials; set Deribit environment variables");
         }
 
         // Set account ID for order/fill reports
@@ -501,9 +506,7 @@ impl ExecutionClient for DeribitExecutionClient {
                     .http_client
                     .request_instruments(DeribitCurrency::ANY, Some(*kind))
                     .await
-                    .with_context(|| {
-                        format!("failed to request Deribit instruments for {kind:?}")
-                    })?;
+                    .with_context(|| format!("failed to request instruments for {kind:?}"))?;
 
                 if instruments.is_empty() {
                     log::warn!("No instruments returned for {kind:?}");
@@ -522,7 +525,7 @@ impl ExecutionClient for DeribitExecutionClient {
             .http_client
             .request_account_state(self.core.account_id)
             .await
-            .context("failed to request Deribit account state")?;
+            .context("failed to request account state")?;
 
         self.dispatch_account_state(account_state)?;
 
@@ -751,9 +754,7 @@ impl ExecutionClient for DeribitExecutionClient {
             let account_state = http_client
                 .request_account_state(account_id)
                 .await
-                .context(
-                    "failed to query Deribit account state (check API credentials are valid)",
-                )?;
+                .context("failed to query account state (check API credentials are valid)")?;
 
             if let Some(sender) = exec_sender {
                 sender
@@ -986,8 +987,8 @@ impl ExecutionClient for DeribitExecutionClient {
         // Deribit doesn't support side filtering - log warning if specified
         if cmd.order_side != OrderSide::NoOrderSide {
             log::warn!(
-                "Deribit cancel_all_by_instrument doesn't support order_side filtering. \
-                 Cancelling all orders for instrument regardless of side."
+                "Deribit cancel_all_by_instrument doesn't support order_side filtering; \
+                 cancelling all orders for instrument regardless of side"
             );
         }
 

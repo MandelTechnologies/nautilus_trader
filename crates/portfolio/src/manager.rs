@@ -599,7 +599,7 @@ impl AccountsManager {
 
         match account {
             AccountAny::Cash(mut cash) => {
-                if let Err(e) = cash.update_balances(balances) {
+                if let Err(e) = cash.update_balances(&balances) {
                     log::error!("Cannot update cash account balance: {e}");
                     return;
                 }
@@ -608,7 +608,7 @@ impl AccountsManager {
                 }
             }
             AccountAny::Margin(mut margin) => {
-                margin.update_balances(balances);
+                margin.update_balances(&balances);
                 if let Some(comm) = commission {
                     margin.update_commissions(comm);
                 }
@@ -712,7 +712,7 @@ impl AccountsManager {
 
         match account {
             AccountAny::Cash(mut cash) => {
-                if let Err(e) = cash.update_balances(new_balances) {
+                if let Err(e) = cash.update_balances(&new_balances) {
                     log::error!("Cannot update cash account balance: {e}");
                     return;
                 }
@@ -721,7 +721,7 @@ impl AccountsManager {
                 }
             }
             AccountAny::Margin(mut margin) => {
-                margin.update_balances(new_balances);
+                margin.update_balances(&new_balances);
                 if let Some(commission) = commission {
                     margin.update_commissions(commission);
                 }
@@ -1150,7 +1150,7 @@ mod tests {
             Money::new(-500.0, usd),
         )];
 
-        let result = account.update_balances(negative_balances);
+        let result = account.update_balances(&negative_balances);
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();

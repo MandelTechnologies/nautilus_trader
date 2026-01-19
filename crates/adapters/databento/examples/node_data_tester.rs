@@ -13,6 +13,10 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
+//! Example demonstrating live data testing with the Databento adapter.
+//!
+//! Run with: `cargo run --example databento-data-tester --package nautilus-databento`
+
 use std::{
     ops::{Deref, DerefMut},
     path::PathBuf,

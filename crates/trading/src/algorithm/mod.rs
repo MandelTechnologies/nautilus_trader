@@ -47,7 +47,7 @@ use nautilus_common::{
     enums::ComponentState,
     logging::{CMD, EVT, RECV, SEND},
     messages::execution::{CancelOrder, ModifyOrder, SubmitOrder, TradingCommand},
-    msgbus::{self, TypedHandler, switchboard::MessagingSwitchboard},
+    msgbus::{self, MessagingSwitchboard, TypedHandler},
     timer::TimeEvent,
 };
 use nautilus_core::{UUID4, UnixNanos};
@@ -640,9 +640,9 @@ pub trait ExecutionAlgorithm: DataActor {
             log::info!("{id} {SEND}{CMD} {command:?}");
         }
 
-        msgbus::send_any(
+        msgbus::send_trading_command(
             MessagingSwitchboard::risk_engine_execute(),
-            &TradingCommand::SubmitOrder(command),
+            TradingCommand::SubmitOrder(command),
         );
 
         Ok(())
@@ -729,14 +729,14 @@ pub trait ExecutionAlgorithm: DataActor {
             .is_some_and(|t| t != TriggerType::NoTrigger);
 
         if order.is_emulated() || has_emulation_trigger {
-            msgbus::send_any(
+            msgbus::send_trading_command(
                 MessagingSwitchboard::order_emulator_execute(),
-                &TradingCommand::ModifyOrder(command),
+                TradingCommand::ModifyOrder(command),
             );
         } else {
-            msgbus::send_any(
+            msgbus::send_trading_command(
                 MessagingSwitchboard::risk_engine_execute(),
-                &TradingCommand::ModifyOrder(command),
+                TradingCommand::ModifyOrder(command),
             );
         }
 
@@ -886,14 +886,14 @@ pub trait ExecutionAlgorithm: DataActor {
             .is_some_and(|t| t != TriggerType::NoTrigger);
 
         if order.is_emulated() || order.status() == OrderStatus::Released || has_emulation_trigger {
-            msgbus::send_any(
+            msgbus::send_trading_command(
                 MessagingSwitchboard::order_emulator_execute(),
-                &TradingCommand::CancelOrder(command),
+                TradingCommand::CancelOrder(command),
             );
         } else {
-            msgbus::send_any(
+            msgbus::send_trading_command(
                 MessagingSwitchboard::exec_engine_execute(),
-                &TradingCommand::CancelOrder(command),
+                TradingCommand::CancelOrder(command),
             );
         }
 

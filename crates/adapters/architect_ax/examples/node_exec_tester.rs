@@ -15,7 +15,7 @@
 
 //! Example demonstrating live execution testing with the AX Exchange adapter.
 //!
-//! Run with: `cargo run --example ax-node-exec-tester --package nautilus-architect-ax`
+//! Run with: `cargo run --example ax-exec-tester --package nautilus-architect-ax`
 //!
 //! Environment variables:
 //! - `AX_API_KEY`: Your API key

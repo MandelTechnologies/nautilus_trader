@@ -950,29 +950,21 @@ pub fn parse_instrument_msg(
 
 /// Parse a BitMEX WebSocket funding message.
 ///
-/// Returns `Some(FundingRateUpdate)` containing funding rate information.
+/// Returns `FundingRateUpdate` containing funding rate information.
 /// Note: This returns `FundingRateUpdate` directly, not wrapped in Data enum,
 /// to keep it separate from the FFI layer.
-pub fn parse_funding_msg(msg: BitmexFundingMsg, ts_init: UnixNanos) -> Option<FundingRateUpdate> {
+#[must_use]
+pub fn parse_funding_msg(msg: BitmexFundingMsg, ts_init: UnixNanos) -> FundingRateUpdate {
     let instrument_id = InstrumentId::from(format!("{}.BITMEX", msg.symbol).as_str());
     let ts_event = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "");
 
-    // Convert funding rate to Decimal
-    let rate = match Decimal::try_from(msg.funding_rate) {
-        Ok(rate) => rate,
-        Err(e) => {
-            log::error!("Failed to parse funding rate: {e}");
-            return None;
-        }
-    };
-
-    Some(FundingRateUpdate::new(
+    FundingRateUpdate::new(
         instrument_id,
-        rate,
+        msg.funding_rate,
         None, // Next funding time not provided in this message
         ts_event,
         ts_init,
-    ))
+    )
 }
 
 /// Parse a BitMEX wallet message into an AccountState.
@@ -1291,8 +1283,8 @@ mod tests {
             close: 50_005.0,
             trades: 10,
             volume: 1_000,
-            vwap: 0.0,
-            last_size: 0,
+            vwap: Some(0.0),
+            last_size: Some(0),
             turnover: 0,
             home_notional: 0.0,
             foreign_notional: 0.0,
@@ -1856,9 +1848,6 @@ mod tests {
         let json_data = load_test_json("ws_funding_rate.json");
         let msg: BitmexFundingMsg = serde_json::from_str(&json_data).unwrap();
         let update = parse_funding_msg(msg, UnixNanos::from(1));
-
-        assert!(update.is_some());
-        let update = update.unwrap();
 
         assert_eq!(update.instrument_id.to_string(), "XBTUSD.BITMEX");
         assert_eq!(update.rate.to_string(), "0.0001");

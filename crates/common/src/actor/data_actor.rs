@@ -80,8 +80,7 @@ use crate::{
         system::ShutdownSystem,
     },
     msgbus::{
-        self, MStr, Topic, TypedHandler, get_message_bus,
-        handler::ShareableMessageHandler,
+        self, MStr, ShareableMessageHandler, Topic, TypedHandler, get_message_bus,
         switchboard::{
             MessagingSwitchboard, get_bars_topic, get_book_deltas_topic, get_book_snapshots_topic,
             get_custom_topic, get_funding_rate_topic, get_index_price_topic,
@@ -2704,7 +2703,7 @@ impl DataActorCore {
         }
 
         let endpoint = MessagingSwitchboard::data_engine_queue_execute();
-        msgbus::send_any(endpoint, command.as_any());
+        msgbus::send_data_command(endpoint, command);
     }
 
     #[allow(dead_code)]

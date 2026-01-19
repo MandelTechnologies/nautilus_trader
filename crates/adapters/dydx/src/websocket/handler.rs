@@ -162,17 +162,18 @@ impl FeedHandler {
     async fn send_with_retry(
         &self,
         payload: String,
-        rate_limit_keys: Option<Vec<String>>,
+        rate_limit_keys: Option<&[Ustr]>,
     ) -> Result<(), DydxWsError> {
+        let keys_owned: Option<Vec<Ustr>> = rate_limit_keys.map(|k| k.to_vec());
         self.retry_manager
             .execute_with_retry(
                 "websocket_send",
                 || {
                     let payload = payload.clone();
-                    let keys = rate_limit_keys.clone();
+                    let keys = keys_owned.clone();
                     async move {
                         self.client
-                            .send_text(payload, keys)
+                            .send_text(payload, keys.as_deref())
                             .await
                             .map_err(|e| DydxWsError::ClientError(format!("Send failed: {e}")))
                     }
@@ -491,10 +492,7 @@ impl FeedHandler {
             }
             HandlerCommand::SendText(text) => {
                 if let Err(e) = self
-                    .send_with_retry(
-                        text,
-                        Some(vec![DYDX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
-                    )
+                    .send_with_retry(text, Some(DYDX_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()))
                     .await
                 {
                     log::error!("Failed to send WebSocket text after retries: {e}");
@@ -537,10 +535,7 @@ impl FeedHandler {
             self.subscriptions.mark_subscribe(&topic);
 
             if let Err(e) = self
-                .send_with_retry(
-                    payload,
-                    Some(vec![DYDX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
-                )
+                .send_with_retry(payload, Some(DYDX_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()))
                 .await
             {
                 self.subscriptions.mark_failure(&topic);

@@ -14,6 +14,9 @@
 // -------------------------------------------------------------------------------------------------
 
 //! A `Position` for the trading domain model.
+//!
+//! Represents an open or closed position a the market, tracking quantity, side, average
+//! prices, realized P&L, and the fill events that created and changed the position.
 
 use std::{
     fmt::Display,
@@ -25,7 +28,7 @@ use nautilus_core::{
     UUID4, UnixNanos,
     correctness::{FAILED, check_equal, check_predicate_true},
 };
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
@@ -670,6 +673,7 @@ impl Position {
         Ok(result)
     }
 
+    /// Calculates profit and loss from the given prices and quantity.
     #[must_use]
     pub fn calculate_pnl(&self, avg_px_open: f64, avg_px_close: f64, quantity: Quantity) -> Money {
         let pnl_raw = self
@@ -681,6 +685,7 @@ impl Position {
         Money::new(pnl_raw, self.settlement_currency)
     }
 
+    /// Returns total P&L (realized + unrealized) based on the last price.
     #[must_use]
     pub fn total_pnl(&self, last: Price) -> Money {
         let realized_pnl = self.realized_pnl.map_or(0.0, |pnl| pnl.as_f64());
@@ -690,6 +695,7 @@ impl Position {
         )
     }
 
+    /// Returns unrealized P&L based on the last price.
     #[must_use]
     pub fn unrealized_pnl(&self, last: Price) -> Money {
         if self.side == PositionSide::Flat {
@@ -708,6 +714,8 @@ impl Position {
         }
     }
 
+    /// Returns the order side required to close this position.
+    #[must_use]
     pub fn closing_order_side(&self) -> OrderSide {
         match self.side {
             PositionSide::Long => OrderSide::Sell,
@@ -716,26 +724,31 @@ impl Position {
         }
     }
 
+    /// Returns whether the given order side is opposite to the position entry side.
     #[must_use]
     pub fn is_opposite_side(&self, side: OrderSide) -> bool {
         self.entry != side
     }
 
+    /// Returns the instrument symbol.
     #[must_use]
     pub fn symbol(&self) -> Symbol {
         self.instrument_id.symbol
     }
 
+    /// Returns the trading venue.
     #[must_use]
     pub fn venue(&self) -> Venue {
         self.instrument_id.venue
     }
 
+    /// Returns the count of order fill events applied to this position.
     #[must_use]
     pub fn event_count(&self) -> usize {
         self.events.len()
     }
 
+    /// Returns unique client order IDs from all fill events, sorted.
     #[must_use]
     pub fn client_order_ids(&self) -> Vec<ClientOrderId> {
         // First to hash set to remove duplicate, then again iter to vector
@@ -750,6 +763,7 @@ impl Position {
         result
     }
 
+    /// Returns unique venue order IDs from all fill events, sorted.
     #[must_use]
     pub fn venue_order_ids(&self) -> Vec<VenueOrderId> {
         // First to hash set to remove duplicate, then again iter to vector
@@ -764,6 +778,7 @@ impl Position {
         result
     }
 
+    /// Returns unique trade IDs from all fill events, sorted.
     #[must_use]
     pub fn trade_ids(&self) -> Vec<TradeId> {
         let mut result = self
@@ -803,31 +818,46 @@ impl Position {
         self.events.last().copied()
     }
 
+    /// Returns the last `TradeId` for the position (if any after purging).
     #[must_use]
     pub fn last_trade_id(&self) -> Option<TradeId> {
         self.trade_ids.last().copied()
     }
 
+    /// Returns whether the position is long (positive quantity).
     #[must_use]
     pub fn is_long(&self) -> bool {
         self.side == PositionSide::Long
     }
 
+    /// Returns whether the position is short (negative quantity).
     #[must_use]
     pub fn is_short(&self) -> bool {
         self.side == PositionSide::Short
     }
 
+    /// Returns whether the position is currently open (has quantity and no close timestamp).
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.side != PositionSide::Flat && self.ts_closed.is_none()
     }
 
+    /// Returns whether the position is closed (flat with a close timestamp).
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.side == PositionSide::Flat && self.ts_closed.is_some()
     }
 
+    /// Returns the signed quantity as a `Decimal`.
+    ///
+    /// Uses the raw `signed_qty` field to preserve full precision, as the `quantity`
+    /// field may have reduced precision based on the instrument's `size_precision`.
+    #[must_use]
+    pub fn signed_decimal_qty(&self) -> Decimal {
+        Decimal::try_from(self.signed_qty).unwrap_or(Decimal::ZERO)
+    }
+
+    /// Returns the cumulative commissions for the position as a vector.
     #[must_use]
     pub fn commissions(&self) -> Vec<Money> {
         self.commissions.values().copied().collect()
@@ -869,6 +899,7 @@ mod tests {
 
     use nautilus_core::UnixNanos;
     use rstest::rstest;
+    use rust_decimal::Decimal;
 
     use crate::{
         enums::{LiquiditySide, OrderSide, OrderType, PositionAdjustmentType, PositionSide},
@@ -3422,5 +3453,70 @@ mod tests {
             "Signed qty should be 1.0, was {}",
             position.signed_qty
         );
+    }
+
+    #[rstest]
+    fn test_signed_decimal_qty_long(stub_position_long: Position) {
+        let signed_qty = stub_position_long.signed_decimal_qty();
+        assert!(signed_qty > Decimal::ZERO);
+        assert_eq!(
+            signed_qty,
+            Decimal::try_from(stub_position_long.signed_qty).unwrap()
+        );
+    }
+
+    #[rstest]
+    fn test_signed_decimal_qty_short(stub_position_short: Position) {
+        let signed_qty = stub_position_short.signed_decimal_qty();
+        assert!(signed_qty < Decimal::ZERO);
+        assert_eq!(
+            signed_qty,
+            Decimal::try_from(stub_position_short.signed_qty).unwrap()
+        );
+    }
+
+    #[rstest]
+    fn test_signed_decimal_qty_flat(audusd_sim: CurrencyPair) {
+        let audusd_sim = InstrumentAny::CurrencyPair(audusd_sim);
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(audusd_sim.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from(100_000))
+            .build();
+        let fill = TestOrderEventStubs::filled(
+            &order,
+            &audusd_sim,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("1.00001")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut position = Position::new(&audusd_sim, fill.into());
+
+        let close_order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(audusd_sim.id())
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from(100_000))
+            .build();
+        let close_fill = TestOrderEventStubs::filled(
+            &close_order,
+            &audusd_sim,
+            Some(TradeId::new("2")),
+            None,
+            Some(Price::from("1.00002")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        position.apply(&close_fill.into());
+
+        assert_eq!(position.side, PositionSide::Flat);
+        assert_eq!(position.signed_decimal_qty(), Decimal::ZERO);
     }
 }

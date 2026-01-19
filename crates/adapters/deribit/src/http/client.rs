@@ -1382,7 +1382,7 @@ impl DeribitHttpClient {
             }
         }
 
-        log::info!("Generated {} order status reports", reports.len());
+        log::debug!("Generated {} order status reports", reports.len());
         Ok(reports)
     }
 
@@ -1478,7 +1478,7 @@ impl DeribitHttpClient {
             }
         }
 
-        log::info!("Generated {} fill reports", reports.len());
+        log::debug!("Generated {} fill reports", reports.len());
         Ok(reports)
     }
 
@@ -1532,7 +1532,7 @@ impl DeribitHttpClient {
             reports.retain(|r| r.instrument_id == instrument_id);
         }
 
-        log::info!("Generated {} position status reports", reports.len());
+        log::debug!("Generated {} position status reports", reports.len());
         Ok(reports)
     }
 }

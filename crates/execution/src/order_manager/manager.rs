@@ -22,6 +22,7 @@ use nautilus_common::{
     logging::{CMD, EVT, SEND},
     messages::execution::{SubmitOrder, TradingCommand},
     msgbus,
+    msgbus::MessagingSwitchboard,
 };
 use nautilus_core::UUID4;
 use nautilus_model::{
@@ -551,35 +552,41 @@ impl OrderManager {
     // Message sending methods
     pub fn send_emulator_command(&self, command: TradingCommand) {
         log_cmd_send(&command);
-        msgbus::send_any("OrderEmulator.execute".into(), &command);
+        let endpoint = MessagingSwitchboard::order_emulator_execute();
+        msgbus::send_trading_command(endpoint, command);
     }
 
     pub fn send_algo_command(&self, command: SubmitOrder, exec_algorithm_id: ExecAlgorithmId) {
         let id = command.strategy_id;
         log::info!("{id} {CMD}{SEND} {command}");
 
+        // Dynamic algorithm endpoint - uses Any-based dispatch
         let endpoint = format!("{exec_algorithm_id}.execute");
         msgbus::send_any(endpoint.into(), &TradingCommand::SubmitOrder(command));
     }
 
     pub fn send_risk_command(&self, command: TradingCommand) {
         log_cmd_send(&command);
-        msgbus::send_any("RiskEngine.execute".into(), &command);
+        let endpoint = MessagingSwitchboard::risk_engine_execute();
+        msgbus::send_trading_command(endpoint, command);
     }
 
     pub fn send_exec_command(&self, command: TradingCommand) {
         log_cmd_send(&command);
-        msgbus::send_any("ExecEngine.execute".into(), &command);
+        let endpoint = MessagingSwitchboard::exec_engine_execute();
+        msgbus::send_trading_command(endpoint, command);
     }
 
     pub fn send_risk_event(&self, event: OrderEventAny) {
         log_evt_send(&event);
-        msgbus::send_any("RiskEngine.process".into(), &event);
+        let endpoint = MessagingSwitchboard::risk_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 
     pub fn send_exec_event(&self, event: OrderEventAny) {
         log_evt_send(&event);
-        msgbus::send_any("ExecEngine.process".into(), &event);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
     }
 }
 

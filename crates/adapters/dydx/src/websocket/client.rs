@@ -29,11 +29,12 @@
 //!
 //! <https://docs.dydx.trade/developers/indexer/websockets>
 
-/// Rate limit key for subscription operations (subscribe/unsubscribe).
+/// Pre-interned rate limit key for subscription operations (subscribe/unsubscribe).
 ///
 /// dYdX allows up to 2 subscription messages per second per connection.
 /// See: <https://docs.dydx.trade/developers/indexer/websockets#rate-limits>
-pub const DYDX_RATE_LIMIT_KEY_SUBSCRIPTION: &str = "subscription";
+pub static DYDX_RATE_LIMIT_KEY_SUBSCRIPTION: LazyLock<[Ustr; 1]> =
+    LazyLock::new(|| [Ustr::from("subscription")]);
 
 /// WebSocket topic delimiter for dYdX (channel:symbol format).
 pub const DYDX_WS_TOPIC_DELIMITER: char = ':';

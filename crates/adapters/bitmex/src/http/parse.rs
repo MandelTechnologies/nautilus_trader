@@ -2498,8 +2498,8 @@ mod tests {
                     .unwrap()
                     .with_timezone(&Utc),
             ),
-            funding_rate: Some(0.0001),
-            indicative_funding_rate: Some(0.0001),
+            funding_rate: Some(Decimal::from_str("0.0001").unwrap()),
+            indicative_funding_rate: Some(Decimal::from_str("0.0001").unwrap()),
             funding_base_rate: Some(0.01),
             funding_quote_rate: Some(-0.01),
             // Other fields

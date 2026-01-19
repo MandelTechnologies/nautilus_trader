@@ -50,6 +50,7 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import LimitOrder
 from nautilus_trader.model.orders import OrderList
 from nautilus_trader.model.position import Position
 from nautilus_trader.persistence.wranglers import QuoteTickDataWrangler
@@ -342,6 +343,46 @@ class TestCache:
 
         # Assert
         assert result == []
+
+    def test_add_order_list(self):
+        # Arrange
+        order = self.strategy.order_factory.limit(
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+            Price.from_str("1.00000"),
+        )
+        order_list = OrderList(
+            order_list_id=OrderListId("OL-001"),
+            orders=[order],
+        )
+
+        # Act
+        self.cache.add_order_list(order_list)
+
+        # Assert
+        assert self.cache.order_list_exists(order_list.id)
+        assert self.cache.order_list(order_list.id) == order_list
+        assert order_list.id in self.cache.order_list_ids()
+        assert order_list in self.cache.order_lists()
+
+    def test_add_order_list_when_already_exists_raises(self):
+        # Arrange
+        order = self.strategy.order_factory.limit(
+            AUDUSD_SIM.id,
+            OrderSide.BUY,
+            Quantity.from_int(100_000),
+            Price.from_str("1.00000"),
+        )
+        order_list = OrderList(
+            order_list_id=OrderListId("OL-001"),
+            orders=[order],
+        )
+        self.cache.add_order_list(order_list)
+
+        # Act, Assert
+        with pytest.raises(KeyError):
+            self.cache.add_order_list(order_list)
 
     def test_position_when_no_position_returns_none(self):
         # Arrange
@@ -1616,6 +1657,142 @@ class TestCache:
         assert not self.cache.order_exists(child_order.client_order_id)
         assert self.cache.orders_closed_count() == 0
         assert self.cache.orders_open_count() == 0
+
+    def test_purge_closed_orders_also_purges_order_lists(self):
+        # Arrange - create two orders belonging to an order list
+        order_list_id = OrderListId("OL-001")
+        order1 = LimitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=AUDUSD_SIM.id,
+            client_order_id=ClientOrderId("O-001"),
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00000"),
+            init_id=UUID4(),
+            ts_init=0,
+            order_list_id=order_list_id,
+        )
+        order2 = LimitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=AUDUSD_SIM.id,
+            client_order_id=ClientOrderId("O-002"),
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00100"),
+            init_id=UUID4(),
+            ts_init=0,
+            order_list_id=order_list_id,
+        )
+
+        order_list = OrderList(
+            order_list_id=order_list_id,
+            orders=[order1, order2],
+        )
+
+        self.cache.add_order(order1, PositionId("P-1"))
+        self.cache.add_order(order2, PositionId("P-1"))
+        self.cache.add_order_list(order_list)
+        assert self.cache.order_list_exists(order_list.id)
+
+        order1.apply(TestEventStubs.order_submitted(order1))
+        self.cache.update_order(order1)
+        order1.apply(TestEventStubs.order_accepted(order1))
+        self.cache.update_order(order1)
+        fill1 = TestEventStubs.order_filled(
+            order1,
+            instrument=AUDUSD_SIM,
+            position_id=PositionId("P-1"),
+            last_px=Price.from_str("1.00000"),
+        )
+        order1.apply(fill1)
+        self.cache.update_order(order1)
+
+        order2.apply(TestEventStubs.order_submitted(order2))
+        self.cache.update_order(order2)
+        order2.apply(TestEventStubs.order_accepted(order2, venue_order_id=VenueOrderId("2")))
+        self.cache.update_order(order2)
+        order2.apply(TestEventStubs.order_canceled(order2))
+        self.cache.update_order(order2)
+
+        assert order1.is_closed
+        assert order2.is_closed
+
+        # Act
+        self.cache.purge_closed_orders(ts_now=0)
+
+        # Assert
+        assert not self.cache.order_exists(order1.client_order_id)
+        assert not self.cache.order_exists(order2.client_order_id)
+        assert not self.cache.order_list_exists(order_list.id)
+
+    def test_purge_closed_orders_does_not_purge_order_list_with_open_orders(self):
+        # Arrange - create two orders belonging to an order list
+        order_list_id = OrderListId("OL-001")
+        order1 = LimitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=AUDUSD_SIM.id,
+            client_order_id=ClientOrderId("O-001"),
+            order_side=OrderSide.BUY,
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00000"),
+            init_id=UUID4(),
+            ts_init=0,
+            order_list_id=order_list_id,
+        )
+        order2 = LimitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.strategy.id,
+            instrument_id=AUDUSD_SIM.id,
+            client_order_id=ClientOrderId("O-002"),
+            order_side=OrderSide.SELL,
+            quantity=Quantity.from_int(100_000),
+            price=Price.from_str("1.00100"),
+            init_id=UUID4(),
+            ts_init=0,
+            order_list_id=order_list_id,
+        )
+
+        order_list = OrderList(
+            order_list_id=order_list_id,
+            orders=[order1, order2],
+        )
+
+        self.cache.add_order(order1, PositionId("P-1"))
+        self.cache.add_order(order2, PositionId("P-1"))
+        self.cache.add_order_list(order_list)
+
+        # Close order1, leave order2 open
+        order1.apply(TestEventStubs.order_submitted(order1))
+        self.cache.update_order(order1)
+        order1.apply(TestEventStubs.order_accepted(order1))
+        self.cache.update_order(order1)
+        fill1 = TestEventStubs.order_filled(
+            order1,
+            instrument=AUDUSD_SIM,
+            position_id=PositionId("P-1"),
+            last_px=Price.from_str("1.00000"),
+        )
+        order1.apply(fill1)
+        self.cache.update_order(order1)
+
+        order2.apply(TestEventStubs.order_submitted(order2))
+        self.cache.update_order(order2)
+        order2.apply(TestEventStubs.order_accepted(order2, venue_order_id=VenueOrderId("2")))
+        self.cache.update_order(order2)
+
+        assert order1.is_closed
+        assert order2.is_open
+
+        # Act
+        self.cache.purge_closed_orders(ts_now=0)
+
+        # Assert - order1 purged, order2 and list remain
+        assert not self.cache.order_exists(order1.client_order_id)
+        assert self.cache.order_exists(order2.client_order_id)
+        assert self.cache.order_list_exists(order_list.id)
 
     def test_position_snapshot_bytes_empty_when_no_snapshots(self):
         # Arrange

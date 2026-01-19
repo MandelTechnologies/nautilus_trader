@@ -245,16 +245,13 @@ impl DeribitWebSocketClient {
                             call_python(py, &callback, py_obj);
                         }),
                         NautilusWsMessage::Error(err) => {
-                            log::error!("Deribit WebSocket error: {err}");
+                            log::error!("WebSocket error: {err}");
                         }
                         NautilusWsMessage::Reconnected => {
-                            log::info!("Deribit WebSocket reconnected");
+                            log::info!("WebSocket reconnected");
                         }
                         NautilusWsMessage::Authenticated(auth_result) => {
-                            log::info!(
-                                "Deribit WebSocket authenticated (scope: {})",
-                                auth_result.scope
-                            );
+                            log::info!("WebSocket authenticated (scope: {})", auth_result.scope);
                         }
                         NautilusWsMessage::Raw(msg) => {
                             log::debug!("Received raw message, skipping: {msg}");
@@ -944,6 +941,7 @@ impl DeribitWebSocketClient {
             price: price.map(|p| p.as_decimal()),
             time_in_force: deribit_tif,
             post_only: if post_only { Some(true) } else { None },
+            reject_post_only: if post_only { Some(true) } else { None },
             reduce_only: if reduce_only { Some(true) } else { None },
             trigger_price: trigger_price.map(|p| p.as_decimal()),
             trigger,
