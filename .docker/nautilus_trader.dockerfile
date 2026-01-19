@@ -2,14 +2,13 @@
 FROM python@sha256:326df678c20c78d465db501563f3492d17c42a4afe33a1f2bf5406a1d56b0e86 AS base
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=off \
-    PIP_DISABLE_PIP_VERSION_CHECK=on \
-    PIP_DEFAULT_TIMEOUT=100 \
-    PYO3_PYTHON="/usr/local/bin/python3" \
-    PYSETUP_PATH="/opt/pysetup" \
-    RUSTUP_TOOLCHAIN="stable" \
-    BUILD_MODE="release" \
-    CC="clang"
+	    PIP_NO_CACHE_DIR=off \
+	    PIP_DISABLE_PIP_VERSION_CHECK=on \
+	    PIP_DEFAULT_TIMEOUT=100 \
+	    PYO3_PYTHON="/usr/local/bin/python3" \
+	    PYSETUP_PATH="/opt/pysetup" \
+	    BUILD_MODE="release" \
+	    CC="clang"
 ENV PATH="/root/.local/bin:/root/.cargo/bin:$PATH"
 WORKDIR $PYSETUP_PATH
 
