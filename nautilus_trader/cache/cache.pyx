@@ -852,6 +852,8 @@ cdef class Cache(CacheFacade):
             ClientOrderId linked_order_id
             Order order
             Order linked_order
+            set[OrderListId] affected_order_list_ids = set()
+
         for client_order_id in self._index_orders_closed.copy():
             order = self._orders.get(client_order_id)
             if order is not None and order.is_closed_c() and order.ts_closed + buffer_ns <= ts_now:
@@ -862,9 +864,31 @@ cdef class Cache(CacheFacade):
                         if linked_order is not None and linked_order.is_open_c():
                             break  # Do not purge if linked order still open
                     else:
+                        if order.order_list_id is not None:
+                            affected_order_list_ids.add(order.order_list_id)
                         self.purge_order(client_order_id, purge_from_database)
                 else:
+                    if order.order_list_id is not None:
+                        affected_order_list_ids.add(order.order_list_id)
                     self.purge_order(client_order_id, purge_from_database)
+
+        cdef:
+            OrderListId order_list_id
+            OrderList order_list
+            bint all_purged
+        for order_list_id in affected_order_list_ids:
+            order_list = self._order_lists.get(order_list_id)
+            if order_list is not None:
+                all_purged = True
+
+                for o in order_list.orders:
+                    if o.client_order_id in self._orders:
+                        all_purged = False
+                        break
+
+                if all_purged:
+                    self._order_lists.pop(order_list_id, None)
+                    self._log.info(f"Purged {order_list_id}", LogColor.BLUE)
 
     cpdef void purge_closed_positions(
         self,

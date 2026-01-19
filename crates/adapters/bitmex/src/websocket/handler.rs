@@ -917,19 +917,16 @@ impl FeedHandler {
         data: Vec<BitmexFundingMsg>,
         ts_init: UnixNanos,
     ) -> Option<NautilusWsMessage> {
-        let mut funding_updates = Vec::with_capacity(data.len());
-
-        for msg in data {
-            if let Some(parsed) = parse_funding_msg(msg, ts_init) {
-                funding_updates.push(parsed);
-            }
+        if data.is_empty() {
+            return None;
         }
 
-        if funding_updates.is_empty() {
-            None
-        } else {
-            Some(NautilusWsMessage::FundingRateUpdates(funding_updates))
-        }
+        let funding_updates: Vec<_> = data
+            .into_iter()
+            .map(|msg| parse_funding_msg(msg, ts_init))
+            .collect();
+
+        Some(NautilusWsMessage::FundingRateUpdates(funding_updates))
     }
 
     fn handle_subscription_message(

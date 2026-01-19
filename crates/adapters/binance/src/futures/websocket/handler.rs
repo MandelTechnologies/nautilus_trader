@@ -185,8 +185,10 @@ impl BinanceFuturesWsFeedHandler {
             }
         };
 
-        let rate_limit_keys = Some(vec![BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]);
-        if let Err(e) = client.send_text(json, rate_limit_keys).await {
+        if let Err(e) = client
+            .send_text(json, Some(BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()))
+            .await
+        {
             log::error!("Failed to send subscribe request: {e}");
         }
     }
@@ -213,8 +215,10 @@ impl BinanceFuturesWsFeedHandler {
             }
         };
 
-        let rate_limit_keys = Some(vec![BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]);
-        if let Err(e) = client.send_text(json, rate_limit_keys).await {
+        if let Err(e) = client
+            .send_text(json, Some(BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()))
+            .await
+        {
             log::error!("Failed to send unsubscribe request: {e}");
         }
 

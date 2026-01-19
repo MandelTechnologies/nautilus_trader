@@ -361,7 +361,7 @@ impl BinanceSpotWsFeedHandler {
 
         self.send_text(
             payload,
-            Some(vec![BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
+            Some(BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()),
         )
         .await?;
         Ok(())
@@ -375,7 +375,7 @@ impl BinanceSpotWsFeedHandler {
 
         self.send_text(
             payload,
-            Some(vec![BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
+            Some(BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()),
         )
         .await?;
 
@@ -393,7 +393,7 @@ impl BinanceSpotWsFeedHandler {
     async fn send_text(
         &self,
         payload: String,
-        rate_limit_keys: Option<Vec<String>>,
+        rate_limit_keys: Option<&[Ustr]>,
     ) -> anyhow::Result<()> {
         let Some(client) = &self.inner else {
             anyhow::bail!("No active WebSocket client");

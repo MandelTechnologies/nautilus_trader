@@ -19,6 +19,7 @@ use std::{num::NonZeroU32, sync::LazyLock};
 
 use nautilus_model::identifiers::Venue;
 use nautilus_network::ratelimiter::quota::Quota;
+use ustr::Ustr;
 
 use super::enums::{BinanceRateLimitInterval, BinanceRateLimitType};
 
@@ -219,5 +220,6 @@ pub static BINANCE_WS_SUBSCRIPTION_QUOTA: LazyLock<Quota> =
 pub static BINANCE_WS_CONNECTION_QUOTA: LazyLock<Quota> =
     LazyLock::new(|| Quota::per_second(NonZeroU32::new(1).expect("1 > 0")));
 
-/// Rate limit key for WebSocket subscription operations.
-pub const BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION: &str = "subscription";
+/// Pre-interned rate limit key for WebSocket subscription operations.
+pub static BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION: LazyLock<[Ustr; 1]> =
+    LazyLock::new(|| [Ustr::from("subscription")]);

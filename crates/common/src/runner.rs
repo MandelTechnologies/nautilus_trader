@@ -23,7 +23,7 @@ use std::{cell::OnceCell, fmt::Debug, sync::Arc};
 
 use crate::{
     messages::{data::DataCommand, execution::TradingCommand},
-    msgbus::{self, switchboard::MessagingSwitchboard},
+    msgbus::{self, MessagingSwitchboard},
     timer::TimeEventHandler,
 };
 
@@ -44,7 +44,7 @@ impl DataCommandSender for SyncDataCommandSender {
     fn execute(&self, command: DataCommand) {
         // TODO: Placeholder, we still need to queue and drain even for sync
         let endpoint = MessagingSwitchboard::data_engine_execute();
-        msgbus::send_any(endpoint, &command);
+        msgbus::send_data_command(endpoint, command);
     }
 }
 

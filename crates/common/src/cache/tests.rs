@@ -36,13 +36,13 @@ use nautilus_model::{
         OrderReleased, OrderSubmitted,
     },
     identifiers::{
-        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol, TradeId, Venue,
-        VenueOrderId,
+        AccountId, ClientOrderId, InstrumentId, OrderListId, PositionId, StrategyId, Symbol,
+        TradeId, Venue, VenueOrderId,
     },
     instruments::{CurrencyPair, Instrument, InstrumentAny, SyntheticInstrument, stubs::*},
     orderbook::OrderBook,
     orders::{
-        Order,
+        Order, OrderList,
         builder::OrderTestBuilder,
         stubs::{TestOrderEventStubs, TestOrdersGenerator},
     },
@@ -710,6 +710,67 @@ fn test_add_order_with_account_id_populates_account_index() {
     let orders_for_account = cache.orders(None, None, None, Some(&account_id), None);
     assert_eq!(orders_for_account.len(), 1);
     assert!(orders_for_account.contains(&&order));
+}
+
+#[rstest]
+fn test_add_order_list() {
+    let mut cache = Cache::default();
+    let audusd_sim = audusd_sim();
+    let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Buy)
+        .price(Price::from("1.00000"))
+        .quantity(Quantity::from(100_000))
+        .build();
+
+    let order_list_id = OrderListId::new("OL-001");
+    let order_list = OrderList::new(
+        order_list_id,
+        instrument.id(),
+        order.strategy_id(),
+        vec![order],
+        UnixNanos::default(),
+    );
+
+    cache.add_order_list(order_list.clone()).unwrap();
+
+    assert!(cache.order_list_exists(&order_list_id));
+    assert_eq!(cache.order_list(&order_list_id), Some(&order_list));
+    assert!(
+        cache
+            .order_lists(None, None, None, None)
+            .contains(&&order_list)
+    );
+}
+
+#[rstest]
+fn test_add_order_list_when_already_exists_errors() {
+    let mut cache = Cache::default();
+    let audusd_sim = audusd_sim();
+    let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+
+    let order = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Buy)
+        .price(Price::from("1.00000"))
+        .quantity(Quantity::from(100_000))
+        .build();
+
+    let order_list_id = OrderListId::new("OL-001");
+    let order_list = OrderList::new(
+        order_list_id,
+        instrument.id(),
+        order.strategy_id(),
+        vec![order],
+        UnixNanos::default(),
+    );
+
+    cache.add_order_list(order_list.clone()).unwrap();
+    let result = cache.add_order_list(order_list);
+
+    assert!(result.is_err());
 }
 
 #[rstest]
@@ -2195,6 +2256,179 @@ fn test_update_own_order_book_with_market_order_does_not_panic(mut cache: Cache)
     cache.update_own_order_book(&market_order_mut);
 
     assert!(cache.own_order_book(&audusd_sim.id()).is_some());
+}
+
+#[rstest]
+fn test_purge_closed_orders_also_purges_order_lists() {
+    let mut cache = Cache::default();
+    let audusd_sim = audusd_sim();
+    let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+
+    let order_list_id = OrderListId::new("OL-001");
+
+    let mut order1 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Buy)
+        .price(Price::from("1.00000"))
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-001"))
+        .order_list_id(order_list_id)
+        .build();
+
+    let mut order2 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Sell)
+        .price(Price::from("1.00100"))
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-002"))
+        .order_list_id(order_list_id)
+        .build();
+    let order_list = OrderList::new(
+        order_list_id,
+        instrument.id(),
+        order1.strategy_id(),
+        vec![order1.clone(), order2.clone()],
+        UnixNanos::default(),
+    );
+
+    let account_id = AccountId::new("SIM-001");
+
+    cache.add_order(order1.clone(), None, None, false).unwrap();
+    cache.add_order(order2.clone(), None, None, false).unwrap();
+    cache.add_order_list(order_list).unwrap();
+
+    assert!(cache.order_list_exists(&order_list_id));
+
+    // Transition order1: Initialized -> Submitted -> Accepted -> Filled
+    let submitted1 = TestOrderEventStubs::submitted(&order1, account_id);
+    order1.apply(submitted1).unwrap();
+    cache.update_order(&order1).unwrap();
+
+    let accepted1 = TestOrderEventStubs::accepted(&order1, account_id, VenueOrderId::new("V-001"));
+    order1.apply(accepted1).unwrap();
+    cache.update_order(&order1).unwrap();
+
+    let filled1 = TestOrderEventStubs::filled(
+        &order1,
+        &instrument,
+        Some(TradeId::new("T-1")),
+        None,
+        Some(Price::from("1.00000")),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    order1.apply(filled1).unwrap();
+    cache.update_order(&order1).unwrap();
+
+    // Transition order2: Initialized -> Submitted -> Accepted -> Canceled
+    let submitted2 = TestOrderEventStubs::submitted(&order2, account_id);
+    order2.apply(submitted2).unwrap();
+    cache.update_order(&order2).unwrap();
+
+    let accepted2 = TestOrderEventStubs::accepted(&order2, account_id, VenueOrderId::new("V-002"));
+    order2.apply(accepted2).unwrap();
+    cache.update_order(&order2).unwrap();
+
+    let canceled2 =
+        TestOrderEventStubs::canceled(&order2, account_id, Some(VenueOrderId::new("V-002")));
+    order2.apply(canceled2).unwrap();
+    cache.update_order(&order2).unwrap();
+
+    assert!(order1.is_closed());
+    assert!(order2.is_closed());
+
+    let ts_now = UnixNanos::from(1_000_000_000_000);
+    cache.purge_closed_orders(ts_now, 0);
+
+    assert!(!cache.order_exists(&order1.client_order_id()));
+    assert!(!cache.order_exists(&order2.client_order_id()));
+    assert!(!cache.order_list_exists(&order_list_id));
+}
+
+#[rstest]
+fn test_purge_closed_orders_does_not_purge_order_list_with_open_orders() {
+    let mut cache = Cache::default();
+    let audusd_sim = audusd_sim();
+    let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+
+    let order_list_id = OrderListId::new("OL-001");
+
+    let mut order1 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Buy)
+        .price(Price::from("1.00000"))
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-001"))
+        .order_list_id(order_list_id)
+        .build();
+
+    let mut order2 = OrderTestBuilder::new(OrderType::Limit)
+        .instrument_id(instrument.id())
+        .side(OrderSide::Sell)
+        .price(Price::from("1.00100"))
+        .quantity(Quantity::from(100_000))
+        .client_order_id(ClientOrderId::new("O-002"))
+        .order_list_id(order_list_id)
+        .build();
+    let order_list = OrderList::new(
+        order_list_id,
+        instrument.id(),
+        order1.strategy_id(),
+        vec![order1.clone(), order2.clone()],
+        UnixNanos::default(),
+    );
+
+    let account_id = AccountId::new("SIM-001");
+
+    cache.add_order(order1.clone(), None, None, false).unwrap();
+    cache.add_order(order2.clone(), None, None, false).unwrap();
+    cache.add_order_list(order_list).unwrap();
+
+    // Close order1, leave order2 open
+    let submitted1 = TestOrderEventStubs::submitted(&order1, account_id);
+    order1.apply(submitted1).unwrap();
+    cache.update_order(&order1).unwrap();
+
+    let accepted1 = TestOrderEventStubs::accepted(&order1, account_id, VenueOrderId::new("V-001"));
+    order1.apply(accepted1).unwrap();
+    cache.update_order(&order1).unwrap();
+
+    let filled1 = TestOrderEventStubs::filled(
+        &order1,
+        &instrument,
+        Some(TradeId::new("T-1")),
+        None,
+        Some(Price::from("1.00000")),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    order1.apply(filled1).unwrap();
+    cache.update_order(&order1).unwrap();
+
+    let submitted2 = TestOrderEventStubs::submitted(&order2, account_id);
+    order2.apply(submitted2).unwrap();
+    cache.update_order(&order2).unwrap();
+
+    let accepted2 = TestOrderEventStubs::accepted(&order2, account_id, VenueOrderId::new("V-002"));
+    order2.apply(accepted2).unwrap();
+    cache.update_order(&order2).unwrap();
+
+    assert!(order1.is_closed());
+    assert!(order2.is_open());
+
+    let ts_now = UnixNanos::from(1_000_000_000_000);
+    cache.purge_closed_orders(ts_now, 0);
+
+    // Order1 purged, order2 and list remain (order2 still in cache)
+    assert!(!cache.order_exists(&order1.client_order_id()));
+    assert!(cache.order_exists(&order2.client_order_id()));
+    assert!(cache.order_list_exists(&order_list_id));
 }
 
 #[rstest]

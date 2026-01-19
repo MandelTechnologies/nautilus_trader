@@ -283,18 +283,19 @@ impl OKXWsFeedHandler {
     async fn send_with_retry(
         &self,
         payload: String,
-        rate_limit_keys: Option<Vec<String>>,
+        rate_limit_keys: Option<&[Ustr]>,
     ) -> Result<(), OKXWsError> {
         if let Some(client) = &self.inner {
+            let keys_owned: Option<Vec<Ustr>> = rate_limit_keys.map(|k| k.to_vec());
             self.retry_manager
                 .execute_with_retry(
                     "websocket_send",
                     || {
                         let payload = payload.clone();
-                        let keys = rate_limit_keys.clone();
+                        let keys = keys_owned.clone();
                         async move {
                             client
-                                .send_text(payload, keys)
+                                .send_text(payload, keys.as_deref())
                                 .await
                                 .map_err(|e| OKXWsError::ClientError(format!("Send failed: {e}")))
                         }
@@ -342,7 +343,7 @@ impl OKXWsFeedHandler {
                             return None;
                         }
                         HandlerCommand::Authenticate { payload } => {
-                            if let Err(e) = self.send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()])).await {
+                            if let Err(e) = self.send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice())).await {
                                 log::error!("Failed to send authentication message after retries: error={e}");
                             }
                         }
@@ -1927,7 +1928,7 @@ impl OKXWsFeedHandler {
             .map_err(|e| anyhow::anyhow!("Failed to serialize mass cancel request: {e}"))?;
 
         match self
-            .send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_CANCEL.to_string()]))
+            .send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_CANCEL.as_slice()))
             .await
         {
             Ok(()) => {
@@ -1969,7 +1970,7 @@ impl OKXWsFeedHandler {
 
         if let Some(client) = &self.inner {
             client
-                .send_text(payload, Some(vec![OKX_RATE_LIMIT_KEY_CANCEL.to_string()]))
+                .send_text(payload, Some(OKX_RATE_LIMIT_KEY_CANCEL.as_slice()))
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to send batch cancel: {e}"))?;
             log::debug!("Sent batch cancel orders");
@@ -1996,7 +1997,7 @@ impl OKXWsFeedHandler {
 
         if let Some(client) = &self.inner {
             client
-                .send_text(payload, Some(vec![OKX_RATE_LIMIT_KEY_ORDER.to_string()]))
+                .send_text(payload, Some(OKX_RATE_LIMIT_KEY_ORDER.as_slice()))
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to send batch place: {e}"))?;
             log::debug!("Sent batch place orders");
@@ -2023,7 +2024,7 @@ impl OKXWsFeedHandler {
 
         if let Some(client) = &self.inner {
             client
-                .send_text(payload, Some(vec![OKX_RATE_LIMIT_KEY_AMEND.to_string()]))
+                .send_text(payload, Some(OKX_RATE_LIMIT_KEY_AMEND.as_slice()))
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to send batch amend: {e}"))?;
             log::debug!("Sent batch amend orders");
@@ -2050,12 +2051,9 @@ impl OKXWsFeedHandler {
         let json_txt = serde_json::to_string(&message)
             .map_err(|e| anyhow::anyhow!("Failed to serialize subscription: {e}"))?;
 
-        self.send_with_retry(
-            json_txt,
-            Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to send subscription after retries: {e}"))?;
+        self.send_with_retry(json_txt, Some(OKX_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send subscription after retries: {e}"))?;
         Ok(())
     }
 
@@ -2076,12 +2074,9 @@ impl OKXWsFeedHandler {
         let json_txt = serde_json::to_string(&message)
             .map_err(|e| anyhow::anyhow!("Failed to serialize unsubscription: {e}"))?;
 
-        self.send_with_retry(
-            json_txt,
-            Some(vec![OKX_RATE_LIMIT_KEY_SUBSCRIPTION.to_string()]),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to send unsubscription after retries: {e}"))?;
+        self.send_with_retry(json_txt, Some(OKX_RATE_LIMIT_KEY_SUBSCRIPTION.as_slice()))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send unsubscription after retries: {e}"))?;
         Ok(())
     }
 
@@ -2117,7 +2112,7 @@ impl OKXWsFeedHandler {
             .map_err(|e| anyhow::anyhow!("Failed to serialize place order request: {e}"))?;
 
         match self
-            .send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_ORDER.to_string()]))
+            .send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_ORDER.as_slice()))
             .await
         {
             Ok(()) => {
@@ -2182,7 +2177,7 @@ impl OKXWsFeedHandler {
             .map_err(|e| anyhow::anyhow!("Failed to serialize place algo order request: {e}"))?;
 
         match self
-            .send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_ORDER.to_string()]))
+            .send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_ORDER.as_slice()))
             .await
         {
             Ok(()) => {
@@ -2265,7 +2260,7 @@ impl OKXWsFeedHandler {
             .map_err(|e| anyhow::anyhow!("Failed to serialize cancel request: {e}"))?;
 
         match self
-            .send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_CANCEL.to_string()]))
+            .send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_CANCEL.as_slice()))
             .await
         {
             Ok(()) => {
@@ -2333,7 +2328,7 @@ impl OKXWsFeedHandler {
             .map_err(|e| anyhow::anyhow!("Failed to serialize amend order request: {e}"))?;
 
         match self
-            .send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_AMEND.to_string()]))
+            .send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_AMEND.as_slice()))
             .await
         {
             Ok(()) => {
@@ -2410,7 +2405,7 @@ impl OKXWsFeedHandler {
             .map_err(|e| anyhow::anyhow!("Failed to serialize cancel algo request: {e}"))?;
 
         match self
-            .send_with_retry(payload, Some(vec![OKX_RATE_LIMIT_KEY_CANCEL.to_string()]))
+            .send_with_retry(payload, Some(OKX_RATE_LIMIT_KEY_CANCEL.as_slice()))
             .await
         {
             Ok(()) => {

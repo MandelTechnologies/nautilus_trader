@@ -115,9 +115,7 @@ impl Handler<QuoteTick> for CountingTypedHandler {
 use std::rc::Rc;
 
 use indexmap::IndexMap;
-use nautilus_common::msgbus::{
-    handler::ShareableMessageHandler, matching::is_matching_backtracking,
-};
+use nautilus_common::msgbus::{ShareableMessageHandler, matching::is_matching_backtracking};
 
 struct AnyTopicRouter {
     subscriptions: Vec<(MStr<Pattern>, ShareableMessageHandler)>,

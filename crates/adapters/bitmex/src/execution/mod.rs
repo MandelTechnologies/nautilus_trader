@@ -35,6 +35,7 @@ use nautilus_common::{
         },
     },
     msgbus,
+    msgbus::MessagingSwitchboard,
 };
 use nautilus_core::{UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_live::ExecutionClientCore;
@@ -757,7 +758,8 @@ fn dispatch_ws_message(message: NautilusWsMessage) {
 }
 
 fn dispatch_account_state(state: AccountState) {
-    msgbus::send_account_state("Portfolio.update_account".into(), &state);
+    let endpoint = MessagingSwitchboard::portfolio_update_account();
+    msgbus::send_account_state(endpoint, &state);
 }
 
 fn dispatch_order_status_report(report: OrderStatusReport) {

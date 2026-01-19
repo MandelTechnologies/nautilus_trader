@@ -23,10 +23,8 @@ use nautilus_common::{
     clock::{Clock, TestClock},
     messages::execution::{ModifyOrder, SubmitOrder, SubmitOrderList, TradingCommand},
     msgbus::{
-        self,
-        handler::ShareableMessageHandler,
-        stubs::{get_message_saving_handler, get_saved_messages},
-        switchboard::MessagingSwitchboard,
+        self, MessagingSwitchboard,
+        stubs::{TypedIntoMessageSavingHandler, get_typed_into_message_saving_handler},
     },
     throttler::RateLimit,
 };
@@ -69,11 +67,12 @@ use ustr::Ustr;
 // Helper that registers message collectors for ExecEngine.process events and
 // returns the shared handler so callers can later retrieve the collected
 // OrderEventAny messages via `get_process_order_event_handler_messages`.
-fn register_process_handler() -> ShareableMessageHandler {
-    let handler =
-        get_message_saving_handler::<OrderEventAny>(Some(Ustr::from("ExecEngine.process")));
-    msgbus::register_any(MessagingSwitchboard::exec_engine_process(), handler.clone());
-    handler
+fn register_process_handler() -> TypedIntoMessageSavingHandler<OrderEventAny> {
+    let (handler, saving_handler) = get_typed_into_message_saving_handler::<OrderEventAny>(Some(
+        Ustr::from("ExecEngine.process"),
+    ));
+    msgbus::register_order_event_endpoint(MessagingSwitchboard::exec_engine_process(), handler);
+    saving_handler
 }
 
 #[rstest]
@@ -137,7 +136,7 @@ fn test_deny_order_on_price_precision_exceeded(
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
 
     // Expect an OrderDenied to be emitted
-    let saved_events = get_process_order_event_handler_messages(process_handler);
+    let saved_events = get_process_order_event_handler_messages(&process_handler);
     assert_eq!(saved_events.len(), 1);
     matches!(saved_events[0], OrderEventAny::Denied(_));
 }
@@ -213,7 +212,7 @@ fn test_deny_order_exceeding_max_notional(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
 
-    let saved_events = get_process_order_event_handler_messages(process_handler);
+    let saved_events = get_process_order_event_handler_messages(&process_handler);
     assert_eq!(saved_events.len(), 1);
     matches!(saved_events[0], OrderEventAny::Denied(_));
 }
@@ -221,13 +220,21 @@ fn test_deny_order_exceeding_max_notional(
 use nautilus_risk::engine::{RiskEngine, config::RiskEngineConfig};
 
 #[fixture]
-fn process_order_event_handler() -> ShareableMessageHandler {
-    get_message_saving_handler::<OrderEventAny>(Some(Ustr::from("ExecEngine.process")))
+fn process_order_event_handler() -> TypedIntoMessageSavingHandler<OrderEventAny> {
+    let (handler, saving_handler) = get_typed_into_message_saving_handler::<OrderEventAny>(Some(
+        Ustr::from("ExecEngine.process"),
+    ));
+    msgbus::register_order_event_endpoint(MessagingSwitchboard::exec_engine_process(), handler);
+    saving_handler
 }
 
 #[fixture]
-fn execute_order_event_handler() -> ShareableMessageHandler {
-    get_message_saving_handler::<TradingCommand>(Some(Ustr::from("ExecEngine.execute")))
+fn execute_order_event_handler() -> TypedIntoMessageSavingHandler<TradingCommand> {
+    let (handler, saving_handler) = get_typed_into_message_saving_handler::<TradingCommand>(Some(
+        Ustr::from("ExecEngine.execute"),
+    ));
+    msgbus::register_trading_command_endpoint(MessagingSwitchboard::exec_engine_execute(), handler);
+    saving_handler
 }
 
 #[fixture]
@@ -343,15 +350,15 @@ pub fn bitmex_cash_account_state_multi() -> AccountState {
 }
 
 fn get_process_order_event_handler_messages(
-    event_handler: ShareableMessageHandler,
+    event_handler: &TypedIntoMessageSavingHandler<OrderEventAny>,
 ) -> Vec<OrderEventAny> {
-    get_saved_messages::<OrderEventAny>(event_handler)
+    event_handler.get_messages()
 }
 
 fn get_execute_order_event_handler_messages(
-    event_handler: ShareableMessageHandler,
+    event_handler: &TypedIntoMessageSavingHandler<TradingCommand>,
 ) -> Vec<TradingCommand> {
-    get_saved_messages::<TradingCommand>(event_handler)
+    event_handler.get_messages()
 }
 
 #[fixture]
@@ -654,21 +661,12 @@ fn test_submit_order_with_default_settings_then_sends_to_client(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_account(AccountAny::Cash(cash_account(
             cash_account_state_million_usd,
@@ -712,7 +710,7 @@ fn test_submit_order_with_default_settings_then_sends_to_client(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -728,17 +726,9 @@ fn test_submit_order_when_risk_bypassed_sends_to_execution_engine(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
     let mut risk_engine = get_risk_engine(None, None, None, true);
 
     // TODO: Limit -> Market
@@ -772,7 +762,7 @@ fn test_submit_order_when_risk_bypassed_sends_to_execution_engine(
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -788,19 +778,11 @@ fn test_submit_reduce_only_order_when_position_already_closed_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     clock: TestClock,
     simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
     let clock = Rc::new(RefCell::new(clock));
     let simple_cache = Rc::new(RefCell::new(simple_cache));
 
@@ -870,9 +852,9 @@ fn test_submit_reduce_only_order_when_position_already_closed_then_denies(
     ));
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order1));
-    exec_engine.process(&submitted);
-    exec_engine.process(&accepted);
-    exec_engine.process(&filled);
+    exec_engine.process(submitted);
+    exec_engine.process(accepted);
+    exec_engine.process(filled);
 
     let submit_order2 = SubmitOrder::new(
         trader_id,
@@ -890,8 +872,8 @@ fn test_submit_reduce_only_order_when_position_already_closed_then_denies(
 
     let venue_order_id2 = VenueOrderId::new("002");
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order2));
-    exec_engine.process(&OrderEventAny::Submitted(order_submitted(&order2)));
-    exec_engine.process(&OrderEventAny::Filled(order_filled(
+    exec_engine.process(OrderEventAny::Submitted(order_submitted(&order2)));
+    exec_engine.process(OrderEventAny::Filled(order_filled(
         &order2,
         &instrument_audusd,
         None,
@@ -927,7 +909,7 @@ fn test_submit_reduce_only_order_when_position_already_closed_then_denies(
     // assert_eq!(order3.status(), OrderStatus::Denied);
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 3);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -943,19 +925,11 @@ fn test_submit_reduce_only_order_when_position_would_be_increased_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     clock: TestClock,
     simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
     let clock = Rc::new(RefCell::new(clock));
     let simple_cache = Rc::new(RefCell::new(simple_cache));
 
@@ -1018,9 +992,9 @@ fn test_submit_reduce_only_order_when_position_would_be_increased_then_denies(
     ));
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order1));
-    exec_engine.process(&submitted);
-    exec_engine.process(&accepted);
-    exec_engine.process(&filled);
+    exec_engine.process(submitted);
+    exec_engine.process(accepted);
+    exec_engine.process(filled);
 
     let submit_order2 = SubmitOrder::new(
         trader_id,
@@ -1038,13 +1012,13 @@ fn test_submit_reduce_only_order_when_position_would_be_increased_then_denies(
 
     let venue_order_id2 = VenueOrderId::new("002");
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order2));
-    exec_engine.process(&OrderEventAny::Submitted(order_submitted(&order2)));
-    exec_engine.process(&OrderEventAny::Accepted(order_accepted(
+    exec_engine.process(OrderEventAny::Submitted(order_submitted(&order2)));
+    exec_engine.process(OrderEventAny::Accepted(order_accepted(
         &order2,
         Some(venue_order_id2),
         Some(account_id),
     )));
-    exec_engine.process(&OrderEventAny::Filled(order_filled(
+    exec_engine.process(OrderEventAny::Filled(order_filled(
         &order2,
         &instrument_audusd,
         None,
@@ -1063,7 +1037,7 @@ fn test_submit_reduce_only_order_when_position_would_be_increased_then_denies(
     // assert_eq!(order2.status(), OrderStatus::Denied);
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 2);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -1079,16 +1053,11 @@ fn test_submit_order_reduce_only_order_with_custom_position_id_not_open_then_den
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_account(AccountAny::Cash(cash_account(
             cash_account_state_million_usd,
@@ -1134,7 +1103,7 @@ fn test_submit_order_reduce_only_order_with_custom_position_id_not_open_then_den
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1155,16 +1124,11 @@ fn test_submit_order_when_instrument_not_in_cache_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_account(AccountAny::Cash(cash_account(
             cash_account_state_million_usd,
@@ -1204,7 +1168,7 @@ fn test_submit_order_when_instrument_not_in_cache_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1225,16 +1189,11 @@ fn test_submit_order_when_invalid_price_precision_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1278,7 +1237,7 @@ fn test_submit_order_when_invalid_price_precision_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1303,16 +1262,11 @@ fn test_submit_order_when_invalid_negative_price_and_not_option_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1356,7 +1310,7 @@ fn test_submit_order_when_invalid_negative_price_and_not_option_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1377,15 +1331,10 @@ fn test_submit_order_when_negative_price_for_futures_spread_then_allows(
     _client_order_id: ClientOrderId,
     instrument_futures_spread: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    execute_order_event_handler: ShareableMessageHandler,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_futures_spread.clone())
         .unwrap();
@@ -1427,7 +1376,7 @@ fn test_submit_order_when_negative_price_for_futures_spread_then_allows(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -1443,15 +1392,10 @@ fn test_submit_order_when_negative_price_for_option_spread_then_allows(
     _client_order_id: ClientOrderId,
     instrument_option_spread: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    execute_order_event_handler: ShareableMessageHandler,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_option_spread.clone())
         .unwrap();
@@ -1493,7 +1437,7 @@ fn test_submit_order_when_negative_price_for_option_spread_then_allows(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -1509,16 +1453,11 @@ fn test_submit_order_when_invalid_trigger_price_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1563,7 +1502,7 @@ fn test_submit_order_when_invalid_trigger_price_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1586,16 +1525,11 @@ fn test_submit_order_when_invalid_quantity_precision_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1638,7 +1572,7 @@ fn test_submit_order_when_invalid_quantity_precision_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1659,16 +1593,11 @@ fn test_submit_order_when_invalid_quantity_exceeds_maximum_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1711,7 +1640,7 @@ fn test_submit_order_when_invalid_quantity_exceeds_maximum_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1732,16 +1661,11 @@ fn test_submit_order_when_invalid_quantity_less_than_minimum_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1784,7 +1708,7 @@ fn test_submit_order_when_invalid_quantity_less_than_minimum_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1805,16 +1729,11 @@ fn test_submit_order_when_market_order_and_no_market_then_logs_warning(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    execute_order_event_handler: ShareableMessageHandler,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -1861,7 +1780,7 @@ fn test_submit_order_when_market_order_and_no_market_then_logs_warning(
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -1877,20 +1796,11 @@ fn test_submit_order_when_less_than_min_notional_for_instrument_then_denies(
     _client_order_id: ClientOrderId,
     instrument_xbtusd_with_high_size_precision: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    _execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     bitmex_cash_account_state_multi: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler,
-    );
-
     simple_cache
         .add_instrument(instrument_xbtusd_with_high_size_precision.clone())
         .unwrap();
@@ -1945,7 +1855,7 @@ fn test_submit_order_when_less_than_min_notional_for_instrument_then_denies(
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
 
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -1968,15 +1878,10 @@ fn test_submit_order_when_greater_than_max_notional_for_instrument_then_denies(
     _client_order_id: ClientOrderId,
     instrument_xbtusd_bitmex: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     bitmex_cash_account_state_multi: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_xbtusd_bitmex.clone())
         .unwrap();
@@ -2034,7 +1939,7 @@ fn test_submit_order_when_greater_than_max_notional_for_instrument_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -2057,15 +1962,10 @@ fn test_submit_order_when_buy_market_order_and_over_max_notional_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2121,7 +2021,7 @@ fn test_submit_order_when_buy_market_order_and_over_max_notional_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -2144,15 +2044,10 @@ fn test_submit_order_when_sell_market_order_and_over_max_notional_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2208,7 +2103,7 @@ fn test_submit_order_when_sell_market_order_and_over_max_notional_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -2231,16 +2126,11 @@ fn test_submit_order_when_market_order_and_over_free_balance_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2283,7 +2173,7 @@ fn test_submit_order_when_market_order_and_over_free_balance_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(
@@ -2306,17 +2196,13 @@ fn test_submit_order_when_market_order_over_free_balance_with_borrowing_enabled_
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
     // Test that orders exceeding free balance are accepted when borrowing is enabled
     // (e.g. spot margin trading on Bybit)
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
 
     simple_cache
         .add_instrument(instrument_audusd.clone())
@@ -2363,7 +2249,7 @@ fn test_submit_order_when_market_order_over_free_balance_with_borrowing_enabled_
 
     // Should NOT be denied because borrowing is enabled
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert!(
         saved_process_messages.is_empty(),
         "Order should not be denied when borrowing is enabled, but got: {saved_process_messages:?}"
@@ -2378,16 +2264,11 @@ fn test_submit_order_list_buys_when_over_free_balance_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2437,7 +2318,7 @@ fn test_submit_order_list_buys_when_over_free_balance_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrderList(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
 
     assert_eq!(saved_process_messages.len(), 3);
 
@@ -2462,16 +2343,11 @@ fn test_submit_order_list_sells_when_over_free_balance_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2521,7 +2397,7 @@ fn test_submit_order_list_sells_when_over_free_balance_then_denies(
 
     risk_engine.execute(TradingCommand::SubmitOrderList(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
 
     assert_eq!(saved_process_messages.len(), 3);
 
@@ -2546,14 +2422,9 @@ fn test_submit_order_when_trading_halted_then_denies_order(
     _client_order_id: ClientOrderId,
     instrument_eth_usdt: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_eth_usdt.clone())
         .unwrap();
@@ -2591,7 +2462,7 @@ fn test_submit_order_when_trading_halted_then_denies_order(
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
 
     // Get messages and test
-    let saved_messages = get_process_order_event_handler_messages(process_order_event_handler);
+    let saved_messages = get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_messages.len(), 1);
     let first_message = saved_messages.first().unwrap();
     assert_eq!(first_message.event_type(), OrderEventType::Denied);
@@ -2609,15 +2480,10 @@ fn test_submit_order_beyond_rate_limit_then_denies_order(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2665,7 +2531,7 @@ fn test_submit_order_beyond_rate_limit_then_denies_order(
 
     // Get messages and test
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
     let first_message = saved_process_messages.first().unwrap();
     assert_eq!(first_message.event_type(), OrderEventType::Denied);
@@ -2683,15 +2549,10 @@ fn test_submit_order_list_when_trading_halted_then_denies_orders(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -2750,7 +2611,7 @@ fn test_submit_order_list_when_trading_halted_then_denies_orders(
 
     // Get messages and test
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 3);
 
     for event in &saved_process_messages {
@@ -2775,20 +2636,11 @@ fn test_submit_order_list_buys_when_trading_reducing_then_denies_orders(
     _client_order_id: ClientOrderId,
     instrument_xbtusd_bitmex: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     bitmex_cash_account_state_multi: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_xbtusd_bitmex.clone())
         .unwrap();
@@ -2890,7 +2742,7 @@ fn test_submit_order_list_buys_when_trading_reducing_then_denies_orders(
     risk_engine.execute(TradingCommand::SubmitOrderList(submit_order_list));
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
 }
 
@@ -2910,20 +2762,11 @@ fn test_submit_order_list_sells_when_trading_reducing_then_denies_orders(
     _client_order_id: ClientOrderId,
     instrument_xbtusd_bitmex: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     bitmex_cash_account_state_multi: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_xbtusd_bitmex.clone())
         .unwrap();
@@ -3024,7 +2867,7 @@ fn test_submit_order_list_sells_when_trading_reducing_then_denies_orders(
     risk_engine.execute(TradingCommand::SubmitOrderList(submit_order_list));
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
 }
 
@@ -3050,15 +2893,10 @@ fn test_submit_bracket_order_when_instrument_not_in_cache_then_denies(
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_account(AccountAny::Cash(cash_account(
             cash_account_state_million_usd,
@@ -3112,7 +2950,7 @@ fn test_submit_bracket_order_when_instrument_not_in_cache_then_denies(
 
     // Get messages and test
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 3);
 
     for event in &saved_process_messages {
@@ -3144,15 +2982,10 @@ fn test_modify_order_when_no_order_found_logs_error(
     client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -3183,7 +3016,7 @@ fn test_modify_order_when_no_order_found_logs_error(
     risk_engine.execute(TradingCommand::ModifyOrder(modify_order));
 
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 0);
 }
 
@@ -3195,15 +3028,10 @@ fn test_modify_order_beyond_rate_limit_then_rejects(
     client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -3250,7 +3078,7 @@ fn test_modify_order_beyond_rate_limit_then_rejects(
 
     // Get messages and test
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 6);
     let first_message = saved_process_messages.first().unwrap();
     assert_eq!(first_message.event_type(), OrderEventType::ModifyRejected);
@@ -3268,20 +3096,11 @@ fn test_modify_order_with_default_settings_then_sends_to_client(
     client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -3338,7 +3157,7 @@ fn test_modify_order_with_default_settings_then_sends_to_client(
     risk_engine.execute(TradingCommand::ModifyOrder(modify_order));
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 2);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -3366,16 +3185,11 @@ fn test_submit_order_when_market_order_and_over_free_balance_then_denies_with_be
     _client_order_id: ClientOrderId,
     instrument_audusd: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     cash_account_state_million_usd: AccountState,
     quote_audusd: QuoteTick,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     simple_cache
         .add_instrument(instrument_audusd.clone())
         .unwrap();
@@ -3418,7 +3232,7 @@ fn test_submit_order_when_market_order_and_over_free_balance_then_denies_with_be
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 0); // Currently, it executes because check_orders_risk returns true for margin_account
 }
 
@@ -3430,20 +3244,11 @@ fn test_submit_order_for_less_than_max_cum_transaction_value_adausdt_with_crypto
     _client_order_id: ClientOrderId,
     instrument_xbtusd_bitmex: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     bitmex_cash_account_state_multi: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler.clone(),
-    );
-
     let quote = QuoteTick::new(
         instrument_xbtusd_bitmex.id(),
         Price::from("0.6109"),
@@ -3496,11 +3301,11 @@ fn test_submit_order_for_less_than_max_cum_transaction_value_adausdt_with_crypto
 
     risk_engine.execute(TradingCommand::SubmitOrder(submit_order));
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 0);
 
     let saved_execute_messages =
-        get_execute_order_event_handler_messages(execute_order_event_handler);
+        get_execute_order_event_handler_messages(&execute_order_event_handler);
     assert_eq!(saved_execute_messages.len(), 1);
     assert_eq!(
         saved_execute_messages.first().unwrap().instrument_id(),
@@ -3532,20 +3337,11 @@ fn test_submit_order_with_gtd_expire_time_already_passed(
     _client_order_id: ClientOrderId,
     instrument_xbtusd_bitmex: InstrumentAny,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
-    execute_order_event_handler: ShareableMessageHandler,
+    _process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
+    _execute_order_event_handler: TypedIntoMessageSavingHandler<TradingCommand>,
     bitmex_cash_account_state_multi: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler,
-    );
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_execute(),
-        execute_order_event_handler,
-    );
-
     let quote = QuoteTick::new(
         instrument_xbtusd_bitmex.id(),
         Price::from("0.6109"),
@@ -3614,15 +3410,10 @@ fn test_submit_order_with_quote_quantity_validates_correctly(
     trader_id: TraderId,
     _client_order_id: ClientOrderId,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     _cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     // Create a BTCUSDT spot instrument with max_quantity = 83 BTC
     let btc_usdt = InstrumentAny::CurrencyPair(CurrencyPair::new(
         InstrumentId::from("BTCUSDT-SPOT.BYBIT"),
@@ -3723,7 +3514,7 @@ fn test_submit_order_with_quote_quantity_validates_correctly(
     // If the bug exists, it would compare 100 > 83 and deny the order
     // With the fix, it converts 100 USDT -> 0.001 BTC, then checks 0.001 < 83 (passes)
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
 
     // Should have 1 event (submitted to exec engine, not denied)
     assert_eq!(
@@ -3740,15 +3531,10 @@ fn test_submit_order_with_quote_quantity_exceeds_max_after_conversion(
     trader_id: TraderId,
     _client_order_id: ClientOrderId,
     _venue_order_id: VenueOrderId,
-    process_order_event_handler: ShareableMessageHandler,
+    process_order_event_handler: TypedIntoMessageSavingHandler<OrderEventAny>,
     _cash_account_state_million_usd: AccountState,
     mut simple_cache: Cache,
 ) {
-    msgbus::register_any(
-        MessagingSwitchboard::exec_engine_process(),
-        process_order_event_handler.clone(),
-    );
-
     // Create a BTCUSDT spot instrument with max_quantity = 0.5 BTC
     let btc_usdt = InstrumentAny::CurrencyPair(CurrencyPair::new(
         InstrumentId::from("BTCUSDT-SPOT.BYBIT"),
@@ -3847,7 +3633,7 @@ fn test_submit_order_with_quote_quantity_exceeds_max_after_conversion(
 
     // The order should be denied because effective_quantity (1 BTC) > max_quantity (0.5 BTC)
     let saved_process_messages =
-        get_process_order_event_handler_messages(process_order_event_handler);
+        get_process_order_event_handler_messages(&process_order_event_handler);
     assert_eq!(saved_process_messages.len(), 1);
 
     assert_eq!(

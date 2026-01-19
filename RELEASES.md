@@ -43,11 +43,13 @@ Released on TBD (UTC).
 - Fixed Databento `databento_data` to fetch definitions for full date range (#3414), thanks @Johnkhk
 - Fixed Databento zero-length interval at dataset boundary (#3429), thanks @shzhng
 - Fixed Deribit auth token refresh race condition (#3402), thanks @filipmacek
+- Fixed Deribit race condition between response and subscription (#3436), thanks @filipmacek
 - Fixed Polymarket order state race condition where PLACEMENT events could arrive late
 - Fixed Polymarket duplicate WebSocket subscriptions (#3403), thanks for reporting @santivazq
 
 ### Internal Improvements
 - Added support for setting cache database adapter in cache and `LiveNode` (#3401), thanks @filipmacek
+- Added `ts_init` normalization option to `convert_stream_to_data` (#3433), thanks @faysou
 - Added Binance `listenKeyExpired` event handling (#3387), thanks @Johnkhk
 - Added Deribit data client (#3368), thanks @filipmacek
 - Added Deribit order submission (#3408), thanks @filipmacek
@@ -64,12 +66,13 @@ Released on TBD (UTC).
 - Improved checks before writing data in catalog._write_chunk (#3411), thanks @faysou
 - Improved `OptionExerciseModule` logging and fix cache reference (#3388), thanks @davidsblom
 - Improved execution reports builder pattern in Rust (#3417), thanks @filipmacek
-- Refined closing of streaming writer (#3394), thanks @fayosu
+- Refined closing of streaming writer (#3394), thanks @faysou
 - Refined handling of `skip_first_non_full_bar` in `TimeBarAggregator` (#3395), thanks @faysou
 - Refined greeks safeguards and docs (#3407), thanks @faysou
 - Refined processing of gaps in aggregated historical bars (#3412), thanks @faysou
 - Refined Interactive Brokers adapter (#3195), thanks @faysou
 - Refined OptionExerciseModule (#3423), thanks @faysou
+- Refined instrument `is_spread()` method (#3434), thanks @faysou
 - Optimized message bus publish with thread-local `SmallVec` buffers in Rust
 - Optimized message bus pattern matching with greedy algorithm
 - Upgraded Interactive Brokers adapter to `ibapi` 10.37.2 (#3427), thanks @faysou

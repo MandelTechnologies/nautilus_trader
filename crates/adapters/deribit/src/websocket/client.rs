@@ -31,7 +31,7 @@ use std::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures_util::Stream;
-use nautilus_common::live::get_runtime;
+use nautilus_common::{enums::LogColor, live::get_runtime, log_info};
 use nautilus_core::{
     consts::NAUTILUS_USER_AGENT, env::get_or_env_var_opt, time::get_atomic_clock_realtime,
 };
@@ -168,9 +168,9 @@ impl DeribitWebSocketClient {
         let credential =
             Credential::resolve_with_env_fallback(api_key, api_secret, is_testnet, env_fallback)?;
         if credential.is_some() {
-            log::info!("Deribit credentials loaded (testnet={is_testnet})");
+            log::info!("Credentials loaded (testnet={is_testnet})");
         } else {
-            log::debug!("No Deribit credentials configured - unauthenticated mode");
+            log::debug!("No credentials configured - unauthenticated mode");
         }
 
         let signal = Arc::new(AtomicBool::new(false));
@@ -361,7 +361,11 @@ impl DeribitWebSocketClient {
     ///
     /// Returns an error if the connection fails.
     pub async fn connect(&mut self) -> anyhow::Result<()> {
-        log::info!("Connecting to Deribit WebSocket: {}", self.url);
+        log_info!(
+            "Connecting to WebSocket: {}",
+            self.url,
+            color = LogColor::Blue
+        );
 
         // Reset stop signal
         self.signal.store(false, Ordering::Relaxed);
@@ -465,7 +469,7 @@ impl DeribitWebSocketClient {
                 match handler.next().await {
                     Some(msg) => match msg {
                         NautilusWsMessage::Reconnected => {
-                            log::info!("Reconnected to Deribit WebSocket");
+                            log::info!("Reconnected to WebSocket");
 
                             // Get all subscriptions that should be restored
                             // all_topics() returns confirmed + pending_subscribe, excluding pending_unsubscribe
@@ -547,7 +551,7 @@ impl DeribitWebSocketClient {
         });
 
         self.task_handle = Some(Arc::new(task_handle));
-        log::info!("Connected to Deribit WebSocket");
+        log::info!("Connected to WebSocket");
 
         Ok(())
     }
@@ -558,7 +562,7 @@ impl DeribitWebSocketClient {
     ///
     /// Returns an error if the close operation fails.
     pub async fn close(&self) -> DeribitWsResult<()> {
-        log::info!("Closing Deribit WebSocket connection");
+        log::info!("Closing WebSocket connection");
         self.signal.store(true, Ordering::Relaxed);
 
         let _ = self.cmd_tx.read().await.send(HandlerCommand::Disconnect);
@@ -1195,7 +1199,7 @@ impl DeribitWebSocketClient {
             ));
         }
 
-        log::info!(
+        log::debug!(
             "Sending {} order: instrument={}, amount={}, price={:?}, client_order_id={}",
             order_side,
             params.instrument_name,
@@ -1268,11 +1272,12 @@ impl DeribitWebSocketClient {
             amount: quantity.as_decimal(),
             price: Some(price.as_decimal()),
             post_only: None,
+            reject_post_only: None,
             reduce_only: None,
             trigger_price: None,
         };
 
-        log::info!(
+        log::debug!(
             "Sending modify order: order_id={order_id}, quantity={quantity}, price={price}, client_order_id={client_order_id}"
         );
 
@@ -1320,7 +1325,7 @@ impl DeribitWebSocketClient {
             order_id: order_id.to_string(),
         };
 
-        log::info!("Sending cancel order: order_id={order_id}, client_order_id={client_order_id}");
+        log::debug!("Sending cancel order: order_id={order_id}, client_order_id={client_order_id}");
 
         self.cmd_tx
             .read()
@@ -1365,7 +1370,7 @@ impl DeribitWebSocketClient {
             order_type,
         };
 
-        log::info!("Sending cancel_all_orders: instrument={instrument_name}");
+        log::debug!("Sending cancel_all_orders: instrument={instrument_name}");
 
         self.cmd_tx
             .read()
@@ -1404,7 +1409,7 @@ impl DeribitWebSocketClient {
             ));
         }
 
-        log::info!("Sending query_order: order_id={order_id}, client_order_id={client_order_id}");
+        log::debug!("Sending query_order: order_id={order_id}, client_order_id={client_order_id}");
 
         self.cmd_tx
             .read()

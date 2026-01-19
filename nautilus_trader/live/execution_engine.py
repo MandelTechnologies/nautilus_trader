@@ -1856,7 +1856,17 @@ class LiveExecutionEngine(ExecutionEngine):
         final_fills = dict(mass_status._fill_reports)
 
         reconciliation_instruments: list[Instrument] = []
-        for instrument_id in mass_status.position_reports:
+        for instrument_id, position_reports in mass_status.position_reports.items():
+            # Skip hedge mode instruments (have venue_position_id) as partial-window
+            # adjustment assumes a single net position per instrument
+            is_hedge_mode = any(r.venue_position_id is not None for r in position_reports)
+            if is_hedge_mode:
+                self._log.debug(
+                    f"Skipping fill adjustment for {instrument_id}: "
+                    f"hedge mode (has venue_position_id)",
+                )
+                continue
+
             # Respect reconciliation_instrument_ids filter
             if not self._consider_for_reconciliation(instrument_id):
                 self._log.debug(
@@ -3063,6 +3073,10 @@ class LiveExecutionEngine(ExecutionEngine):
             if order.status != OrderStatus.EXPIRED and order.is_open:
                 if report.ts_triggered > 0:
                     self._generate_order_triggered(order, report)
+
+                # Reconcile all trades before expired event (same as canceled)
+                for trade in trades:
+                    self._reconcile_fill_report(order, trade, instrument)
 
                 self._generate_order_expired(order, report)
 

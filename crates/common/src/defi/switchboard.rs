@@ -18,7 +18,7 @@
 use ahash::AHashMap;
 use nautilus_model::{defi::Blockchain, identifiers::InstrumentId};
 
-use crate::msgbus::{MStr, Topic, get_message_bus, switchboard::MessagingSwitchboard};
+use crate::msgbus::{MStr, MessagingSwitchboard, Topic, get_message_bus};
 
 /// DeFi-specific switchboard state.
 #[derive(Clone, Debug, Default)]

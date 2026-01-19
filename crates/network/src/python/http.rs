@@ -164,7 +164,7 @@ impl HttpClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let keys = keys.map(into_ustr_vec);
-            rate_limiter.await_keys_ready(keys).await;
+            rate_limiter.await_keys_ready(keys.as_deref()).await;
             client
                 .send_request(
                     method.into(),

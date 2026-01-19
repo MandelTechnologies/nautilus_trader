@@ -28,7 +28,10 @@ pub const CLOSE_TOPIC: &str = "CLOSE";
 
 static DATA_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
-static DATA_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_PROCESS_ANY_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_PROCESS_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+#[cfg(feature = "defi")]
+static DATA_PROCESS_DEFI_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_RESPONSE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
@@ -85,7 +88,21 @@ macro_rules! define_switchboard {
             #[inline]
             #[must_use]
             pub fn data_engine_process() -> MStr<Endpoint> {
-                *DATA_PROCESS_ENDPOINT.get_or_init(|| "DataEngine.process".into())
+                *DATA_PROCESS_ANY_ENDPOINT.get_or_init(|| "DataEngine.process".into())
+            }
+
+            #[inline]
+            #[must_use]
+            pub fn data_engine_process_data() -> MStr<Endpoint> {
+                *DATA_PROCESS_DATA_ENDPOINT.get_or_init(|| "DataEngine.process_data".into())
+            }
+
+            #[cfg(feature = "defi")]
+            #[inline]
+            #[must_use]
+            pub fn data_engine_process_defi_data() -> MStr<Endpoint> {
+                *DATA_PROCESS_DEFI_DATA_ENDPOINT
+                    .get_or_init(|| "DataEngine.process_defi_data".into())
             }
 
             #[inline]

@@ -159,9 +159,9 @@ impl BaseAccount {
     /// (CashAccount, MarginAccount) should perform their own validation in apply():
     /// - MarginAccount: allows negative balances (normal for margin trading)
     /// - CashAccount: rejects negative unless `allow_borrowing` is true
-    pub fn update_balances(&mut self, balances: Vec<AccountBalance>) {
+    pub fn update_balances(&mut self, balances: &[AccountBalance]) {
         for balance in balances {
-            self.balances.insert(balance.currency, balance);
+            self.balances.insert(balance.currency, *balance);
         }
     }
 
@@ -195,7 +195,7 @@ impl BaseAccount {
     }
 
     pub fn base_apply(&mut self, event: AccountState) {
-        self.update_balances(event.balances.clone());
+        self.update_balances(&event.balances);
         self.events.push(event);
     }
 

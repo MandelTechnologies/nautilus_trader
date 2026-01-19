@@ -250,7 +250,7 @@ class DeribitDataClient(LiveMarketDataClient):
 
         # Wait for connection to be established
         await self._ws_client.wait_until_active(timeout_secs=30.0)
-        self._log.info(f"Connected to websocket {self._ws_client.url}", LogColor.BLUE)
+        self._log.info(f"Connected to WebSocket {self._ws_client.url}", LogColor.BLUE)
 
         # Authenticate if credentials are configured (required for raw streams)
         if self._ws_client.has_credentials():
@@ -259,12 +259,11 @@ class DeribitDataClient(LiveMarketDataClient):
             self._log.info("WebSocket authenticated", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
-        # Delay to allow websocket to send any unsubscribe messages
+        # Delay to allow WebSocket to send any unsubscribe messages
         await asyncio.sleep(1.0)
 
-        # Shutdown websocket
         if not self._ws_client.is_closed():
-            self._log.info("Disconnecting websocket")
+            self._log.info("Disconnecting WebSocket")
 
             await self._ws_client.close()
 
@@ -944,7 +943,7 @@ class DeribitDataClient(LiveMarketDataClient):
             else:
                 self._log.error(f"Cannot handle message {msg}, not implemented")
         except Exception as e:
-            self._log.exception("Error handling websocket message", e)
+            self._log.exception("Error handling WebSocket message", e)
 
     def _cache_instrument(self, pyo3_instrument: Any) -> None:
         self._http_client.cache_instrument(pyo3_instrument)

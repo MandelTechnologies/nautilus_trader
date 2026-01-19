@@ -924,6 +924,8 @@ impl Cache {
 
         let buffer_ns = secs_to_nanos_unchecked(buffer_secs as f64);
 
+        let mut affected_order_list_ids: AHashSet<OrderListId> = AHashSet::new();
+
         'outer: for client_order_id in self.index.orders_closed.clone() {
             if let Some(order) = self.orders.get(&client_order_id)
                 && order.is_closed()
@@ -942,7 +944,24 @@ impl Cache {
                     }
                 }
 
+                if let Some(order_list_id) = order.order_list_id() {
+                    affected_order_list_ids.insert(order_list_id);
+                }
+
                 self.purge_order(client_order_id);
+            }
+        }
+
+        for order_list_id in affected_order_list_ids {
+            if let Some(order_list) = self.order_lists.get(&order_list_id) {
+                let all_purged = order_list
+                    .orders
+                    .iter()
+                    .all(|o| !self.orders.contains_key(&o.client_order_id()));
+                if all_purged {
+                    self.order_lists.remove(&order_list_id);
+                    log::info!("Purged {order_list_id}");
+                }
             }
         }
     }
@@ -1804,6 +1823,25 @@ impl Cache {
 
         self.orders.insert(client_order_id, order);
 
+        Ok(())
+    }
+
+    /// Adds the `order_list` to the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the order list ID is already contained in the cache.
+    pub fn add_order_list(&mut self, order_list: OrderList) -> anyhow::Result<()> {
+        let order_list_id = order_list.id;
+        check_key_not_in_map(
+            &order_list_id,
+            &self.order_lists,
+            stringify!(order_list_id),
+            stringify!(order_lists),
+        )?;
+
+        log::debug!("Adding {order_list:?}");
+        self.order_lists.insert(order_list_id, order_list);
         Ok(())
     }
 

@@ -246,7 +246,7 @@ tabled = { version = "0.20.0", default-features = false, features = [
   "std",
   "derive",
 ] }
-thiserror = "2.0.17"
+thiserror = "2.0.18"
 tokio = { version = "1.49.0", default-features = false, features = [
   "rt-multi-thread",
   "sync",

@@ -165,13 +165,13 @@ impl DeribitDataClient {
                         match maybe_msg {
                             Some(msg) => Self::handle_ws_message(msg, &data_sender, &instruments),
                             None => {
-                                log::debug!("Deribit websocket stream ended");
+                                log::debug!("WebSocket stream ended");
                                 break;
                             }
                         }
                     }
                     () = cancellation.cancelled() => {
-                        log::debug!("Deribit websocket stream task cancelled");
+                        log::debug!("WebSocket stream task cancelled");
                         break;
                     }
                 }
@@ -212,19 +212,16 @@ impl DeribitDataClient {
                 }
             }
             NautilusWsMessage::Error(e) => {
-                log::error!("Deribit WebSocket error: {e:?}");
+                log::error!("WebSocket error: {e:?}");
             }
             NautilusWsMessage::Raw(value) => {
                 log::debug!("Unhandled raw message: {value}");
             }
             NautilusWsMessage::Reconnected => {
-                log::info!("Deribit websocket reconnected");
+                log::info!("WebSocket reconnected");
             }
             NautilusWsMessage::Authenticated(auth) => {
-                log::debug!(
-                    "Deribit websocket authenticated: expires_in={}s",
-                    auth.expires_in
-                );
+                log::debug!("WebSocket authenticated: expires_in={}s", auth.expires_in);
             }
             NautilusWsMessage::FundingRates(funding_rates) => {
                 log::info!(
@@ -313,7 +310,7 @@ impl DataClient for DeribitDataClient {
 
     fn start(&mut self) -> anyhow::Result<()> {
         log::info!(
-            "Starting Deribit data client: client_id={}, use_testnet={}",
+            "Starting data client: client_id={}, use_testnet={}",
             self.client_id,
             self.config.use_testnet
         );
@@ -321,14 +318,14 @@ impl DataClient for DeribitDataClient {
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
-        log::info!("Stopping Deribit data client: {}", self.client_id);
+        log::info!("Stopping data client: {}", self.client_id);
         self.cancellation_token.cancel();
         self.is_connected.store(false, Ordering::Relaxed);
         Ok(())
     }
 
     fn reset(&mut self) -> anyhow::Result<()> {
-        log::info!("Resetting Deribit data client: {}", self.client_id);
+        log::info!("Resetting data client: {}", self.client_id);
         self.is_connected.store(false, Ordering::Relaxed);
         self.cancellation_token = CancellationToken::new();
         self.tasks.clear();
@@ -339,7 +336,7 @@ impl DataClient for DeribitDataClient {
     }
 
     fn dispose(&mut self) -> anyhow::Result<()> {
-        log::info!("Disposing Deribit data client: {}", self.client_id);
+        log::info!("Disposing data client: {}", self.client_id);
         self.stop()
     }
 
@@ -369,7 +366,7 @@ impl DataClient for DeribitDataClient {
                 .http_client
                 .request_instruments(DeribitCurrency::ANY, Some(*kind))
                 .await
-                .with_context(|| format!("failed to request Deribit instruments for {kind:?}"))?;
+                .with_context(|| format!("failed to request instruments for {kind:?}"))?;
 
             // Cache in http client
             self.http_client.cache_instruments(fetched.clone());
@@ -407,19 +404,17 @@ impl DataClient for DeribitDataClient {
         ws.cache_instruments(all_instruments);
 
         // Connect WebSocket and wait until active
-        ws.connect()
-            .await
-            .context("failed to connect Deribit websocket")?;
+        ws.connect().await.context("failed to connect WebSocket")?;
         ws.wait_until_active(10.0)
             .await
-            .context("websocket failed to become active")?;
+            .context("WebSocket failed to become active")?;
 
         // Authenticate if credentials are configured (required for raw streams)
         if ws.has_credentials() {
             ws.authenticate_session(DERIBIT_DATA_SESSION_NAME)
                 .await
-                .context("failed to authenticate Deribit websocket")?;
-            log_info!("Deribit WebSocket authenticated");
+                .context("failed to authenticate WebSocket")?;
+            log_info!("WebSocket authenticated");
         }
 
         // Get the stream and spawn processing task
@@ -432,7 +427,7 @@ impl DataClient for DeribitDataClient {
         } else {
             "mainnet"
         };
-        log_info!("Deribit data client connected ({})", network);
+        log_info!("Connected ({})", network);
         Ok(())
     }
 
@@ -448,13 +443,13 @@ impl DataClient for DeribitDataClient {
         if let Some(ws) = self.ws_client.as_ref()
             && let Err(e) = ws.close().await
         {
-            log::warn!("Error while closing Deribit websocket: {e:?}");
+            log::warn!("Error while closing WebSocket: {e:?}");
         }
 
         // Wait for all tasks to complete
         for handle in self.tasks.drain(..) {
             if let Err(e) = handle.await {
-                log::error!("Error joining websocket task: {e:?}");
+                log::error!("Error joining WebSocket task: {e:?}");
             }
         }
 
@@ -462,7 +457,7 @@ impl DataClient for DeribitDataClient {
         self.cancellation_token = CancellationToken::new();
         self.is_connected.store(false, Ordering::Relaxed);
 
-        log_info!("Deribit data client disconnected");
+        log_info!("Disconnected");
         Ok(())
     }
 

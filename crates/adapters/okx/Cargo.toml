@@ -115,14 +115,14 @@ name = "okx-ws-exec"
 path = "bin/ws_exec.rs"
 doc = false
 
-# Run with `cargo run --example okx-data-tester`.
+# Run with `cargo run --example okx-data-tester --package nautilus-okx`.
 [[example]]
 name = "okx-data-tester"
 path = "examples/node_data_tester.rs"
 required-features = []
 doc = false
 
-# Run with `cargo run --example okx-exec-tester`.
+# Run with `cargo run --example okx-exec-tester --package nautilus-okx`.
 [[example]]
 name = "okx-exec-tester"
 path = "examples/node_exec_tester.rs"
