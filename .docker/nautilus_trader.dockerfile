@@ -20,8 +20,11 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Rust
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
+# Install pinned Rust toolchain (must match `rust-toolchain.toml`)
+COPY rust-toolchain.toml ./
+RUN TOOLCHAIN="$(python -c "import tomllib; print(tomllib.load(open('rust-toolchain.toml','rb'))['toolchain']['channel'])")" && \
+    test -n "$TOOLCHAIN" && \
+    curl https://sh.rustup.rs -sSf | bash -s -- -y --profile minimal --default-toolchain "$TOOLCHAIN"
 
 # Install UV
 COPY uv-version ./
@@ -32,7 +35,6 @@ COPY uv.lock pyproject.toml build.py ./
 RUN uv sync --no-install-package nautilus_trader
 
 # Build nautilus_trader
-COPY rust-toolchain rust-toolchain.toml ./
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY crates ./crates
