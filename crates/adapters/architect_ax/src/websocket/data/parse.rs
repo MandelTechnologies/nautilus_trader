@@ -111,6 +111,7 @@ fn parse_book_level(
 pub fn parse_book_l2_deltas(
     book: &AxMdBookL2,
     instrument: &InstrumentAny,
+    sequence: u64,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderBookDeltas> {
     let instrument_id = instrument.id();
@@ -118,7 +119,6 @@ pub fn parse_book_l2_deltas(
     let size_precision = instrument.size_precision();
 
     let ts_event = UnixNanos::from((book.ts as u64) * NANOSECONDS_IN_SECOND);
-    let sequence = book.tn as u64;
 
     let total_levels = book.b.len() + book.a.len();
     let capacity = total_levels + 1;
@@ -214,6 +214,7 @@ fn parse_book_level_l3(
 pub fn parse_book_l3_deltas(
     book: &AxMdBookL3,
     instrument: &InstrumentAny,
+    sequence: u64,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderBookDeltas> {
     let instrument_id = instrument.id();
@@ -221,7 +222,6 @@ pub fn parse_book_l3_deltas(
     let size_precision = instrument.size_precision();
 
     let ts_event = UnixNanos::from((book.ts as u64) * NANOSECONDS_IN_SECOND);
-    let sequence = book.tn as u64;
 
     let total_orders: usize = book.b.iter().map(|l| l.o.len()).sum::<usize>()
         + book.a.iter().map(|l| l.o.len()).sum::<usize>();
@@ -499,7 +499,7 @@ mod tests {
         let instrument = create_test_instrument();
         let ts_init = UnixNanos::default();
 
-        let deltas = parse_book_l2_deltas(&book, &instrument, ts_init).unwrap();
+        let deltas = parse_book_l2_deltas(&book, &instrument, 1, ts_init).unwrap();
 
         // 1 clear + 4 levels
         assert_eq!(deltas.deltas.len(), 5);
@@ -530,7 +530,7 @@ mod tests {
         let instrument = create_test_instrument();
         let ts_init = UnixNanos::default();
 
-        let deltas = parse_book_l3_deltas(&book, &instrument, ts_init).unwrap();
+        let deltas = parse_book_l3_deltas(&book, &instrument, 1, ts_init).unwrap();
 
         // 1 clear + 4 individual orders
         assert_eq!(deltas.deltas.len(), 5);
@@ -592,7 +592,7 @@ mod tests {
         let instrument = create_eurusd_instrument();
         let ts_init = UnixNanos::default();
 
-        let deltas = parse_book_l2_deltas(&book, &instrument, ts_init).unwrap();
+        let deltas = parse_book_l2_deltas(&book, &instrument, 1, ts_init).unwrap();
 
         // 1 clear + 13 bids + 12 asks = 26 deltas
         assert_eq!(deltas.deltas.len(), 26);
@@ -630,7 +630,7 @@ mod tests {
         let instrument = create_eurusd_instrument();
         let ts_init = UnixNanos::default();
 
-        let deltas = parse_book_l3_deltas(&book, &instrument, ts_init).unwrap();
+        let deltas = parse_book_l3_deltas(&book, &instrument, 1, ts_init).unwrap();
 
         // 1 clear + individual orders from each level
         // Each level has one order in the captured data
@@ -709,7 +709,7 @@ mod tests {
         let instrument = create_test_instrument();
         let ts_init = UnixNanos::default();
 
-        let deltas = parse_book_l2_deltas(&book, &instrument, ts_init).unwrap();
+        let deltas = parse_book_l2_deltas(&book, &instrument, 1, ts_init).unwrap();
 
         // Just clear delta with F_LAST
         assert_eq!(deltas.deltas.len(), 1);

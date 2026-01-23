@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         StrategyId::from("EXEC_TESTER-001"),
         instrument_id,
         client_id,
-        Quantity::from("0.001"), // Small quantity for testing
+        Quantity::from("10"), // 10 USD contracts (Deribit minimum)
     )
     .with_subscribe_trades(true)
     .with_subscribe_quotes(true)

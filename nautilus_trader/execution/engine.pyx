@@ -1724,17 +1724,16 @@ cdef class ExecutionEngine(Component):
 
     cpdef void _flip_position(self, Instrument instrument, Position position, OrderFilled fill, OmsType oms_type):
         cdef Quantity difference = None
-        if position.side == PositionSide.LONG:
-            difference = Quantity(fill.last_qty - position.quantity, position.size_precision)
-        elif position.side == PositionSide.SHORT:
-            difference = Quantity(abs(position.quantity - fill.last_qty), position.size_precision)
+        if position.side == PositionSide.LONG or position.side == PositionSide.SHORT:
+            # fill.last_qty is always larger than position.quantity when flipping
+            difference = fill.last_qty - position.quantity
         else:
             difference = fill.last_qty
 
         # Split commission between two positions
         fill_percent: Decimal = position.quantity / fill.last_qty
         cdef Money commission1 = Money(fill.commission * fill_percent, fill.commission.currency)
-        cdef Money commission2 = Money(fill.commission - commission1, fill.commission.currency)
+        cdef Money commission2 = fill.commission - commission1
 
         cdef OrderFilled fill_split1 = None
         if position.is_open_c():

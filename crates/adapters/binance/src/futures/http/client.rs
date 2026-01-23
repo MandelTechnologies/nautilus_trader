@@ -69,7 +69,7 @@ use crate::common::{
     },
     models::BinanceErrorResponse,
     parse::{parse_coinm_instrument, parse_usdm_instrument},
-    symbol::format_binance_symbol,
+    symbol::{format_binance_symbol, format_instrument_id},
     urls::get_http_base_url,
 };
 
@@ -943,6 +943,15 @@ pub enum BinanceFuturesInstrument {
 }
 
 impl BinanceFuturesInstrument {
+    /// Returns the symbol name for the instrument.
+    #[must_use]
+    pub const fn symbol(&self) -> Ustr {
+        match self {
+            Self::UsdM(s) => s.symbol,
+            Self::CoinM(s) => s.symbol,
+        }
+    }
+
     /// Returns the price precision for the instrument.
     #[must_use]
     pub const fn price_precision(&self) -> i32 {
@@ -958,6 +967,15 @@ impl BinanceFuturesInstrument {
         match self {
             Self::UsdM(s) => s.quantity_precision,
             Self::CoinM(s) => s.quantity_precision,
+        }
+    }
+
+    /// Returns the Nautilus-formatted instrument ID.
+    #[must_use]
+    pub fn id(&self) -> InstrumentId {
+        match self {
+            Self::UsdM(s) => format_instrument_id(&s.symbol, BinanceProductType::UsdM),
+            Self::CoinM(s) => format_instrument_id(&s.symbol, BinanceProductType::CoinM),
         }
     }
 }
@@ -1456,6 +1474,8 @@ impl BinanceFuturesHttpClient {
             new_order_resp_type: None,
             good_till_date: None,
             recv_window: None,
+            price_match: None,
+            self_trade_prevention_mode: None,
         };
 
         let order = self.raw.submit_order(&params).await?;
@@ -1746,7 +1766,7 @@ impl BinanceFuturesHttpClient {
             let order_instrument_id = instrument_id.unwrap_or_else(|| {
                 // Build instrument ID from order symbol
                 let suffix = self.product_type.suffix();
-                InstrumentId::from(format!("{}{}.BINANCE", order.symbol, suffix).as_str())
+                InstrumentId::from(format!("{}{}.BINANCE", order.symbol, suffix))
             });
 
             let size_precision = self.get_size_precision(&order.symbol).unwrap_or(8); // Default precision if not in cache

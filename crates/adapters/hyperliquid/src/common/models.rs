@@ -233,7 +233,7 @@ impl HyperliquidDataConverter {
     fn get_config(&self, symbol: &Ustr) -> HyperliquidInstrumentInfo {
         self.configs.get(symbol).cloned().unwrap_or_else(|| {
             // Create default config with a placeholder instrument_id based on symbol
-            let instrument_id = InstrumentId::from(format!("{symbol}.HYPER").as_str());
+            let instrument_id = InstrumentId::from(format!("{symbol}.HYPER"));
             HyperliquidInstrumentInfo::default_crypto(instrument_id)
         })
     }

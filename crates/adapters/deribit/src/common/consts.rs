@@ -193,3 +193,12 @@ pub const DERIBIT_WS_ORDER_KEY: &str = "order";
 /// Pre-interned rate limit key for WebSocket order operations.
 pub static DERIBIT_RATE_LIMIT_KEY_ORDER: LazyLock<[Ustr; 1]> =
     LazyLock::new(|| [Ustr::from(DERIBIT_WS_ORDER_KEY)]);
+
+/// Default grouping for aggregated order book subscriptions.
+pub const DERIBIT_BOOK_DEFAULT_GROUP: &str = "none";
+
+/// Default depth per side for aggregated order book subscriptions.
+pub const DERIBIT_BOOK_DEFAULT_DEPTH: u32 = 10;
+
+/// Supported aggregated order book depths for Deribit.
+pub const DERIBIT_BOOK_VALID_DEPTHS: [u32; 3] = [1, 10, 20];

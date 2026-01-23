@@ -421,7 +421,7 @@ impl PyDydxOrderSubmitter {
         let wallet_inner = wallet.inner;
         let orders: Vec<(InstrumentId, u32)> = orders
             .into_iter()
-            .map(|(id, client_id)| (InstrumentId::from(id.as_str()), client_id))
+            .map(|(id, client_id)| (InstrumentId::from(id), client_id))
             .collect();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {

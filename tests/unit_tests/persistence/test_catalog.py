@@ -84,7 +84,7 @@ def test_catalog_query_filtered(
     assert len(deltas) == 2384
 
     deltas = catalog_betfair.order_book_deltas(batched=True)
-    assert len(deltas) == 2007
+    assert len(deltas) == 2009
 
 
 def test_catalog_query_custom_filtered(

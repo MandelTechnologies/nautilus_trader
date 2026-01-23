@@ -371,7 +371,7 @@ impl AccountsManager {
 
             total_locked
                 .entry(locked.currency)
-                .and_modify(|total| *total += locked)
+                .and_modify(|total| *total = *total + locked)
                 .or_insert(locked);
         }
 
@@ -575,7 +575,7 @@ impl AccountsManager {
         }
 
         if let Some(comm) = commission {
-            pnl -= comm;
+            pnl = pnl - comm;
         }
 
         if pnl.is_zero() {
@@ -628,7 +628,7 @@ impl AccountsManager {
 
         for pnl in pnls.iter_mut() {
             if apply_commission && pnl.currency == commission.unwrap().currency {
-                *pnl -= commission.unwrap();
+                *pnl = *pnl - commission.unwrap();
                 apply_commission = false;
             }
 

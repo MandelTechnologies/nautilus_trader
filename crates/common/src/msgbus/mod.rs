@@ -39,7 +39,6 @@
 mod api;
 pub mod core;
 pub mod database;
-pub mod handler;
 pub mod matching;
 pub mod message;
 pub mod mstr;
@@ -69,12 +68,14 @@ use smallvec::SmallVec;
 pub use self::{
     api::*,
     core::{MessageBus, Subscription},
-    handler::ShareableMessageHandler,
     message::BusMessage,
     mstr::{Endpoint, MStr, Pattern, Topic},
     switchboard::MessagingSwitchboard,
     typed_endpoints::{EndpointMap, IntoEndpointMap},
-    typed_handler::{CallbackHandler, Handler, IntoHandler, TypedHandler, TypedIntoHandler},
+    typed_handler::{
+        CallbackHandler, Handler, IntoHandler, ShareableMessageHandler, TypedHandler,
+        TypedIntoHandler,
+    },
     typed_router::{TopicRouter, TypedSubscription},
 };
 

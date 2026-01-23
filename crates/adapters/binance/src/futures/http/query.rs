@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::enums::{
     BinanceFuturesOrderType, BinanceIncomeType, BinanceMarginType, BinancePositionSide,
-    BinanceSide, BinanceTimeInForce, BinanceWorkingType,
+    BinancePriceMatch, BinanceSelfTradePreventionMode, BinanceSide, BinanceTimeInForce,
+    BinanceWorkingType,
 };
 
 /// Query parameters for `GET /fapi/v1/depth` or `GET /dapi/v1/depth`.
@@ -303,6 +304,17 @@ pub struct BinanceNewOrderParams {
     #[serde(rename = "recvWindow", skip_serializing_if = "Option::is_none")]
     #[builder(default)]
     pub recv_window: Option<u64>,
+    /// Price match mode for algorithmic price matching.
+    #[serde(rename = "priceMatch", skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub price_match: Option<BinancePriceMatch>,
+    /// Self-trade prevention mode.
+    #[serde(
+        rename = "selfTradePreventionMode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[builder(default)]
+    pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
 }
 
 /// Query parameters for `DELETE /fapi/v1/order` (cancel order).
@@ -451,13 +463,37 @@ pub struct BatchOrderItem {
     /// Position side.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position_side: Option<String>,
+    /// Activation price for trailing stop orders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activation_price: Option<String>,
+    /// Callback rate for trailing stop orders (percentage).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback_rate: Option<String>,
+    /// Working type (MARK_PRICE or CONTRACT_PRICE).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_type: Option<String>,
+    /// Price protection flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_protect: Option<bool>,
+    /// Close position flag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_position: Option<bool>,
+    /// Good till date for GTD orders (ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub good_till_date: Option<i64>,
+    /// Price match mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_match: Option<String>,
+    /// Self-trade prevention mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_trade_prevention_mode: Option<String>,
 }
 
 #[cfg(feature = "python")]
 #[pymethods]
 impl BatchOrderItem {
     #[new]
-    #[pyo3(signature = (symbol, side, order_type, time_in_force=None, quantity=None, price=None, reduce_only=None, new_client_order_id=None, stop_price=None, position_side=None))]
+    #[pyo3(signature = (symbol, side, order_type, time_in_force=None, quantity=None, price=None, reduce_only=None, new_client_order_id=None, stop_price=None, position_side=None, activation_price=None, callback_rate=None, working_type=None, price_protect=None, close_position=None, good_till_date=None, price_match=None, self_trade_prevention_mode=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(
         symbol: String,
@@ -470,6 +506,14 @@ impl BatchOrderItem {
         new_client_order_id: Option<String>,
         stop_price: Option<String>,
         position_side: Option<String>,
+        activation_price: Option<String>,
+        callback_rate: Option<String>,
+        working_type: Option<String>,
+        price_protect: Option<bool>,
+        close_position: Option<bool>,
+        good_till_date: Option<i64>,
+        price_match: Option<String>,
+        self_trade_prevention_mode: Option<String>,
     ) -> Self {
         Self {
             symbol,
@@ -482,6 +526,14 @@ impl BatchOrderItem {
             new_client_order_id,
             stop_price,
             position_side,
+            activation_price,
+            callback_rate,
+            working_type,
+            price_protect,
+            close_position,
+            good_till_date,
+            price_match,
+            self_trade_prevention_mode,
         }
     }
 }

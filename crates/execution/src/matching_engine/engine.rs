@@ -90,10 +90,10 @@ pub struct OrderMatchingEngine {
     pub market_status: MarketStatus,
     /// The config for the matching engine.
     pub config: OrderMatchingEngineConfig,
+    core: OrderMatchingCore,
     clock: Rc<RefCell<dyn Clock>>,
     cache: Rc<RefCell<Cache>>,
     book: OrderBook,
-    pub core: OrderMatchingCore,
     fill_model: FillModel,
     fee_model: FeeModelAny,
     target_bid: Option<Price>,
@@ -101,6 +101,7 @@ pub struct OrderMatchingEngine {
     target_last: Option<Price>,
     last_bar_bid: Option<Bar>,
     last_bar_ask: Option<Bar>,
+    fill_at_market: bool,
     execution_bar_types: AHashMap<InstrumentId, BarType>,
     execution_bar_deltas: AHashMap<BarType, TimeDelta>,
     account_ids: AHashMap<TraderId, AccountId>,
@@ -165,14 +166,15 @@ impl OrderMatchingEngine {
             clock,
             cache,
             book,
-            core,
             market_status: MarketStatus::Open,
             config,
+            core,
             target_bid: None,
             target_ask: None,
             target_last: None,
             last_bar_bid: None,
             last_bar_ask: None,
+            fill_at_market: true,
             execution_bar_types: AHashMap::new(),
             execution_bar_deltas: AHashMap::new(),
             account_ids: AHashMap::new(),
@@ -204,6 +206,7 @@ impl OrderMatchingEngine {
         self.bid_consumption.clear();
         self.ask_consumption.clear();
         self.trade_consumption = 0;
+        self.fill_at_market = true;
         self.ids_generator.reset();
 
         log::info!("Reset {}", self.instrument.id());
@@ -214,6 +217,7 @@ impl OrderMatchingEngine {
         fills: Vec<(Price, Quantity)>,
         order_side: OrderSide,
         leaves_qty: Quantity,
+        book_prices: Option<&[Price]>,
     ) -> Vec<(Price, Quantity)> {
         if !self.config.liquidity_consumption {
             return fills;
@@ -228,18 +232,25 @@ impl OrderMatchingEngine {
         let mut adjusted_fills = Vec::with_capacity(fills.len());
         let mut remaining_qty = leaves_qty.raw;
 
-        for (price, qty) in fills {
+        for (fill_idx, (price, qty)) in fills.into_iter().enumerate() {
             if remaining_qty == 0 {
                 break;
             }
 
-            let price_raw = price.raw;
+            // Use book_price for consumption tracking (original price before MAKER adjustment),
+            // but use price (potentially adjusted) for the output fill.
+            let book_price = book_prices
+                .and_then(|bp| bp.get(fill_idx).copied())
+                .unwrap_or(price);
+
+            let book_price_raw = book_price.raw;
             let level_size = self
                 .book
-                .get_quantity_at_level(price, order_side, qty.precision);
+                .get_quantity_at_level(book_price, order_side, qty.precision);
 
-            let (original_size, consumed) =
-                consumption.entry(price_raw).or_insert((level_size.raw, 0));
+            let (original_size, consumed) = consumption
+                .entry(book_price_raw)
+                .or_insert((level_size.raw, 0));
 
             // Reset consumption when book size changes (fresh data)
             if *original_size != level_size.raw {
@@ -315,6 +326,19 @@ impl OrderMatchingEngine {
     /// Returns true if an order with the given client order ID exists in the matching engine.
     pub fn order_exists(&self, client_order_id: ClientOrderId) -> bool {
         self.core.order_exists(client_order_id)
+    }
+
+    #[must_use]
+    pub const fn get_core(&self) -> &OrderMatchingCore {
+        &self.core
+    }
+
+    pub fn get_core_mut(&mut self) -> &mut OrderMatchingCore {
+        &mut self.core
+    }
+
+    pub fn set_fill_at_market(&mut self, value: bool) {
+        self.fill_at_market = value;
     }
 
     // -- DATA PROCESSING -------------------------------------------------------------------------
@@ -558,17 +582,23 @@ impl OrderMatchingEngine {
             bar.ts_init,
         );
 
-        // Open
-        // Check if not initialized, if it is, it will be updated by the close or last
+        // Open: fill at market price (gap from previous bar)
         if !self.core.is_last_initialized {
+            self.fill_at_market = true;
+            self.book.update_trade_tick(&trade_tick).unwrap();
+            self.iterate(trade_tick.ts_init, AggressorSide::NoAggressor);
+            self.core.set_last_raw(trade_tick.price);
+        } else if self.core.last.is_some_and(|last| bar.open != last) {
+            // Gap between previous close and this bar's open
+            self.fill_at_market = true;
             self.book.update_trade_tick(&trade_tick).unwrap();
             self.iterate(trade_tick.ts_init, AggressorSide::NoAggressor);
             self.core.set_last_raw(trade_tick.price);
         }
 
-        // High
-        // Check if higher than last
+        // High: fill at trigger price (market moving through prices)
         if self.core.last.is_some_and(|last| bar.high > last) {
+            self.fill_at_market = false;
             trade_tick.price = bar.high;
             trade_tick.aggressor_side = AggressorSide::Buyer;
             trade_tick.trade_id = self.ids_generator.generate_trade_id();
@@ -579,10 +609,9 @@ impl OrderMatchingEngine {
             self.core.set_last_raw(trade_tick.price);
         }
 
-        // Low
-        // Check if lower than last
-        // Assumption: market traded down, aggressor hitting the bid(setting aggressor to seller)
+        // Low: fill at trigger price (market moving through prices)
         if self.core.last.is_some_and(|last| bar.low < last) {
+            self.fill_at_market = false;
             trade_tick.price = bar.low;
             trade_tick.aggressor_side = AggressorSide::Seller;
             trade_tick.trade_id = self.ids_generator.generate_trade_id();
@@ -593,11 +622,9 @@ impl OrderMatchingEngine {
             self.core.set_last_raw(trade_tick.price);
         }
 
-        // Close
-        // Check if not the same as last
-        // Assumption: if close price is higher then last, aggressor is buyer
-        // Assumption: if close price is lower then last, aggressor is seller
+        // Close: fill at trigger price (market moving through prices)
         if self.core.last.is_some_and(|last| bar.close != last) {
+            self.fill_at_market = false;
             trade_tick.price = bar.close;
             trade_tick.size = close_size;
             if bar.close > self.core.last.unwrap() {
@@ -612,6 +639,8 @@ impl OrderMatchingEngine {
 
             self.core.set_last_raw(trade_tick.price);
         }
+
+        self.fill_at_market = true;
     }
 
     fn process_quote_ticks_from_bar(&mut self, bar: &Bar) {
@@ -647,23 +676,27 @@ impl OrderMatchingEngine {
             bid_bar.ts_init,
         );
 
-        // Open
+        // Open: fill at market price (gap from previous bar)
+        self.fill_at_market = true;
         self.book.update_quote_tick(&quote_tick).unwrap();
         self.iterate(quote_tick.ts_init, AggressorSide::NoAggressor);
 
-        // High
+        // High: fill at trigger price (market moving through prices)
+        self.fill_at_market = false;
         quote_tick.bid_price = bid_bar.high;
         quote_tick.ask_price = ask_bar.high;
         self.book.update_quote_tick(&quote_tick).unwrap();
         self.iterate(quote_tick.ts_init, AggressorSide::NoAggressor);
 
-        // Low
+        // Low: fill at trigger price (market moving through prices)
+        self.fill_at_market = false;
         quote_tick.bid_price = bid_bar.low;
         quote_tick.ask_price = ask_bar.low;
         self.book.update_quote_tick(&quote_tick).unwrap();
         self.iterate(quote_tick.ts_init, AggressorSide::NoAggressor);
 
-        // Close
+        // Close: fill at trigger price (market moving through prices)
+        self.fill_at_market = false;
         quote_tick.bid_price = bid_bar.close;
         quote_tick.ask_price = ask_bar.close;
         quote_tick.bid_size = bid_close_size;
@@ -671,9 +704,9 @@ impl OrderMatchingEngine {
         self.book.update_quote_tick(&quote_tick).unwrap();
         self.iterate(quote_tick.ts_init, AggressorSide::NoAggressor);
 
-        // Reset last bars
         self.last_bar_bid = None;
         self.last_bar_ask = None;
+        self.fill_at_market = true;
     }
 
     /// Processes a trade tick to update the market state.
@@ -1990,6 +2023,20 @@ impl OrderMatchingEngine {
                     return fills;
                 }
 
+                // Save original book prices BEFORE any fill price modifications for consumption tracking,
+                // since the TAKER and MAKER loops below may adjust fill prices. Consumption should be
+                // tracked against the original book price levels where liquidity was sourced from.
+                let book_prices: Vec<Price> = if self.config.liquidity_consumption {
+                    fills.iter().map(|(px, _)| *px).collect()
+                } else {
+                    Vec::new()
+                };
+                let book_prices_ref: Option<&[Price]> = if book_prices.is_empty() {
+                    None
+                } else {
+                    Some(&book_prices)
+                };
+
                 // check if trigger price exists
                 if let Some(triggered_price) = order.trigger_price() {
                     // Filling as TAKER from trigger
@@ -2038,15 +2085,16 @@ impl OrderMatchingEngine {
                             } else {
                                 order_price
                             };
-                            for fill in &fills {
+                            for fill in &mut fills {
                                 let last_px = fill.0;
                                 if last_px < order_price {
-                                    // Marketable SELL would have filled at limit
+                                    // Marketable BUY would have filled at limit
                                     self.target_bid = self.core.bid;
                                     self.target_ask = self.core.ask;
                                     self.target_last = self.core.last;
                                     self.core.set_ask_raw(target_price);
                                     self.core.set_last_raw(target_price);
+                                    fill.0 = target_price;
                                 }
                             }
                         }
@@ -2059,22 +2107,28 @@ impl OrderMatchingEngine {
                             } else {
                                 order_price
                             };
-                            for fill in &fills {
+                            for fill in &mut fills {
                                 let last_px = fill.0;
                                 if last_px > order_price {
-                                    // Marketable BUY would have filled at limit
+                                    // Marketable SELL would have filled at limit
                                     self.target_bid = self.core.bid;
                                     self.target_ask = self.core.ask;
                                     self.target_last = self.core.last;
                                     self.core.set_bid_raw(target_price);
                                     self.core.set_last_raw(target_price);
+                                    fill.0 = target_price;
                                 }
                             }
                         }
                     }
                 }
 
-                self.apply_liquidity_consumption(fills, order.order_side(), order.leaves_qty())
+                self.apply_liquidity_consumption(
+                    fills,
+                    order.order_side(),
+                    order.leaves_qty(),
+                    book_prices_ref,
+                )
             }
             None => panic!("Limit order must have a price"),
         }
@@ -2088,7 +2142,7 @@ impl OrderMatchingEngine {
 
         // When liquidity consumption is enabled, get ALL crossed levels so that
         // consumed levels can be filtered out while still finding valid ones.
-        let fills = if self.config.liquidity_consumption {
+        let mut fills = if self.config.liquidity_consumption {
             let size_prec = self.instrument.size_precision();
             self.book
                 .get_all_crossed_levels(order.order_side(), price, size_prec)
@@ -2097,7 +2151,41 @@ impl OrderMatchingEngine {
             self.book.simulate_fills(&book_order)
         };
 
-        self.apply_liquidity_consumption(fills, order.order_side(), order.leaves_qty())
+        // For stop market and market-if-touched orders during bar H/L/C processing, fill at trigger price
+        // (market moved through the trigger). For gaps/immediate triggers, fill at market.
+        if !self.fill_at_market
+            && self.book_type == BookType::L1_MBP
+            && !fills.is_empty()
+            && matches!(
+                order.order_type(),
+                OrderType::StopMarket | OrderType::TrailingStopMarket | OrderType::MarketIfTouched
+            )
+            && let Some(trigger_price) = order.trigger_price()
+        {
+            fills[0] = (trigger_price, fills[0].1);
+
+            // Skip liquidity consumption for trigger price fills (gap price may not exist in book).
+            let mut remaining_qty = order.leaves_qty().raw;
+            let mut capped_fills = Vec::with_capacity(fills.len());
+
+            for (price, qty) in fills {
+                if remaining_qty == 0 {
+                    break;
+                }
+
+                let capped_qty_raw = min(qty.raw, remaining_qty);
+                if capped_qty_raw == 0 {
+                    continue;
+                }
+
+                remaining_qty -= capped_qty_raw;
+                capped_fills.push((price, Quantity::from_raw(capped_qty_raw, qty.precision)));
+            }
+
+            return capped_fills;
+        }
+
+        self.apply_liquidity_consumption(fills, order.order_side(), order.leaves_qty(), None)
     }
 
     /// Fills a market order against the current order book.

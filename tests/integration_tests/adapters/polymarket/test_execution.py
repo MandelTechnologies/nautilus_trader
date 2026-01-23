@@ -2067,6 +2067,114 @@ class TestPolymarketExecutionClient:
         position = positions[0]
         assert position.quantity.as_double() == 10  # 5 + 5, not 20
 
+        # Verify fills have unique composite trade_ids (not the raw Polymarket trade ID)
+        first_order = self.cache.order(first_client_order_id)
+        second_order = self.cache.order(second_client_order_id)
+        assert len(first_order.trade_ids) == 1
+        assert len(second_order.trade_ids) == 1
+
+        first_trade_id = first_order.trade_ids[0]
+        second_trade_id = second_order.trade_ids[0]
+        assert first_trade_id != second_trade_id
+        assert str(first_trade_id).endswith(str(first_venue_order_id)[-8:])
+        assert str(second_trade_id).endswith(str(second_venue_order_id)[-8:])
+
+    def test_multi_order_fill_same_price_qty_no_duplicate_error(self):
+        """
+        Test that two fills with same price/qty don't trigger Position duplicate
+        trade_id error.
+
+        Regression test for
+        https://github.com/nautechsystems/nautilus_trader/issues/3450
+        When multiple orders at the same price get filled by a single market order, Polymarket
+        sends one TRADE message. Previously this caused KeyError from Position._check_duplicate_trade_id
+        because all fills had the same trade_id. The fix creates composite trade_ids.
+
+        """
+        # Arrange
+        market = "0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917"
+        asset_id = "21742633143463906290569050155826241533067272736897614950488156847949938836455"
+
+        # Set up two orders at the SAME price (this is the bug scenario)
+        first_client_order_id, first_venue_order_id = self._setup_test_order_with_venue_id(
+            "0x6752b79cf729180432f2e35505e8aacb6d1416eb33d1fb31989204a87dd05a0e",
+            use_ws_instrument=True,
+            price=Price.from_str("0.32"),  # Same price
+        )
+        second_client_order_id, second_venue_order_id = self._setup_test_order_with_venue_id(
+            "0x75ae906908952dac54c9bca307a1206fc87b69e7165051b1b761837c1445f099",
+            use_ws_instrument=True,
+            price=Price.from_str("0.32"),  # Same price
+        )
+
+        trade_payload = {
+            "id": "4f424a3c-e347-4c4a-8507-bcb8abbd7765",
+            "taker_order_id": "0x97842a562581e0fd8ab7c522c0c7a9d940dd8bc1ae094a53d5b9ae91d00d2855",
+            "market": market,
+            "asset_id": asset_id,
+            "side": "SELL",
+            "size": "10",
+            "fee_rate_bps": "0",
+            "price": "0.32",
+            "status": "CONFIRMED",
+            "match_time": "1768767988",
+            "last_update": "1768768009",
+            "outcome": "No",
+            "bucket_index": 0,
+            "owner": self.http_client.creds.api_key,
+            "trade_owner": "092dab0c-74fa-5ba7-4b67-572daeace198",
+            "maker_address": self.http_client.get_address.return_value,
+            "transaction_hash": "0xabc123",
+            "maker_orders": [
+                {
+                    "asset_id": asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": self.http_client.get_address.return_value,
+                    "matched_amount": "5",  # Same qty
+                    "order_id": first_venue_order_id.value,
+                    "outcome": "No",
+                    "outcome_index": 0,
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.32",  # Same price
+                    "side": "BUY",
+                },
+                {
+                    "asset_id": asset_id,
+                    "fee_rate_bps": "0",
+                    "maker_address": self.http_client.get_address.return_value,
+                    "matched_amount": "5",  # Same qty
+                    "order_id": second_venue_order_id.value,
+                    "outcome": "No",
+                    "outcome_index": 0,
+                    "owner": self.http_client.creds.api_key,
+                    "price": "0.32",  # Same price
+                    "side": "BUY",
+                },
+            ],
+            "trader_side": "MAKER",
+            "timestamp": "1768768009893",
+            "event_type": "trade",
+            "type": "TRADE",
+        }
+
+        msg = self.exec_client._decoder_user_msg.decode(msgspec.json.encode(trade_payload))
+
+        # Act - This previously raised KeyError due to duplicate trade_id in position
+        self.exec_client._handle_ws_trade_msg(msg, wait_for_ack=False)
+
+        # Assert - Position should have both fills without error
+        positions = self.cache.positions()
+        assert len(positions) == 1
+        position = positions[0]
+        assert position.quantity.as_double() == 10  # 5 + 5
+
+        # Verify the fills have different trade_ids despite same price/qty
+        first_order = self.cache.order(first_client_order_id)
+        second_order = self.cache.order(second_client_order_id)
+        first_trade_id = first_order.trade_ids[0]
+        second_trade_id = second_order.trade_ids[0]
+        assert first_trade_id != second_trade_id
+
     def test_parse_trades_response_skips_duplicate_fill_keys(self):
         """
         Test that duplicate (trade_id, venue_order_id) pairs are skipped with warning.

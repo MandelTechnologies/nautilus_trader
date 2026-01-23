@@ -52,6 +52,7 @@ from nautilus_trader.model.identifiers import StrategyId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import MarketIfTouchedOrder
 from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.model.orders import StopMarketOrder
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
@@ -3909,6 +3910,341 @@ class TestOrderMatchingEngineLiquidityConsumption:
             f"Stop should fill despite gap, got: {[type(m).__name__ for m in messages]}"
         )
 
+    def test_market_if_touched_fills_at_trigger_price(self) -> None:
+        """
+        Test MarketIfTouchedOrder fills at trigger price during bar processing.
+
+        Regression test: Previously, MIT orders were filling at bar extremes
+        instead of trigger price, causing positive slippage.
+
+        """
+        # Arrange: Create engine with bar_execution enabled
+        clock = TestClock()
+        trader_id = TestIdStubs.trader_id()
+        msgbus = MessageBus(trader_id=trader_id, clock=clock)
+        cache = TestComponentStubs.cache()
+        cache.add_instrument(self.instrument)
+
+        matching_engine = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L1_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=False,
+            bar_execution=True,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+        )
+
+        messages: list[Any] = []
+        msgbus.register("ExecEngine.process", messages.append)
+
+        # Place BUY MIT at 95.00 (below current market)
+        # MIT BUY triggers when price touches 95 from above
+        order = MarketIfTouchedOrder(
+            trader_id=trader_id,
+            strategy_id=TestIdStubs.strategy_id(),
+            instrument_id=self.instrument.id,
+            client_order_id=TestIdStubs.client_order_id(),
+            order_side=OrderSide.BUY,
+            quantity=self.instrument.make_qty(1.0),
+            trigger_price=Price.from_str("95.00"),
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=0,
+        )
+        matching_engine.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act: Process bar with low at 90.00 (crosses trigger at 95.00)
+        # Bar moves from 100 -> high:105 -> low:90 -> close:92
+        # Low at 90.00 should trigger MIT at 95.00, NOT fill at 90.00
+        bar_spec = BarSpecification(
+            step=1,
+            aggregation=BarAggregation.MINUTE,
+            price_type=PriceType.LAST,
+        )
+        bar_type = BarType(
+            instrument_id=self.instrument.id,
+            bar_spec=bar_spec,
+            aggregation_source=AggregationSource.EXTERNAL,
+        )
+        trigger_bar = Bar(
+            bar_type=bar_type,
+            open=Price.from_str("100.00"),
+            high=Price.from_str("105.00"),
+            low=Price.from_str("90.00"),
+            close=Price.from_str("92.00"),
+            volume=Quantity.from_str("100.000"),
+            ts_event=0,
+            ts_init=0,
+        )
+        matching_engine.process_bar(trigger_bar)
+
+        # Assert: MIT fills at trigger price (95.00), NOT bar extreme (90.00)
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+
+        assert len(filled_events) == 1, (
+            f"MIT should fill at trigger price, got: {[type(m).__name__ for m in messages]}"
+        )
+        fill_event = filled_events[0]
+        assert fill_event.last_px == Price.from_str("95.00"), (
+            f"Expected fill at trigger price 95.00, got {fill_event.last_px}"
+        )
+
+    def test_market_if_touched_sell_fills_at_trigger_price(self) -> None:
+        """
+        Test SELL MarketIfTouchedOrder fills at trigger price (not bar extreme) during
+        bar processing.
+        """
+        # Arrange
+        clock = TestClock()
+        trader_id = TestIdStubs.trader_id()
+        msgbus = MessageBus(trader_id=trader_id, clock=clock)
+        cache = TestComponentStubs.cache()
+        cache.add_instrument(self.instrument)
+
+        matching_engine = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L1_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=False,
+            bar_execution=True,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+        )
+
+        messages: list[Any] = []
+        msgbus.register("ExecEngine.process", messages.append)
+
+        # SELL MIT at 105 triggers when price touches from below
+        order = MarketIfTouchedOrder(
+            trader_id=trader_id,
+            strategy_id=TestIdStubs.strategy_id(),
+            instrument_id=self.instrument.id,
+            client_order_id=TestIdStubs.client_order_id(),
+            order_side=OrderSide.SELL,
+            quantity=self.instrument.make_qty(1.0),
+            trigger_price=Price.from_str("105.00"),
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=0,
+        )
+        matching_engine.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act: bar high at 110 crosses trigger at 105
+        bar_spec = BarSpecification(
+            step=1,
+            aggregation=BarAggregation.MINUTE,
+            price_type=PriceType.LAST,
+        )
+        bar_type = BarType(
+            instrument_id=self.instrument.id,
+            bar_spec=bar_spec,
+            aggregation_source=AggregationSource.EXTERNAL,
+        )
+        trigger_bar = Bar(
+            bar_type=bar_type,
+            open=Price.from_str("100.00"),
+            high=Price.from_str("110.00"),
+            low=Price.from_str("98.00"),
+            close=Price.from_str("102.00"),
+            volume=Quantity.from_str("100.000"),
+            ts_event=0,
+            ts_init=0,
+        )
+        matching_engine.process_bar(trigger_bar)
+
+        # Assert
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1, (
+            f"MIT should fill at trigger price, got: {[type(m).__name__ for m in messages]}"
+        )
+        fill_event = filled_events[0]
+        assert fill_event.last_px == Price.from_str("105.00"), (
+            f"Expected fill at trigger price 105.00, got {fill_event.last_px}"
+        )
+
+    def test_market_if_touched_buy_fills_at_trigger_price_with_liquidity_consumption(
+        self,
+    ) -> None:
+        """
+        Test BUY MIT fills at trigger price with liquidity consumption enabled.
+
+        Regression: Liquidity consumption must not discard fills at trigger price
+        where no book liquidity exists (gap scenario).
+
+        """
+        # Arrange
+        clock = TestClock()
+        trader_id = TestIdStubs.trader_id()
+        msgbus = MessageBus(trader_id=trader_id, clock=clock)
+        cache = TestComponentStubs.cache()
+        cache.add_instrument(self.instrument)
+
+        matching_engine = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L1_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=False,
+            bar_execution=True,
+            liquidity_consumption=True,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+        )
+
+        messages: list[Any] = []
+        msgbus.register("ExecEngine.process", messages.append)
+
+        # BUY MIT at 95 triggers when price touches from above
+        order = MarketIfTouchedOrder(
+            trader_id=trader_id,
+            strategy_id=TestIdStubs.strategy_id(),
+            instrument_id=self.instrument.id,
+            client_order_id=TestIdStubs.client_order_id(),
+            order_side=OrderSide.BUY,
+            quantity=self.instrument.make_qty(1.0),
+            trigger_price=Price.from_str("95.00"),
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=0,
+        )
+        matching_engine.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act: bar low at 90 crosses trigger at 95
+        bar_spec = BarSpecification(
+            step=1,
+            aggregation=BarAggregation.MINUTE,
+            price_type=PriceType.LAST,
+        )
+        bar_type = BarType(
+            instrument_id=self.instrument.id,
+            bar_spec=bar_spec,
+            aggregation_source=AggregationSource.EXTERNAL,
+        )
+        trigger_bar = Bar(
+            bar_type=bar_type,
+            open=Price.from_str("100.00"),
+            high=Price.from_str("102.00"),
+            low=Price.from_str("90.00"),
+            close=Price.from_str("98.00"),
+            volume=Quantity.from_str("100.000"),
+            ts_event=0,
+            ts_init=0,
+        )
+        matching_engine.process_bar(trigger_bar)
+
+        # Assert
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1, (
+            f"MIT should fill with liquidity consumption, got: {[type(m).__name__ for m in messages]}"
+        )
+        fill_event = filled_events[0]
+        assert fill_event.last_px == Price.from_str("95.00"), (
+            f"Expected fill at trigger price 95.00 with liquidity consumption, got {fill_event.last_px}"
+        )
+
+    def test_market_if_touched_sell_fills_at_trigger_price_with_liquidity_consumption(
+        self,
+    ) -> None:
+        """
+        Test SELL MIT fills at trigger price with liquidity consumption enabled.
+
+        Regression: Liquidity consumption must not discard fills at trigger price
+        where no book liquidity exists (gap scenario).
+
+        """
+        # Arrange
+        clock = TestClock()
+        trader_id = TestIdStubs.trader_id()
+        msgbus = MessageBus(trader_id=trader_id, clock=clock)
+        cache = TestComponentStubs.cache()
+        cache.add_instrument(self.instrument)
+
+        matching_engine = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L1_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=False,
+            bar_execution=True,
+            liquidity_consumption=True,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+        )
+
+        messages: list[Any] = []
+        msgbus.register("ExecEngine.process", messages.append)
+
+        # SELL MIT at 105 triggers when price touches from below
+        order = MarketIfTouchedOrder(
+            trader_id=trader_id,
+            strategy_id=TestIdStubs.strategy_id(),
+            instrument_id=self.instrument.id,
+            client_order_id=TestIdStubs.client_order_id(),
+            order_side=OrderSide.SELL,
+            quantity=self.instrument.make_qty(1.0),
+            trigger_price=Price.from_str("105.00"),
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=0,
+        )
+        matching_engine.process_order(order, self.account_id)
+        messages.clear()
+
+        # Act: bar high at 110 crosses trigger at 105
+        bar_spec = BarSpecification(
+            step=1,
+            aggregation=BarAggregation.MINUTE,
+            price_type=PriceType.LAST,
+        )
+        bar_type = BarType(
+            instrument_id=self.instrument.id,
+            bar_spec=bar_spec,
+            aggregation_source=AggregationSource.EXTERNAL,
+        )
+        trigger_bar = Bar(
+            bar_type=bar_type,
+            open=Price.from_str("100.00"),
+            high=Price.from_str("110.00"),
+            low=Price.from_str("98.00"),
+            close=Price.from_str("102.00"),
+            volume=Quantity.from_str("100.000"),
+            ts_event=0,
+            ts_init=0,
+        )
+        matching_engine.process_bar(trigger_bar)
+
+        # Assert
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        assert len(filled_events) == 1, (
+            f"MIT should fill with liquidity consumption, got: {[type(m).__name__ for m in messages]}"
+        )
+        fill_event = filled_events[0]
+        assert fill_event.last_px == Price.from_str("105.00"), (
+            f"Expected fill at trigger price 105.00 with liquidity consumption, got {fill_event.last_px}"
+        )
+
     def test_liquidity_consumption_regression_level_after_delete(self):
         """
         Tests that a level reappearing after DELETE is treated as fresh liquidity and
@@ -5077,3 +5413,212 @@ class TestOrderMatchingEngineLiquidityConsumption:
         filled_events = [m for m in messages if isinstance(m, OrderFilled)]
         assert len(filled_events) == 1
         assert filled_events[0].last_qty == Quantity.from_str("300.000")
+
+    @pytest.mark.parametrize(
+        "order_side",
+        [OrderSide.BUY, OrderSide.SELL],
+    )
+    def test_liquidity_consumption_tracks_fills_at_multiple_price_levels(
+        self,
+        order_side: OrderSide,
+    ):
+        """
+        Regression test for liquidity consumption tracking at multiple price levels.
+
+        When an order fills across multiple price levels, consumption must be tracked
+        separately at each original book price level. This test verifies that after
+        consuming liquidity at multiple levels, subsequent orders cannot access that
+        consumed liquidity.
+
+        """
+        matching_engine = OrderMatchingEngine(
+            instrument=self.instrument,
+            raw_id=0,
+            fill_model=FillModel(),
+            fee_model=MakerTakerFeeModel(),
+            book_type=BookType.L2_MBP,
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.MARGIN,
+            reject_stop_orders=True,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            liquidity_consumption=True,
+        )
+
+        messages: list[Any] = []
+        self.msgbus.register("ExecEngine.process", messages.append)
+
+        if order_side == OrderSide.BUY:
+            # Arrange: bid at 90, asks at 99, 100, 101 (50 qty each at 99/100)
+            bid_delta = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.BUY,
+                    price=Price.from_str("90.00"),
+                    size=Quantity.from_str("1000.000"),
+                    order_id=100,
+                ),
+                flags=0,
+                sequence=0,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(bid_delta)
+
+            ask1 = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.SELL,
+                    price=Price.from_str("99.00"),
+                    size=Quantity.from_str("50.000"),
+                    order_id=1,
+                ),
+                flags=0,
+                sequence=1,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(ask1)
+
+            ask2 = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.SELL,
+                    price=Price.from_str("100.00"),
+                    size=Quantity.from_str("50.000"),
+                    order_id=2,
+                ),
+                flags=0,
+                sequence=2,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(ask2)
+
+            ask3 = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.SELL,
+                    price=Price.from_str("101.00"),
+                    size=Quantity.from_str("100.000"),
+                    order_id=3,
+                ),
+                flags=0,
+                sequence=3,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(ask3)
+
+            limit_price = Price.from_str("100.00")
+        else:
+            # Arrange: ask at 110, bids at 101, 100, 99 (50 qty each at 101/100)
+            ask_delta = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.SELL,
+                    price=Price.from_str("110.00"),
+                    size=Quantity.from_str("1000.000"),
+                    order_id=100,
+                ),
+                flags=0,
+                sequence=0,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(ask_delta)
+
+            bid1 = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.BUY,
+                    price=Price.from_str("101.00"),
+                    size=Quantity.from_str("50.000"),
+                    order_id=1,
+                ),
+                flags=0,
+                sequence=1,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(bid1)
+
+            bid2 = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.BUY,
+                    price=Price.from_str("100.00"),
+                    size=Quantity.from_str("50.000"),
+                    order_id=2,
+                ),
+                flags=0,
+                sequence=2,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(bid2)
+
+            bid3 = OrderBookDelta(
+                instrument_id=self.instrument.id,
+                action=BookAction.ADD,
+                order=BookOrder(
+                    side=OrderSide.BUY,
+                    price=Price.from_str("99.00"),
+                    size=Quantity.from_str("100.000"),
+                    order_id=3,
+                ),
+                flags=0,
+                sequence=3,
+                ts_event=0,
+                ts_init=0,
+            )
+            matching_engine.process_order_book_delta(bid3)
+
+            limit_price = Price.from_str("100.00")
+
+        # Act: first order crosses both levels (50 + 50 = 100 total)
+        order1 = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=order_side,
+            quantity=self.instrument.make_qty(100.0),
+            price=limit_price,
+            client_order_id=TestIdStubs.client_order_id(1),
+        )
+        matching_engine.process_order(order1, self.account_id)
+        matching_engine.iterate(timestamp_ns=1)
+
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        order1_fills = [f for f in filled_events if f.client_order_id.value.endswith("-1")]
+        total_order1 = sum((f.last_qty for f in order1_fills), Quantity.zero(3))
+        assert total_order1 == Quantity.from_str("100.000"), "First order should fill 100"
+
+        messages.clear()
+
+        # Act: second order attempts to fill from consumed levels
+        order2 = TestExecStubs.limit_order(
+            instrument=self.instrument,
+            order_side=order_side,
+            quantity=self.instrument.make_qty(50.0),
+            price=limit_price,
+            client_order_id=TestIdStubs.client_order_id(2),
+        )
+        matching_engine.process_order(order2, self.account_id)
+        matching_engine.iterate(timestamp_ns=2)
+
+        # Assert: no fill since both levels are consumed
+        filled_events = [m for m in messages if isinstance(m, OrderFilled)]
+        order2_fills = [f for f in filled_events if f.client_order_id.value.endswith("-2")]
+        total_order2 = sum((f.last_qty for f in order2_fills), Quantity.zero(3))
+        assert total_order2 == Quantity.zero(3), (
+            "Second order should NOT fill - both price levels should be consumed. "
+            f"Got fill of {total_order2}. If this fails, consumption was incorrectly "
+            "tracked at wrong price levels."
+        )

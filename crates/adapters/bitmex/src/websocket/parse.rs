@@ -955,7 +955,7 @@ pub fn parse_instrument_msg(
 /// to keep it separate from the FFI layer.
 #[must_use]
 pub fn parse_funding_msg(msg: BitmexFundingMsg, ts_init: UnixNanos) -> FundingRateUpdate {
-    let instrument_id = InstrumentId::from(format!("{}.BITMEX", msg.symbol).as_str());
+    let instrument_id = InstrumentId::from(format!("{}.BITMEX", msg.symbol));
     let ts_event = parse_optional_datetime_to_unix_nanos(&Some(msg.timestamp), "");
 
     FundingRateUpdate::new(

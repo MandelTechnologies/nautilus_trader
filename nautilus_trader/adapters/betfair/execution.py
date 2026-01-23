@@ -48,6 +48,8 @@ from nautilus_trader.adapters.betfair.constants import BETFAIR_QUANTITY_PRECISIO
 from nautilus_trader.adapters.betfair.constants import BETFAIR_VENUE
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_price
 from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_quantity
+from nautilus_trader.adapters.betfair.parsing.common import FillContext
+from nautilus_trader.adapters.betfair.parsing.common import FillQtyResult
 from nautilus_trader.adapters.betfair.parsing.common import betfair_instrument_id
 from nautilus_trader.adapters.betfair.parsing.requests import bet_to_fill_report
 from nautilus_trader.adapters.betfair.parsing.requests import bet_to_order_status_report
@@ -1122,64 +1124,66 @@ class BetfairExecutionClient(LiveExecutionClient):
             self._log.debug("Canceled task 'wait_for_order'")
         return None
 
-    def _handle_stream_executable_order_update(self, unmatched_order: UnmatchedOrder) -> None:
-        # Handle update containing 'E' (executable) order update
+    def _process_order_fill(  # noqa: C901 (too complex)
+        self,
+        unmatched_order: UnmatchedOrder,
+    ) -> FillContext:
         venue_order_id = VenueOrderId(str(unmatched_order.id))
         client_order_id = self._cache.client_order_id(venue_order_id=venue_order_id)
         if client_order_id is None:
             self._log.error(
                 f"Cannot handle update: ClientOrderId not found for {venue_order_id!r}",
             )
-            return
+            return FillContext(None, None)
 
         order = self._cache.order(client_order_id=client_order_id)
         if order is None:
             self._log.error(
                 f"Cannot handle update: order not found for {client_order_id!r}",
             )
-            return
+            return FillContext(None, None)
 
         instrument = self._cache.instrument(order.instrument_id)
         if instrument is None:
             self._log.error(
                 f"Cannot handle update: no instrument found for {order.instrument_id}",
             )
-            return
+            return FillContext(None, None)
 
         sm_qty = betfair_float_to_quantity(unmatched_order.sm) if unmatched_order.sm else None
         if sm_qty is not None and sm_qty > order.filled_qty:
             trade_id = order_to_trade_id(unmatched_order)
             if trade_id not in self._published_executions[client_order_id]:
-                fill_qty = self._determine_fill_qty(unmatched_order, order)
-                if fill_qty == 0:
-                    self._log.debug(
-                        f"Fill size determined as zero for {unmatched_order}, "
-                        f"sm={unmatched_order.sm}, order.filled_qty={order.filled_qty}",
+                result = self._determine_fill_qty(unmatched_order, order)
+                if result.fill_qty == 0:
+                    self._log.warning(
+                        f"Fill size zero: sm={unmatched_order.sm}, "
+                        f"filled_qty={order.filled_qty} for {client_order_id!r}",
                     )
-                    return
+                    return FillContext(order, instrument)
 
-                potential_filled = order.filled_qty + fill_qty
-                if potential_filled > order.quantity:
+                if result.total_matched_qty > order.quantity:
                     self._log.warning(
                         f"Rejecting potential overfill for {client_order_id!r}: "
-                        f"order.quantity={order.quantity}, order.filled_qty={order.filled_qty}, "
-                        f"fill_qty={fill_qty}, would result in filled_qty={potential_filled}. "
+                        f"order.quantity={order.quantity}, total_matched={result.total_matched_qty}, "
                         f"sm={unmatched_order.sm}",
                     )
-                    return
-
-                fill_price = None
+                    return FillContext(order, instrument)
 
                 try:
                     fill_price = self._determine_fill_price(unmatched_order, order)
+                    if fill_price <= 0:
+                        self._log.warning(
+                            f"Skipping fill with invalid price={fill_price} for {client_order_id!r}",
+                        )
+                        return FillContext(order, instrument)
                     last_px = betfair_float_to_price(fill_price)
                 except ValueError as e:
                     self._log.warning(
-                        "Skipping invalid fill due to ValueError when converting price: "
-                        f"fill_price={fill_price!r}, unmatched_order={unmatched_order!r}, "
+                        f"Skipping fill: invalid price conversion, "
                         f"client_order_id={client_order_id!r}, error={e}",
                     )
-                    return
+                    return FillContext(order, instrument)
 
                 ts_event = self._get_matched_timestamp(unmatched_order)
 
@@ -1188,101 +1192,48 @@ class BetfairExecutionClient(LiveExecutionClient):
                     instrument_id=order.instrument_id,
                     client_order_id=client_order_id,
                     venue_order_id=venue_order_id,
-                    venue_position_id=None,  # Can be None
+                    venue_position_id=None,
                     trade_id=trade_id,
                     order_side=OrderSideParser.to_nautilus(unmatched_order.side),
                     order_type=OrderType.LIMIT,
-                    last_qty=fill_qty,
+                    last_qty=result.fill_qty,
                     last_px=last_px,
                     quote_currency=instrument.quote_currency,
                     commission=Money(0, self.base_currency),
                     liquidity_side=LiquiditySide.NO_LIQUIDITY_SIDE,
                     ts_event=ts_event,
                 )
-                self._published_executions[client_order_id].append(trade_id)
 
-    def _handle_stream_execution_complete_order_update(  # noqa: C901 (too complex)
+                self._update_fill_qty_cache(result.total_matched_qty, order)
+                self._published_executions[client_order_id].append(trade_id)
+            else:
+                self._log.warning(
+                    f"Fill skipped: duplicate trade_id={trade_id!r} for {client_order_id!r}",
+                )
+        elif sm_qty is not None:
+            self._log.warning(
+                f"Fill skipped: sm_qty={sm_qty} <= filled_qty={order.filled_qty} "
+                f"for {client_order_id!r}, bet_id={unmatched_order.id}",
+            )
+
+        return FillContext(order, instrument)
+
+    def _handle_stream_executable_order_update(
         self,
         unmatched_order: UnmatchedOrder,
     ) -> None:
+        self._process_order_fill(unmatched_order)
+
+    def _handle_stream_execution_complete_order_update(
+        self,
+        unmatched_order: UnmatchedOrder,
+    ) -> None:
+        order, instrument = self._process_order_fill(unmatched_order)
+        if order is None or instrument is None:
+            return
+
         venue_order_id = VenueOrderId(str(unmatched_order.id))
-        client_order_id = self._cache.client_order_id(venue_order_id=venue_order_id)
-        if client_order_id is None:
-            self._log.error(
-                f"Cannot handle update: ClientOrderId not found for {venue_order_id!r}",
-            )
-            return
-
-        order = self._cache.order(client_order_id=client_order_id)
-        if order is None:
-            self._log.error(
-                f"Cannot handle update: order not found for {client_order_id!r}",
-            )
-            return
-
-        instrument = self._cache.instrument(order.instrument_id)
-        if instrument is None:
-            self._log.error(
-                f"Cannot handle update: no instrument found for {order.instrument_id}",
-            )
-            return
-
-        sm_qty = betfair_float_to_quantity(unmatched_order.sm) if unmatched_order.sm else None
-        if sm_qty is not None and sm_qty > order.filled_qty:
-            trade_id = order_to_trade_id(unmatched_order)
-            if trade_id not in self._published_executions[client_order_id]:
-                fill_qty = self._determine_fill_qty(unmatched_order, order)
-                if fill_qty == 0:
-                    self._log.debug(
-                        f"Fill size determined as zero for {unmatched_order}, "
-                        f"sm={unmatched_order.sm}, order.filled_qty={order.filled_qty}",
-                    )
-                    return
-
-                potential_filled = order.filled_qty + fill_qty
-                if potential_filled > order.quantity:
-                    self._log.warning(
-                        f"Rejecting potential overfill for {client_order_id!r}: "
-                        f"order.quantity={order.quantity}, order.filled_qty={order.filled_qty}, "
-                        f"fill_qty={fill_qty}, would result in filled_qty={potential_filled}. "
-                        f"sm={unmatched_order.sm}",
-                    )
-                    return
-
-                fill_price = None
-
-                try:
-                    fill_price = self._determine_fill_price(unmatched_order, order)
-                    last_px = betfair_float_to_price(fill_price)
-                except ValueError as e:
-                    self._log.warning(
-                        "Skipping invalid fill due to ValueError when converting price. "
-                        f"fill_price={fill_price!r}, unmatched_order={unmatched_order!r}, "
-                        f"client_order_id={client_order_id!r}, error={e}",
-                    )
-                    return
-
-                ts_event = self._get_matched_timestamp(unmatched_order)
-
-                # At least some part of this order has been filled
-                self.generate_order_filled(
-                    strategy_id=order.strategy_id,
-                    instrument_id=instrument.id,
-                    client_order_id=client_order_id,
-                    venue_order_id=venue_order_id,
-                    venue_position_id=None,  # Can be None
-                    trade_id=trade_id,
-                    order_side=OrderSideParser.to_nautilus(unmatched_order.side),
-                    order_type=OrderType.LIMIT,
-                    last_qty=fill_qty,
-                    last_px=last_px,
-                    quote_currency=instrument.quote_currency,
-                    # avg_px=order['avp'],
-                    commission=Money(0, self.base_currency),
-                    liquidity_side=LiquiditySide.NO_LIQUIDITY_SIDE,
-                    ts_event=ts_event,
-                )
-                self._published_executions[client_order_id].append(trade_id)
+        client_order_id = order.client_order_id
 
         # Check for cancel
         cancel_qty = self._get_cancel_quantity(unmatched_order)
@@ -1357,7 +1308,7 @@ class BetfairExecutionClient(LiveExecutionClient):
 
     def _determine_fill_price(self, unmatched_order: UnmatchedOrder, order: Order) -> float:
         if not unmatched_order.avp:
-            # We don't have any specifics about the fill, assume it was filled at our price
+            # No average price matched, assume filled at limit price
             return unmatched_order.p
         if order.filled_qty == 0:
             # New fill, simply return average price
@@ -1392,7 +1343,11 @@ class BetfairExecutionClient(LiveExecutionClient):
                 )
                 return price
 
-    def _determine_fill_qty(self, unmatched_order: UnmatchedOrder, order: Order) -> Quantity:
+    def _determine_fill_qty(
+        self,
+        unmatched_order: UnmatchedOrder,
+        order: Order,
+    ) -> FillQtyResult:
         total_matched_qty = betfair_float_to_quantity(unmatched_order.sm or 0.0)
 
         # Use max of cache and order state to handle startup/reconnect
@@ -1402,16 +1357,20 @@ class BetfairExecutionClient(LiveExecutionClient):
         )
 
         if total_matched_qty <= baseline_qty:
-            return Quantity.zero(BETFAIR_QUANTITY_PRECISION)
+            return FillQtyResult(Quantity.zero(BETFAIR_QUANTITY_PRECISION), total_matched_qty)
 
-        fill_qty = Quantity(total_matched_qty - baseline_qty, BETFAIR_QUANTITY_PRECISION)
+        fill_qty = total_matched_qty - baseline_qty
+        return FillQtyResult(fill_qty, total_matched_qty)
 
+    def _update_fill_qty_cache(
+        self,
+        total_matched_qty: Quantity,
+        order: Order,
+    ) -> None:
         if total_matched_qty >= order.quantity:
             self._filled_qty_cache.pop(order.client_order_id, None)
         else:
             self._filled_qty_cache[order.client_order_id] = total_matched_qty
-
-        return fill_qty
 
     def _get_matched_timestamp(self, unmatched_order: UnmatchedOrder) -> int:
         if unmatched_order.md is None:

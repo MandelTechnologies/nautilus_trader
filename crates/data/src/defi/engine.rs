@@ -195,7 +195,7 @@ impl DataEngine {
     ///
     /// Returns an error if no client is found for the given client ID or venue,
     /// or if the client fails to process the request.
-    pub fn execute_defi_request(&mut self, req: &DefiRequestCommand) -> anyhow::Result<()> {
+    pub fn execute_defi_request(&mut self, req: DefiRequestCommand) -> anyhow::Result<()> {
         // Skip requests for external clients
         if let Some(cid) = req.client_id()
             && self.external_clients.contains(cid)
@@ -497,8 +497,7 @@ impl DataEngine {
                     None,
                 );
 
-                if let Err(e) =
-                    self.execute_defi_request(&DefiRequestCommand::PoolSnapshot(request))
+                if let Err(e) = self.execute_defi_request(DefiRequestCommand::PoolSnapshot(request))
                 {
                     log::warn!("Failed to request pool snapshot for {instrument_id}: {e}");
                 } else {

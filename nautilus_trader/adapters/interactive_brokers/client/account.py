@@ -135,7 +135,7 @@ class InteractiveBrokersClientAccountMixin(BaseMixin):
         else:
             self._log.debug(f"Subscription doesn't exist for {name}")
 
-    async def get_positions(self, account_id: str) -> list[Position] | None:
+    async def get_positions(self, account_id: str) -> list[Position]:
         """
         Fetch open positions for a specified account.
 
@@ -146,7 +146,7 @@ class InteractiveBrokersClientAccountMixin(BaseMixin):
 
         Returns
         -------
-        list[Position] | ``None``
+        list[Position]
 
         """
         self._log.debug(f"Requesting open positions for {account_id}")
@@ -160,7 +160,7 @@ class InteractiveBrokersClientAccountMixin(BaseMixin):
             )
 
             if not request:
-                return None
+                return []
 
             request.handle()
             all_positions = await self._await_request(request, 30)
@@ -168,7 +168,7 @@ class InteractiveBrokersClientAccountMixin(BaseMixin):
             all_positions = await self._await_request(request, 30)
 
         if not all_positions:
-            return None
+            return []
 
         positions = []
 

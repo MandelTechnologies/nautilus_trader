@@ -218,7 +218,7 @@ fn get_bar(
 ) -> Bar {
     let bar_type_str = format!("{}-1-MINUTE-LAST-EXTERNAL", instrument.id());
     Bar::new(
-        BarType::from(bar_type_str.as_ref()),
+        BarType::from(bar_type_str),
         Price::new(open, 0),
         Price::new(high, 0),
         Price::new(low, 0),

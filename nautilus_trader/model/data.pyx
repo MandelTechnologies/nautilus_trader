@@ -3115,6 +3115,7 @@ cdef class OrderBookDeltas(Data):
     def __eq__(self, OrderBookDeltas other) -> bool:
         if other is None:
             return False
+
         return OrderBookDeltas.to_dict_c(self) == OrderBookDeltas.to_dict_c(other)
 
     def __hash__(self) -> int:
@@ -3311,7 +3312,8 @@ cdef class OrderBookDeltas(Data):
             OrderBookDelta delta
         for delta in data:
             batch.append(delta)
-            if delta.flags == RecordFlag.F_LAST:
+
+            if delta.flags & RecordFlag.F_LAST:
                 batches.append(batch)
                 batch = []
 

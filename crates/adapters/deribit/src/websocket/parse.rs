@@ -17,6 +17,7 @@
 
 use ahash::AHashMap;
 use anyhow::Context;
+use chrono::{Duration, TimeZone, Timelike, Utc};
 use nautilus_core::{UUID4, UnixNanos, datetime::NANOSECONDS_IN_MILLISECOND};
 use nautilus_model::{
     data::{
@@ -46,6 +47,20 @@ use super::{
     },
 };
 use crate::http::models::DeribitPosition;
+
+fn next_8_utc(from_ns: UnixNanos) -> UnixNanos {
+    let from_secs = from_ns.as_u64() / 1_000_000_000;
+    let dt = Utc.timestamp_opt(from_secs as i64, 0).unwrap();
+    let next_8 = if dt.hour() < 8 {
+        dt.date_naive().and_hms_opt(8, 0, 0).unwrap().and_utc()
+    } else {
+        (dt.date_naive() + Duration::days(1))
+            .and_hms_opt(8, 0, 0)
+            .unwrap()
+            .and_utc()
+    };
+    UnixNanos::from(next_8.timestamp_nanos_opt().unwrap() as u64)
+}
 
 /// Parses a Deribit trade message into a Nautilus `TradeTick`.
 ///
@@ -118,9 +133,20 @@ pub fn parse_book_snapshot(
 
     let mut deltas = Vec::new();
 
-    // Add CLEAR action first for snapshot
-    deltas.push(OrderBookDelta::clear(
+    let has_levels = !msg.bids.is_empty() || !msg.asks.is_empty();
+
+    // All snapshot deltas get F_SNAPSHOT; CLEAR also gets F_LAST if no levels follow
+    let clear_flags = if has_levels {
+        RecordFlag::F_SNAPSHOT as u8
+    } else {
+        RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+    };
+
+    deltas.push(OrderBookDelta::new(
         instrument_id,
+        BookAction::Clear,
+        BookOrder::default(),
+        clear_flags,
         msg.change_id,
         ts_event,
         ts_init,
@@ -141,7 +167,7 @@ pub fn parse_book_snapshot(
                     instrument_id,
                     BookAction::Add,
                     BookOrder::new(OrderSide::Buy, price, size, i as u64),
-                    0, // No flags for regular deltas
+                    RecordFlag::F_SNAPSHOT as u8,
                     msg.change_id,
                     ts_event,
                     ts_init,
@@ -166,7 +192,7 @@ pub fn parse_book_snapshot(
                     instrument_id,
                     BookAction::Add,
                     BookOrder::new(OrderSide::Sell, price, size, (num_bids + i) as u64),
-                    0, // No flags for regular deltas
+                    RecordFlag::F_SNAPSHOT as u8,
                     msg.change_id,
                     ts_event,
                     ts_init,
@@ -175,13 +201,12 @@ pub fn parse_book_snapshot(
         }
     }
 
-    // Set F_LAST flag on the last delta
     if let Some(last) = deltas.last_mut() {
         *last = OrderBookDelta::new(
             last.instrument_id,
             last.action,
             last.order,
-            RecordFlag::F_LAST as u8,
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8,
             last.sequence,
             last.ts_event,
             last.ts_init,
@@ -303,7 +328,7 @@ pub fn parse_book_msg(
 ///
 /// # Errors
 ///
-/// Returns an error if the quote cannot be parsed.
+/// Returns an error if the quote cannot be parsed or prices are missing.
 pub fn parse_ticker_to_quote(
     msg: &DeribitTickerMsg,
     instrument: &InstrumentAny,
@@ -313,8 +338,15 @@ pub fn parse_ticker_to_quote(
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
 
-    let bid_price = Price::new(msg.best_bid_price.unwrap_or(0.0), price_precision);
-    let ask_price = Price::new(msg.best_ask_price.unwrap_or(0.0), price_precision);
+    let bid_price_val = msg
+        .best_bid_price
+        .context("Missing best_bid_price in ticker")?;
+    let ask_price_val = msg
+        .best_ask_price
+        .context("Missing best_ask_price in ticker")?;
+
+    let bid_price = Price::new(bid_price_val, price_precision);
+    let ask_price = Price::new(ask_price_val, price_precision);
     let bid_size = Quantity::new(msg.best_bid_amount.unwrap_or(0.0), size_precision);
     let ask_size = Quantity::new(msg.best_ask_amount.unwrap_or(0.0), size_precision);
     let ts_event = UnixNanos::new(msg.timestamp * NANOSECONDS_IN_MILLISECOND);
@@ -552,13 +584,16 @@ pub fn parse_user_order_msg(
         _ => OrderType::Limit, // Default to Limit for unknown types
     };
 
-    // Map Deribit time in force to Nautilus
+    // Deribit supports: good_til_cancelled, good_til_day, fill_or_kill, immediate_or_cancel
     let time_in_force = match msg.time_in_force.as_str() {
-        "good_til_cancelled" | "gtc" => TimeInForce::Gtc,
-        "good_til_day" | "gtd" => TimeInForce::Gtd,
-        "fill_or_kill" | "fok" => TimeInForce::Fok,
-        "immediate_or_cancel" | "ioc" => TimeInForce::Ioc,
-        _ => TimeInForce::Gtc, // Default to GTC
+        "good_til_cancelled" => TimeInForce::Gtc,
+        "good_til_day" => TimeInForce::Gtd,
+        "fill_or_kill" => TimeInForce::Fok,
+        "immediate_or_cancel" => TimeInForce::Ioc,
+        other => {
+            log::warn!("Unknown time_in_force '{other}', defaulting to GTC");
+            TimeInForce::Gtc
+        }
     };
 
     // Map Deribit order state to Nautilus status
@@ -616,6 +651,11 @@ pub fn parse_user_order_msg(
     {
         let price = Price::from_decimal_dp(price_val, price_precision)?;
         report = report.with_price(price);
+    }
+
+    if time_in_force == TimeInForce::Gtd {
+        let expire_time = next_8_utc(ts_accepted);
+        report = report.with_expire_time(expire_time);
     }
 
     // Add average price if filled

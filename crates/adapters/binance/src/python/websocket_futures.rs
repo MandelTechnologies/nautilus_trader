@@ -28,7 +28,7 @@ use crate::{
     common::enums::{BinanceEnvironment, BinanceProductType},
     futures::websocket::{
         client::BinanceFuturesWebSocketClient,
-        messages::{BinanceFuturesWsMessage, NautilusFuturesDataWsMessage},
+        messages::{NautilusDataWsMessage, NautilusWsMessage},
     },
 };
 
@@ -100,8 +100,8 @@ impl BinanceFuturesWebSocketClient {
 
                 while let Some(msg) = stream.next().await {
                     match msg {
-                        BinanceFuturesWsMessage::Data(data_msg) => match data_msg {
-                            NautilusFuturesDataWsMessage::Data(data_vec) => {
+                        NautilusWsMessage::Data(data_msg) => match data_msg {
+                            NautilusDataWsMessage::Data(data_vec) => {
                                 Python::attach(|py| {
                                     for data in data_vec {
                                         let py_obj = data_to_pycapsule(py, data);
@@ -109,7 +109,7 @@ impl BinanceFuturesWebSocketClient {
                                     }
                                 });
                             }
-                            NautilusFuturesDataWsMessage::Deltas(deltas) => {
+                            NautilusDataWsMessage::DepthUpdate { deltas, .. } => {
                                 Python::attach(|py| {
                                     let py_obj = data_to_pycapsule(
                                         py,
@@ -120,15 +120,15 @@ impl BinanceFuturesWebSocketClient {
                             }
                             _ => {}
                         },
-                        BinanceFuturesWsMessage::Exec(_) => {}
-                        BinanceFuturesWsMessage::Error(err) => {
+                        NautilusWsMessage::Exec(_) | NautilusWsMessage::ExecRaw(_) => {}
+                        NautilusWsMessage::Error(err) => {
                             log::warn!(
                                 "Binance WebSocket error: code={}, msg={}",
                                 err.code,
                                 err.msg
                             );
                         }
-                        BinanceFuturesWsMessage::Reconnected => {
+                        NautilusWsMessage::Reconnected => {
                             log::info!("Binance Futures WebSocket reconnected");
                         }
                     }

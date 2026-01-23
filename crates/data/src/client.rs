@@ -619,7 +619,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client request fails.
-    pub fn request_data(&self, req: &RequestCustomData) -> anyhow::Result<()> {
+    pub fn request_data(&self, req: RequestCustomData) -> anyhow::Result<()> {
         self.client.request_data(req)
     }
 
@@ -628,7 +628,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the request.
-    pub fn request_instrument(&self, req: &RequestInstrument) -> anyhow::Result<()> {
+    pub fn request_instrument(&self, req: RequestInstrument) -> anyhow::Result<()> {
         self.client.request_instrument(req)
     }
 
@@ -637,7 +637,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the request.
-    pub fn request_instruments(&self, req: &RequestInstruments) -> anyhow::Result<()> {
+    pub fn request_instruments(&self, req: RequestInstruments) -> anyhow::Result<()> {
         self.client.request_instruments(req)
     }
 
@@ -646,7 +646,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the book snapshot request.
-    pub fn request_book_snapshot(&self, req: &RequestBookSnapshot) -> anyhow::Result<()> {
+    pub fn request_book_snapshot(&self, req: RequestBookSnapshot) -> anyhow::Result<()> {
         self.client.request_book_snapshot(req)
     }
 
@@ -655,7 +655,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the quotes request.
-    pub fn request_quotes(&self, req: &RequestQuotes) -> anyhow::Result<()> {
+    pub fn request_quotes(&self, req: RequestQuotes) -> anyhow::Result<()> {
         self.client.request_quotes(req)
     }
 
@@ -664,7 +664,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the trades request.
-    pub fn request_trades(&self, req: &RequestTrades) -> anyhow::Result<()> {
+    pub fn request_trades(&self, req: RequestTrades) -> anyhow::Result<()> {
         self.client.request_trades(req)
     }
 
@@ -673,7 +673,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the bars request.
-    pub fn request_bars(&self, req: &RequestBars) -> anyhow::Result<()> {
+    pub fn request_bars(&self, req: RequestBars) -> anyhow::Result<()> {
         self.client.request_bars(req)
     }
 
@@ -682,7 +682,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the order book depths request.
-    pub fn request_book_depth(&self, req: &RequestBookDepth) -> anyhow::Result<()> {
+    pub fn request_book_depth(&self, req: RequestBookDepth) -> anyhow::Result<()> {
         self.client.request_book_depth(req)
     }
 }

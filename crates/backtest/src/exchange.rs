@@ -447,8 +447,8 @@ impl SimulatedExchange {
                 match account.balance(Some(adjustment.currency)) {
                     Some(balance) => {
                         let mut current_balance = *balance;
-                        current_balance.total += adjustment;
-                        current_balance.free += adjustment;
+                        current_balance.total = current_balance.total + adjustment;
+                        current_balance.free = current_balance.free + adjustment;
 
                         let margins = match account {
                             AccountAny::Margin(margin_account) => margin_account.margins.clone(),

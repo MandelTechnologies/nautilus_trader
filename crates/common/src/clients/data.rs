@@ -533,7 +533,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the data request fails.
-    fn request_data(&self, request: &RequestCustomData) -> anyhow::Result<()> {
+    fn request_data(&self, request: RequestCustomData) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -543,7 +543,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the instruments request fails.
-    fn request_instruments(&self, request: &RequestInstruments) -> anyhow::Result<()> {
+    fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -553,7 +553,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the instrument request fails.
-    fn request_instrument(&self, request: &RequestInstrument) -> anyhow::Result<()> {
+    fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -563,7 +563,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the book snapshot request fails.
-    fn request_book_snapshot(&self, request: &RequestBookSnapshot) -> anyhow::Result<()> {
+    fn request_book_snapshot(&self, request: RequestBookSnapshot) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -573,7 +573,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the quotes request fails.
-    fn request_quotes(&self, request: &RequestQuotes) -> anyhow::Result<()> {
+    fn request_quotes(&self, request: RequestQuotes) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -583,7 +583,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the trades request fails.
-    fn request_trades(&self, request: &RequestTrades) -> anyhow::Result<()> {
+    fn request_trades(&self, request: RequestTrades) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -593,7 +593,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the bars request fails.
-    fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
+    fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -603,7 +603,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the order book depths request fails.
-    fn request_book_depth(&self, request: &RequestBookDepth) -> anyhow::Result<()> {
+    fn request_book_depth(&self, request: RequestBookDepth) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }
@@ -614,7 +614,7 @@ pub trait DataClient {
     /// # Errors
     ///
     /// Returns an error if the pool snapshot request fails.
-    fn request_pool_snapshot(&self, request: &RequestPoolSnapshot) -> anyhow::Result<()> {
+    fn request_pool_snapshot(&self, request: RequestPoolSnapshot) -> anyhow::Result<()> {
         log_not_implemented(&request);
         Ok(())
     }

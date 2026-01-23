@@ -39,6 +39,7 @@ from nautilus_trader.model.data import Bar
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import OtoTriggerMode
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.persistence.funcs import parse_filters_expr
@@ -88,6 +89,10 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
     support_contingent_orders : bool, default True
         If contingent orders will be supported/respected by the venue.
         If False, then it's expected the strategy will be managing any contingent orders.
+    oto_trigger_mode : OtoTriggerMode | str, default "PARTIAL"
+        The OTO trigger mode for contingent orders:
+        - ``PARTIAL``: release child orders pro-rata to each partial fill (default).
+        - ``FULL``: release child orders only once the parent is fully filled.
     use_position_ids : bool, default True
         If venue position IDs will be generated on order fills.
     use_random_ids : bool, default False
@@ -138,6 +143,7 @@ class BacktestVenueConfig(NautilusConfig, frozen=True):
     reject_stop_orders: bool = True
     support_gtd_orders: bool = True
     support_contingent_orders: bool = True
+    oto_trigger_mode: OtoTriggerMode | str = "PARTIAL"
     use_position_ids: bool = True
     use_random_ids: bool = False
     use_reduce_only: bool = True

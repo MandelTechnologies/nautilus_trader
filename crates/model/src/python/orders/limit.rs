@@ -473,8 +473,7 @@ impl LimitOrder {
     fn py_from_dict(values: &Bound<'_, PyDict>) -> PyResult<Self> {
         let trader_id = TraderId::from(get_required_string(values, "trader_id")?.as_str());
         let strategy_id = StrategyId::from(get_required_string(values, "strategy_id")?.as_str());
-        let instrument_id =
-            InstrumentId::from(get_required_string(values, "instrument_id")?.as_str());
+        let instrument_id = InstrumentId::from(get_required_string(values, "instrument_id")?);
         let client_order_id =
             ClientOrderId::from(get_required_string(values, "client_order_id")?.as_str());
         let order_side = get_required_parsed(values, "side", |s| {

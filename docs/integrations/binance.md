@@ -262,7 +262,7 @@ WebSocket stream update rates differ between Spot and Futures exchanges, with Na
 highest available streaming rate:
 
 - **Spot**: 100ms
-- **Futures**: 0ms (*unthrottled*)
+- **Futures**: 0ms (unthrottled)
 
 There is a limitation of one order book per instrument per trader instance.
 As stream subscriptions may vary, the latest order book data (deltas or snapshots)

@@ -1038,6 +1038,8 @@ impl BinanceRawSpotHttpClient {
             iceberg_qty: None,
             new_order_resp_type: Some(BinanceOrderResponseType::Full),
             self_trade_prevention_mode: None,
+            strategy_id: None,
+            strategy_type: None,
         };
         let bytes = self.post_order("order", Some(&params)).await?;
         let response = parse::decode_new_order_full(&bytes)?;
