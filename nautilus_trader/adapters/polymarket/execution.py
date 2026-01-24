@@ -40,6 +40,7 @@ from nautilus_trader.adapters.polymarket.common.credentials import PolymarketWeb
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketEventType
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.parsing import calculate_commission
+from nautilus_trader.adapters.polymarket.common.parsing import make_composite_trade_id
 from nautilus_trader.adapters.polymarket.common.parsing import validate_ethereum_address
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_condition_id
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
@@ -1424,6 +1425,8 @@ class PolymarketExecutionClient(LiveExecutionClient):
         order_id: str,
     ):
         venue_order_id = msg.venue_order_id(order_id)
+        composite_trade_id = make_composite_trade_id(msg.id, venue_order_id)
+
         asset_id = msg.get_asset_id(order_id)
         instrument_id = get_polymarket_instrument_id(msg.market, asset_id)
         instrument = self._cache.instrument(instrument_id)
@@ -1474,9 +1477,9 @@ class PolymarketExecutionClient(LiveExecutionClient):
             self._log.error(f"Cannot process trade: {client_order_id!r} not found in cache")
             return
 
-        if trade_id in order.trade_ids:
+        if composite_trade_id in order.trade_ids:
             self._log.debug(
-                f"Trade {trade_id} already processed for {order.client_order_id} - skipping",
+                f"Trade {composite_trade_id} already processed for {order.client_order_id} - skipping",
             )
             return
 
@@ -1495,7 +1498,7 @@ class PolymarketExecutionClient(LiveExecutionClient):
             client_order_id=client_order_id,
             venue_order_id=venue_order_id,
             venue_position_id=None,  # Not applicable on Polymarket
-            trade_id=trade_id,
+            trade_id=composite_trade_id,
             order_side=order.side,
             order_type=order.order_type,
             last_qty=last_qty,

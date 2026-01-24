@@ -40,15 +40,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let trader_id = TraderId::test_default();
     let node_name = "AX-TESTER-001".to_string();
 
+    let symbol = "JPYUSD";
+    let instrument_ids = vec![
+        InstrumentId::from(format!("{symbol}-PERP.AX")),
+        // InstrumentId::from("EURUSD-PERP.AX"),
+        // InstrumentId::from("BTCUSD-PERP.AX"),
+    ];
+
     let is_sandbox = std::env::var("AX_IS_SANDBOX")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(true);
-
-    let instrument_ids = vec![
-        InstrumentId::from("EURUSD-PERP.AX"),
-        // InstrumentId::from("BTCUSD-PERP.AX"),
-    ];
 
     let ax_config = AxDataClientConfig {
         api_key: std::env::var("AX_API_KEY").ok(),
@@ -66,7 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_data_client(None, Box::new(client_factory), Box::new(ax_config))?
         .build()?;
 
-    let bar_types = vec![BarType::from("EURUSD-PERP.AX-1-MINUTE-LAST-EXTERNAL")];
+    let bar_types = vec![BarType::from(format!(
+        "{symbol}-PERP.AX-1-MINUTE-LAST-EXTERNAL"
+    ))];
 
     let tester_config = DataTesterConfig::new(client_id, instrument_ids)
         .with_subscribe_quotes(true)

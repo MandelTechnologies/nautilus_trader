@@ -395,7 +395,7 @@ impl GreeksCalculator {
         let mut greeks_data = None;
         let underlying = instrument.underlying().unwrap();
         let underlying_str = format!("{}.{}", underlying, instrument_id.venue);
-        let underlying_instrument_id = InstrumentId::from(underlying_str.as_str());
+        let underlying_instrument_id = InstrumentId::from(underlying_str);
 
         // Use cached greeks if requested
         if use_cached_greeks && let Some(cached_greeks) = cache.greeks(&instrument_id) {

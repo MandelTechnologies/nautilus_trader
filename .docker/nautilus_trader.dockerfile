@@ -22,7 +22,7 @@ RUN apt-get update && \
 
 # Install pinned Rust toolchain (must match `rust-toolchain.toml`)
 COPY rust-toolchain.toml ./
-RUN TOOLCHAIN="$(python -c "import tomllib; print(tomllib.load(open('rust-toolchain.toml','rb'))['toolchain']['channel'])")" && \
+RUN TOOLCHAIN="$(python -c "import tomllib; tc=tomllib.load(open('rust-toolchain.toml','rb'))['toolchain']; print(tc.get('version') or tc.get('channel') or '')")" && \
     test -n "$TOOLCHAIN" && \
     curl https://sh.rustup.rs -sSf | bash -s -- -y --profile minimal --default-toolchain "$TOOLCHAIN"
 

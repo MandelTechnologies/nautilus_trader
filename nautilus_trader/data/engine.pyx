@@ -2044,11 +2044,11 @@ cdef class DataEngine(Component):
 
             buffer_deltas.append(delta)
 
-            is_last_delta = delta.flags == RecordFlag.F_LAST
+            is_last_delta = delta.flags & RecordFlag.F_LAST
             if is_last_delta:
                 deltas = OrderBookDeltas(
                     instrument_id=instrument_id,
-                    deltas=buffer_deltas
+                    deltas=buffer_deltas,
                 )
                 self._msgbus.publish_c(
                     topic=self._topic_cache.get_deltas_topic(instrument_id, historical),
@@ -2080,7 +2080,7 @@ cdef class DataEngine(Component):
             for delta in deltas.deltas:
                 buffer_deltas.append(delta)
 
-                is_last_delta = delta.flags == RecordFlag.F_LAST
+                is_last_delta = delta.flags & RecordFlag.F_LAST
                 if is_last_delta:
                     deltas_to_publish = OrderBookDeltas(
                         instrument_id=instrument_id,

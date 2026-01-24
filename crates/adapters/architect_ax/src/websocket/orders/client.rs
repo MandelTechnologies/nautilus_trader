@@ -291,7 +291,7 @@ impl AxOrdersWebSocketClient {
         const MAX_RETRIES: u32 = 5;
         const CONNECTION_TIMEOUT_SECS: u64 = 10;
 
-        self.signal.store(false, Ordering::Relaxed);
+        self.signal.store(false, Ordering::Release);
 
         let (raw_handler, raw_rx) = channel_message_handler();
 
@@ -435,8 +435,7 @@ impl AxOrdersWebSocketClient {
 
             while let Some(msg) = handler.next().await {
                 if matches!(msg, AxOrdersWsMessage::Reconnected) {
-                    log::info!("WebSocket reconnected");
-                    // TODO: Re-authenticate on reconnect if needed
+                    log::info!("WebSocket reconnected, authentication will be restored");
                 }
 
                 if out_tx.send(msg).is_err() {
@@ -736,17 +735,19 @@ impl AxOrdersWebSocketClient {
         Ok(request_id)
     }
 
-    /// Returns a stream of messages from the WebSocket.
+    /// Returns a stream of WebSocket messages.
     ///
     /// # Panics
     ///
-    /// Panics if called more than once or before connecting.
+    /// Panics if called before `connect()` or if the stream has already been taken.
     pub fn stream(&mut self) -> impl futures_util::Stream<Item = AxOrdersWsMessage> + 'static {
         let rx = self
             .out_rx
             .take()
-            .expect("Stream receiver already taken or client not connected");
-        let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership - other references exist");
+            .expect("Stream receiver already taken or client not connected - stream() can only be called once");
+        let mut rx = Arc::try_unwrap(rx).expect(
+            "Cannot take ownership of stream - client was cloned and other references exist",
+        );
         async_stream::stream! {
             while let Some(msg) = rx.recv().await {
                 yield msg;
@@ -763,9 +764,11 @@ impl AxOrdersWebSocketClient {
     /// Closes the WebSocket connection and cleans up resources.
     pub async fn close(&mut self) {
         log::debug!("Closing WebSocket client");
-        self.signal.store(true, Ordering::Relaxed);
 
+        // Send disconnect first to allow graceful cleanup before signal
         let _ = self.send_cmd(HandlerCommand::Disconnect).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        self.signal.store(true, Ordering::Release);
 
         if let Some(handle) = self.task_handle.take() {
             const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);

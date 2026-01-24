@@ -450,6 +450,8 @@ async fn test_place_order_sends_correct_request() {
         iceberg_qty: None,
         new_order_resp_type: None,
         self_trade_prevention_mode: None,
+        strategy_id: None,
+        strategy_type: None,
     };
 
     let request_id = client.place_order(params).await.unwrap();
@@ -518,6 +520,8 @@ async fn test_order_rejection_via_json_error() {
         iceberg_qty: None,
         new_order_resp_type: None,
         self_trade_prevention_mode: None,
+        strategy_id: None,
+        strategy_type: None,
     };
 
     let _request_id = client.place_order(params).await.unwrap();
@@ -589,6 +593,8 @@ async fn test_next_request_id_increments() {
         iceberg_qty: None,
         new_order_resp_type: None,
         self_trade_prevention_mode: None,
+        strategy_id: None,
+        strategy_type: None,
     };
 
     let id1 = client.place_order(params.clone()).await.unwrap();

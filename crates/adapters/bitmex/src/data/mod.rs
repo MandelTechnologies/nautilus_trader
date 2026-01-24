@@ -759,7 +759,7 @@ impl DataClient for BitmexDataClient {
         Ok(())
     }
 
-    fn request_instruments(&self, request: &RequestInstruments) -> anyhow::Result<()> {
+    fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
         let venue = request.venue.unwrap_or_else(|| self.venue());
         if let Some(req_venue) = request.venue
             && req_venue != self.venue()
@@ -772,7 +772,7 @@ impl DataClient for BitmexDataClient {
         let sender = self.data_sender.clone();
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let start_nanos = datetime_to_unix_nanos(request.start);
         let end_nanos = datetime_to_unix_nanos(request.end);
         let clock = self.clock;
@@ -818,7 +818,7 @@ impl DataClient for BitmexDataClient {
         Ok(())
     }
 
-    fn request_instrument(&self, request: &RequestInstrument) -> anyhow::Result<()> {
+    fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
         if let Some(instrument) = self
             .instruments
             .read()
@@ -834,7 +834,7 @@ impl DataClient for BitmexDataClient {
                 datetime_to_unix_nanos(request.start),
                 datetime_to_unix_nanos(request.end),
                 self.clock.get_time_ns(),
-                request.params.clone(),
+                request.params,
             )));
             if let Err(e) = self.data_sender.send(DataEvent::Response(response)) {
                 log::error!("Failed to send instrument response: {e}");
@@ -850,7 +850,7 @@ impl DataClient for BitmexDataClient {
         let client_id = request.client_id.unwrap_or(self.client_id);
         let start = request.start;
         let end = request.end;
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
 
         get_runtime().spawn(async move {
@@ -890,7 +890,7 @@ impl DataClient for BitmexDataClient {
         Ok(())
     }
 
-    fn request_trades(&self, request: &RequestTrades) -> anyhow::Result<()> {
+    fn request_trades(&self, request: RequestTrades) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instrument_id = request.instrument_id;
@@ -899,7 +899,7 @@ impl DataClient for BitmexDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -932,7 +932,7 @@ impl DataClient for BitmexDataClient {
         Ok(())
     }
 
-    fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
+    fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let bar_type = request.bar_type;
@@ -941,7 +941,7 @@ impl DataClient for BitmexDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);

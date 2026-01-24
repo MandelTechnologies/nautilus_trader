@@ -377,11 +377,9 @@ impl AxRawHttpClient {
             }
         };
 
-        let should_retry = |_error: &AxHttpError| -> bool {
-            // For now, don't retry any errors
-            // TODO: Implement proper retry logic based on error type
-            false
-        };
+        // Only retry idempotent methods to avoid duplicate orders/cancels
+        let is_idempotent = matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+        let should_retry = |error: &AxHttpError| -> bool { is_idempotent && error.is_retryable() };
 
         let create_error = |msg: String| -> AxHttpError {
             if msg == "canceled" {

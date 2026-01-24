@@ -29,7 +29,8 @@ use std::{
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use nautilus_common::msgbus::{
-    Handler, MStr, Pattern, Topic, TypedHandler, handler::MessageHandler, typed_router::TopicRouter,
+    Handler, MStr, Pattern, Topic, TypedHandler, typed_handler::shareable_handler,
+    typed_router::TopicRouter,
 };
 use nautilus_model::data::QuoteTick;
 use ustr::Ustr;
@@ -40,7 +41,7 @@ struct NoopAnyHandler {
     id: Ustr,
 }
 
-impl MessageHandler for NoopAnyHandler {
+impl Handler<dyn Any> for NoopAnyHandler {
     fn id(&self) -> Ustr {
         self.id
     }
@@ -48,10 +49,6 @@ impl MessageHandler for NoopAnyHandler {
     fn handle(&self, message: &dyn Any) {
         // Noop - but prevent optimization
         black_box(message);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -78,7 +75,7 @@ struct CountingAnyHandler {
     id: Ustr,
 }
 
-impl MessageHandler for CountingAnyHandler {
+impl Handler<dyn Any> for CountingAnyHandler {
     fn id(&self) -> Ustr {
         self.id
     }
@@ -86,10 +83,6 @@ impl MessageHandler for CountingAnyHandler {
     fn handle(&self, message: &dyn Any) {
         let quote = message.downcast_ref::<QuoteTick>().unwrap();
         COUNTER.fetch_add(quote.bid_price.raw as u64, Ordering::Relaxed);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -202,7 +195,7 @@ fn bench_router_publish(c: &mut Criterion) {
     // Any-based router with single exact topic
     group.bench_function("Any-based router", |b| {
         let mut router = AnyTopicRouter::new();
-        let handler = ShareableMessageHandler(Rc::new(CountingAnyHandler {
+        let handler = shareable_handler(Rc::new(CountingAnyHandler {
             id: Ustr::from("handler"),
         }));
         let pattern: MStr<Pattern> = MStr::from("data.quotes.BINANCE.BTCUSDT");
@@ -260,7 +253,7 @@ fn bench_router_multiple_subscribers(c: &mut Criterion) {
                 let pattern: MStr<Pattern> = MStr::from("data.quotes.BINANCE.BTCUSDT");
 
                 for i in 0..count {
-                    let handler = ShareableMessageHandler(Rc::new(CountingAnyHandler {
+                    let handler = shareable_handler(Rc::new(CountingAnyHandler {
                         id: Ustr::from(&format!("handler_{i}")),
                     }));
                     router.subscribe(pattern, handler);
@@ -315,7 +308,7 @@ fn bench_router_wildcards(c: &mut Criterion) {
     // Pattern: data.quotes.*.BTCUSDT (matches any venue)
     group.bench_function("Any-based (wildcard)", |b| {
         let mut router = AnyTopicRouter::new();
-        let handler = ShareableMessageHandler(Rc::new(CountingAnyHandler {
+        let handler = shareable_handler(Rc::new(CountingAnyHandler {
             id: Ustr::from("handler"),
         }));
         let pattern: MStr<Pattern> = MStr::from("data.quotes.*.BTCUSDT");
@@ -363,7 +356,7 @@ fn bench_cold_path_publish(c: &mut Criterion) {
         b.iter_with_setup(
             || {
                 let mut router = AnyTopicRouter::new();
-                let handler = ShareableMessageHandler(Rc::new(CountingAnyHandler {
+                let handler = shareable_handler(Rc::new(CountingAnyHandler {
                     id: Ustr::from("handler"),
                 }));
                 let pattern: MStr<Pattern> = MStr::from("data.quotes.*.*");
@@ -416,7 +409,7 @@ fn bench_high_volume(c: &mut Criterion) {
             &msg_count,
             |b, &count| {
                 let mut router = AnyTopicRouter::new();
-                let handler = ShareableMessageHandler(Rc::new(CountingAnyHandler {
+                let handler = shareable_handler(Rc::new(CountingAnyHandler {
                     id: Ustr::from("handler"),
                 }));
                 let pattern: MStr<Pattern> = MStr::from("data.quotes.BINANCE.BTCUSDT");
@@ -481,7 +474,7 @@ fn bench_mixed_topics(c: &mut Criterion) {
         let mut router = AnyTopicRouter::new();
 
         // Wildcard subscription for all BINANCE quotes
-        let handler = ShareableMessageHandler(Rc::new(CountingAnyHandler {
+        let handler = shareable_handler(Rc::new(CountingAnyHandler {
             id: Ustr::from("handler"),
         }));
         let pattern: MStr<Pattern> = MStr::from("data.quotes.BINANCE.*");

@@ -605,7 +605,7 @@ impl Portfolio {
         for (currency, unrealized) in unrealized_pnls {
             match total_pnls.get_mut(&currency) {
                 Some(total) => {
-                    *total = Money::new(total.as_f64() + unrealized.as_f64(), currency);
+                    *total = *total + unrealized;
                 }
                 None => {
                     total_pnls.insert(currency, unrealized);

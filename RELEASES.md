@@ -3,8 +3,10 @@
 Released on TBD (UTC).
 
 ### Enhancements
+- Added sandbox execution adapter in Rust
 - Added multi-account execution support (#3194), thanks @faysou
 - Added `use_market_order_acks` venue config option to generate `OrderAccepted` events for market orders before filling (mimics behavior of venues like Binance)
+- Added `oto_trigger_mode` venue config option to control whether OTO child orders activate on partial fills (PARTIAL) or only after full fill (FULL) (default PARTIAL) (#3454), thanks @godnight10061
 - Improved tearsheet with dynamic Nautilus version and refined run info table (#3396), thanks @KaulSe
 
 ### Breaking Changes
@@ -12,16 +14,27 @@ Released on TBD (UTC).
 - Removed dead `subscribe_order_book_snapshots` and `unsubscribe_order_book_snapshots` methods from `LiveMarketDataClient` (were never called by the data engine)
 - Removed OKX URL environment variable overrides (`OKX_BASE_URL_HTTP`, `OKX_BASE_URL_WS_*`, `OKX_DEMO_BASE_URL_WS_*`); use config `base_url_*` fields instead
 - Removed deprecated `get_ws_base_url` function from OKX Rust adapter; use `get_ws_base_url_private` or `get_ws_base_url_public` instead
+- Removed `AddAssign`, `SubAssign`, `MulAssign` trait implementations from `Price`, `Quantity`, and `Money` types (Rust); use `x = x + y` instead of `x += y`
+- Removed `add_assign` and `sub_assign` cdef methods from `Price`, `Quantity`, and `Money` types (Cython); use `x = x + y` instead
 - Renamed `subscribed_order_book_snapshots` to `subscribed_order_book_depth` for consistency with data engine routing
-- Adapter implementations should now override `_subscribe_order_book_depth` and `_unsubscribe_order_book_depth` for `OrderBookDepth10` subscriptions
+- Changed `Price`, `Quantity`, and `Money` arithmetic to use max precision instead of panicking on precision mismatch
+- Changed `Quantity + Quantity`, `Quantity - Quantity`, `Price + Price`, `Price - Price`, `Money + Money`, and `Money - Money` Python operators to return the same type instead of `Decimal` (`Quantity - Quantity` raises `ValueError` if result would be negative)
 - Changed price-protected market orders to no longer emit `OrderAccepted` by default; set `use_market_order_acks=True` to restore previous behavior
+- Adapter implementations should now override `_subscribe_order_book_depth` and `_unsubscribe_order_book_depth` for `OrderBookDepth10` subscriptions
 
 ### Security
 - Fixed `CVec::empty()` to use dangling pointer instead of null, avoiding undefined behavior in `Vec::from_raw_parts`
+- Masked Binance listen keys in execution client logs
+- Refactored supply chain security checks and update dependencies
+- Improved TLS cert loading and socket suffix validation
 
 ### Fixes
 - Fixed matching engine liquidity consumption using cumulative book quantity
+- Fixed matching engine liquidity consumption tracking for MAKER fills
 - Fixed matching engine trade execution fills discarded with `liquidity_consumption`
+- Fixed remaining `F_LAST` flag checks to use proper bitmask comparison
+- Fixed `MarketIfTouchedOrder` (MIT) filling at bar extremes instead of trigger price during backtesting (#3461, #3462), thanks @HaakonFlaaronning
+- Fixed OTO child order sizing with rapid parent fills (#3435), thanks for reporting @dxwil
 - Fixed `ExecAlgorithm` spawn quantity accounting (will now restore quantity from denied/rejected spawned orders)
 - Fixed reconciliation `venue_order_id` indexing and validation
 - Fixed analyzer epoch timestamp from empty shell positions
@@ -37,15 +50,26 @@ Released on TBD (UTC).
 - Fixed reconciliation timing (for v2 Rust) - process instruments before reconciliation (#3415), thanks @filipmacek
 - Fixed `request_order_book_snapshot` and add Bybit support (#3416), thanks @dxwil
 - Fixed Redis cache buffer flushing during idle periods (#3426), thanks for reporting @santivazq
+- Fixed Betfair dropped fills from premature cache update
 - Fixed Binance Spot WebSocket subscription acknowledgment parsing (#3382), thanks @Johnkhk
 - Fixed Binance Futures instrument parsing for margin requirements (#3420), thanks @linimin
+- Fixed Binance algo order quantity `AttributeError` on _mem access
 - Fixed Bybit demo trading by using HTTP REST API for order operations (Bybit demo does not support WebSocket Trade API)
 - Fixed Databento `databento_data` to fetch definitions for full date range (#3414), thanks @Johnkhk
 - Fixed Databento zero-length interval at dataset boundary (#3429), thanks @shzhng
 - Fixed Deribit auth token refresh race condition (#3402), thanks @filipmacek
 - Fixed Deribit race condition between response and subscription (#3436), thanks @filipmacek
-- Fixed Polymarket order state race condition where PLACEMENT events could arrive late
+- Fixed Interactive Brokers `fetch_all_open_orders` in client cache key preventing connection sharing (#3441), thanks @shzhng
+- Fixed Interactive Brokers synthetic position order reconciliation causing filled_qty mismatch errors during periodic consistency checks (#3443), thanks @shzhng
+- Fixed Interactive Brokers reconciliation error when account has no positions (#3459), thanks @shzhng
+- Fixed Interactive Brokers venue determination when primaryExchange is empty (#3452), thanks @shzhng
+- Fixed Interactive Brokers option symbol parsing to preserve OCC format with space padding (#3452), thanks @shzhng
+- Fixed Interactive Brokers minor bugs with options (#3452), thanks @shzhng
+- Fixed Kraken spot instrument fee/margin parsing where parameters were incorrectly swapped
+- Fixed Polymarket order state race condition where `PLACEMENT` events could arrive late
 - Fixed Polymarket duplicate WebSocket subscriptions (#3403), thanks for reporting @santivazq
+- Fixed Polymarket duplicate trade_id for multi-order fills (#3450), thanks for reporting @santivazq
+- Fixed `MarketIfTouchedOrder` fill price during bar processing to use trigger price instead of bar extremes, thanks @HaakonFlaaronning
 
 ### Internal Improvements
 - Added support for setting cache database adapter in cache and `LiveNode` (#3401), thanks @filipmacek
@@ -55,6 +79,8 @@ Released on TBD (UTC).
 - Added Deribit order submission (#3408), thanks @filipmacek
 - Added Deribit live reconciliation support (#3421), thanks @filipmacek
 - Added Deribit rate limiting for HTTP and WebSocket clients (#3424), thanks @filipmacek
+- Added Deribit side-specific order cancellation (#3442), thanks @filipmacek
+- Added Deribit real-time portfolio WS subscription (#3444), thanks @filipmacek
 - Added Polymarket data loader rate limiting
 - Removed `tracing` crate from Rust codebase, migrated to `log` crate for simpler logging
 - Refactored computation of greeks (#3393), thanks @faysou
@@ -71,14 +97,17 @@ Released on TBD (UTC).
 - Refined greeks safeguards and docs (#3407), thanks @faysou
 - Refined processing of gaps in aggregated historical bars (#3412), thanks @faysou
 - Refined Interactive Brokers adapter (#3195), thanks @faysou
-- Refined OptionExerciseModule (#3423), thanks @faysou
+- Refined `OptionExerciseModule` (#3423), thanks @faysou
 - Refined instrument `is_spread()` method (#3434), thanks @faysou
+- Refined `OrderBookDeltas.batch` (#3437), thanks @faysou
 - Optimized message bus publish with thread-local `SmallVec` buffers in Rust
 - Optimized message bus pattern matching with greedy algorithm
 - Upgraded Interactive Brokers adapter to `ibapi` 10.37.2 (#3427), thanks @faysou
+- Upgraded Rust (MSRV) to 1.93.0
 - Upgraded Cap'n Proto to v1.3.0
 - Upgraded Cython to v3.2.4
 - Upgraded `capnp` and `capnpc` crates to v0.25.0
+- Upgraded `databento` crate to v0.39.0
 - Upgraded `datafusion` crate to v52.0.0
 - Upgraded `tokio` crate to v1.49.0
 

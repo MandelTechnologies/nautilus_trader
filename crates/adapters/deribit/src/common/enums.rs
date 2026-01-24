@@ -166,9 +166,9 @@ pub enum DeribitTimeInForce {
     /// Good till cancelled.
     #[serde(rename = "good_til_cancelled")]
     GoodTilCancelled,
-    /// Good till date.
-    #[serde(rename = "good_til_date")]
-    GoodTilDate,
+    /// Good till day (expires at end of trading day).
+    #[serde(rename = "good_til_day")]
+    GoodTilDay,
     /// Immediate or cancel.
     #[serde(rename = "immediate_or_cancel")]
     ImmediateOrCancel,
@@ -183,7 +183,7 @@ impl DeribitTimeInForce {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::GoodTilCancelled => "good_til_cancelled",
-            Self::GoodTilDate => "good_til_date",
+            Self::GoodTilDay => "good_til_day",
             Self::ImmediateOrCancel => "immediate_or_cancel",
             Self::FillOrKill => "fill_or_kill",
         }
@@ -198,7 +198,7 @@ impl TryFrom<TimeInForce> for DeribitTimeInForce {
             TimeInForce::Gtc => Ok(Self::GoodTilCancelled),
             TimeInForce::Ioc => Ok(Self::ImmediateOrCancel),
             TimeInForce::Fok => Ok(Self::FillOrKill),
-            TimeInForce::Gtd => Ok(Self::GoodTilDate),
+            TimeInForce::Gtd => Ok(Self::GoodTilDay),
             _ => Err(format!(
                 "TimeInForce::{tif} is not supported on Deribit (valid: GTC, IOC, FOK, GTD)"
             )),

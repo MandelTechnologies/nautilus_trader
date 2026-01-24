@@ -89,7 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_log_data(false)
     .with_open_position_on_start(Some(Decimal::from_str("0.01").unwrap()))
-    .with_close_positions_on_stop(false);
+    .with_cancel_orders_on_stop(true)
+    .with_close_positions_on_stop(true);
 
     // Use UUIDs for unique client order IDs across restarts
     tester_config.base.use_uuid_client_order_ids = true;

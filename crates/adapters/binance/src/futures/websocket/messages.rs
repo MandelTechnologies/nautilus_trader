@@ -19,21 +19,28 @@
 //!
 //! Message types are separated into data (public market data) and execution
 //! (private user data stream) concerns:
-//! - [`NautilusFuturesDataWsMessage`] - Market data for data clients
-//! - [`NautilusFuturesExecWsMessage`] - User data for execution clients
-//! - [`BinanceFuturesWsMessage`] - Wrapper enum containing both
+//! - [`NautilusDataWsMessage`] - Market data for data clients.
+//! - [`NautilusExecWsMessage`] - User data for execution clients.
+//! - [`NautilusWsMessage`] - Wrapper enum containing both.
 
 use nautilus_model::{
     data::{Data, OrderBookDeltas},
+    events::{
+        AccountState, OrderAccepted, OrderCanceled, OrderFilled, OrderRejected, OrderUpdated,
+    },
+    identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::InstrumentAny,
 };
 use nautilus_network::websocket::WebSocketClient;
 use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
-use crate::common::enums::{
-    BinanceFuturesOrderType, BinanceKlineInterval, BinanceMarginType, BinanceOrderStatus,
-    BinancePositionSide, BinanceSide, BinanceTimeInForce, BinanceWorkingType, BinanceWsMethod,
+use crate::{
+    common::enums::{
+        BinanceFuturesOrderType, BinanceKlineInterval, BinanceMarginType, BinanceOrderStatus,
+        BinancePositionSide, BinanceSide, BinanceTimeInForce, BinanceWorkingType, BinanceWsMethod,
+    },
+    futures::http::BinanceFuturesInstrument,
 };
 
 /// Output message from the Futures WebSocket handler.
@@ -41,11 +48,13 @@ use crate::common::enums::{
 /// Wraps data and execution message types, allowing the single handler to
 /// produce messages for both data and execution clients.
 #[derive(Debug, Clone)]
-pub enum BinanceFuturesWsMessage {
-    /// Public market data message.
-    Data(NautilusFuturesDataWsMessage),
-    /// Private user data stream message.
-    Exec(NautilusFuturesExecWsMessage),
+pub enum NautilusWsMessage {
+    /// Public market data message (normalized Nautilus types).
+    Data(NautilusDataWsMessage),
+    /// Private user data stream message (normalized Nautilus events).
+    Exec(Box<NautilusExecWsMessage>),
+    /// Raw user data stream message (for internal processing by exec handler).
+    ExecRaw(BinanceFuturesExecWsMessage),
     /// Error from the server.
     Error(BinanceFuturesWsErrorMsg),
     /// WebSocket reconnected - subscriptions should be restored.
@@ -56,23 +65,53 @@ pub enum BinanceFuturesWsMessage {
 ///
 /// These are public messages that don't require authentication.
 #[derive(Debug, Clone)]
-pub enum NautilusFuturesDataWsMessage {
+pub enum NautilusDataWsMessage {
     /// Market data (trades, quotes, etc.).
     Data(Vec<Data>),
-    /// Order book deltas.
-    Deltas(OrderBookDeltas),
+    /// Order book deltas with Binance-specific sequence metadata for validation.
+    DepthUpdate {
+        deltas: OrderBookDeltas,
+        first_update_id: u64,
+        prev_final_update_id: u64,
+    },
     /// Instrument update.
     Instrument(Box<InstrumentAny>),
     /// Raw JSON message (for debugging or unhandled types).
     RawJson(serde_json::Value),
 }
 
-/// User data stream message from Binance Futures WebSocket.
+/// Normalized execution event from Binance Futures.
 ///
-/// These are private messages from the user data stream that require
-/// a listen key for authentication.
+/// These are normalized Nautilus events produced by the execution handler
+/// from raw WebSocket messages. The handler correlates updates with
+/// the original order context (strategy_id, etc.) using pending order maps.
 #[derive(Debug, Clone)]
-pub enum NautilusFuturesExecWsMessage {
+pub enum NautilusExecWsMessage {
+    /// Account state update (balance changes).
+    AccountUpdate(AccountState),
+    /// Order accepted by the exchange.
+    OrderAccepted(OrderAccepted),
+    /// Order canceled.
+    OrderCanceled(OrderCanceled),
+    /// Order rejected.
+    OrderRejected(OrderRejected),
+    /// Order filled (partial or full).
+    OrderFilled(OrderFilled),
+    /// Order modified/amended.
+    OrderUpdated(OrderUpdated),
+    /// Listen key expired - need to reconnect user data stream.
+    ListenKeyExpired,
+    /// WebSocket reconnected - subscriptions should be restored.
+    Reconnected,
+}
+
+/// Raw user data stream message from Binance Futures WebSocket.
+///
+/// These are raw messages from the user data stream that require
+/// a listen key for authentication. The execution handler processes these
+/// and emits normalized Nautilus events via [`NautilusExecWsMessage`].
+#[derive(Debug, Clone)]
+pub enum BinanceFuturesExecWsMessage {
     /// Account update (balance/position changes).
     AccountUpdate(BinanceFuturesAccountUpdateMsg),
     /// Order/trade update.
@@ -94,13 +133,13 @@ pub struct BinanceFuturesWsErrorMsg {
     pub msg: String,
 }
 
-/// Handler command for client-handler communication.
+/// Handler command for data client-handler communication.
 #[derive(Debug)]
 #[allow(
     clippy::large_enum_variant,
     reason = "Commands are ephemeral and immediately consumed"
 )]
-pub enum BinanceFuturesHandlerCommand {
+pub enum DataHandlerCommand {
     /// Set the WebSocket client reference.
     SetClient(WebSocketClient),
     /// Disconnect from the WebSocket.
@@ -113,6 +152,48 @@ pub enum BinanceFuturesHandlerCommand {
     Subscribe { streams: Vec<String> },
     /// Unsubscribe from streams.
     Unsubscribe { streams: Vec<String> },
+}
+
+/// Handler command for execution client-handler communication.
+#[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Commands are ephemeral and immediately consumed"
+)]
+pub enum ExecHandlerCommand {
+    /// Set the WebSocket client reference.
+    SetClient(WebSocketClient),
+    /// Disconnect from the WebSocket.
+    Disconnect,
+    /// Initialize instruments in the handler cache.
+    InitializeInstruments(Vec<BinanceFuturesInstrument>),
+    /// Update a single instrument in the handler cache.
+    UpdateInstrument(BinanceFuturesInstrument),
+    /// Subscribe to user data stream.
+    Subscribe { streams: Vec<String> },
+    /// Register an order for context tracking.
+    RegisterOrder {
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+    },
+    /// Register a cancel request for context tracking.
+    RegisterCancel {
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
+    },
+    /// Register a modify request for context tracking.
+    RegisterModify {
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
+    },
 }
 
 /// Aggregate trade stream message.

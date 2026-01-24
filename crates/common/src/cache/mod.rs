@@ -2920,7 +2920,7 @@ impl Cache {
             }
 
             match total_quantity.as_mut() {
-                Some(total) => *total += spawn_order.quantity(),
+                Some(total) => *total = *total + spawn_order.quantity(),
                 None => total_quantity = Some(spawn_order.quantity()),
             }
         }
@@ -2945,7 +2945,7 @@ impl Cache {
             }
 
             match total_quantity.as_mut() {
-                Some(total) => *total += spawn_order.filled_qty(),
+                Some(total) => *total = *total + spawn_order.filled_qty(),
                 None => total_quantity = Some(spawn_order.filled_qty()),
             }
         }
@@ -2970,7 +2970,7 @@ impl Cache {
             }
 
             match total_quantity.as_mut() {
-                Some(total) => *total += spawn_order.leaves_qty(),
+                Some(total) => *total = *total + spawn_order.leaves_qty(),
                 None => total_quantity = Some(spawn_order.leaves_qty()),
             }
         }

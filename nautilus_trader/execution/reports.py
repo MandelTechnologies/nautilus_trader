@@ -254,8 +254,7 @@ class OrderStatusReport(ExecutionReport):
         self.filled_qty = filled_qty
 
         # Clamp to minimum zero for robustness
-        raw_leaves_qty = max(self.quantity.raw - self.filled_qty.raw, 0)
-        self.leaves_qty = Quantity.from_raw(raw_leaves_qty, self.quantity.precision)
+        self.leaves_qty = self.quantity.saturating_sub(self.filled_qty)
 
         self.display_qty = display_qty
         self.avg_px = avg_px

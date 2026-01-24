@@ -123,6 +123,12 @@ pub struct NewOrderParams {
         rename = "selfTradePreventionMode"
     )]
     pub self_trade_prevention_mode: Option<BinanceSelfTradePreventionMode>,
+    /// Strategy ID for order tracking.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "strategyId")]
+    pub strategy_id: Option<i64>,
+    /// Strategy type for order tracking.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "strategyType")]
+    pub strategy_type: Option<i64>,
 }
 
 impl NewOrderParams {
@@ -148,6 +154,8 @@ impl NewOrderParams {
             iceberg_qty: None,
             new_order_resp_type: Some(BinanceOrderResponseType::Full),
             self_trade_prevention_mode: None,
+            strategy_id: None,
+            strategy_type: None,
         }
     }
 
@@ -172,6 +180,8 @@ impl NewOrderParams {
             iceberg_qty: None,
             new_order_resp_type: Some(BinanceOrderResponseType::Full),
             self_trade_prevention_mode: None,
+            strategy_id: None,
+            strategy_type: None,
         }
     }
 

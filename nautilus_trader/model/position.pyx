@@ -912,7 +912,7 @@ cdef class Position:
         else:
             self.realized_pnl = Money(self.realized_pnl.as_f64_c() + realized_pnl, self.settlement_currency)
 
-        self._buy_qty.add_assign(last_qty_obj)
+        self._buy_qty = self._buy_qty + last_qty_obj
         self.signed_qty += last_qty
         self.signed_qty = round(self.signed_qty, self.size_precision)
 
@@ -947,7 +947,7 @@ cdef class Position:
         else:
             self.realized_pnl = Money(self.realized_pnl.as_f64_c() + realized_pnl, self.settlement_currency)
 
-        self._sell_qty.add_assign(last_qty_obj)
+        self._sell_qty = self._sell_qty + last_qty_obj
         self.signed_qty -= last_qty
         self.signed_qty = round(self.signed_qty, self.size_precision)
 

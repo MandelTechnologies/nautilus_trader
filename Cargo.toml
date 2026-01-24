@@ -14,6 +14,7 @@ members = [
   "crates/adapters/hyperliquid",
   "crates/adapters/kraken",
   "crates/adapters/okx",
+  "crates/adapters/sandbox",
   "crates/adapters/tardis",
   "crates/analysis",
   "crates/backtest",
@@ -83,6 +84,7 @@ nautilus-trading = { path = "crates/trading", version = "0.53.0" }
 
 # -----------------------------------------------------------------------------
 # Adapters
+#
 # Note: default-features = false to control high-precision separately (not supported on Windows)
 # -----------------------------------------------------------------------------
 nautilus-architect-ax = { path = "crates/adapters/architect_ax", version = "0.53.0" }
@@ -97,6 +99,7 @@ nautilus-dydx = { path = "crates/adapters/dydx", version = "0.53.0", default-fea
 nautilus-hyperliquid = { path = "crates/adapters/hyperliquid", version = "0.53.0", default-features = false }
 nautilus-kraken = { path = "crates/adapters/kraken", version = "0.53.0", default-features = false }
 nautilus-okx = { path = "crates/adapters/okx", version = "0.53.0", default-features = false }
+nautilus-sandbox = { path = "crates/adapters/sandbox", version = "0.53.0", default-features = false }
 nautilus-tardis = { path = "crates/adapters/tardis", version = "0.53.0", default-features = false }
 
 # -----------------------------------------------------------------------------
@@ -165,7 +168,7 @@ log = { version = "0.4.29", features = [
   "release_max_level_debug",
 ] }
 memchr = "2.7.6"
-object_store = { version = "0.12.4", default-features = false, features = [
+object_store = { version = "0.12.5", default-features = false, features = [
   "fs",
 ] }
 parquet = { version = "57.2.0", default-features = false, features = [
@@ -275,12 +278,12 @@ webpki-roots = "1.0.5"
 # -----------------------------------------------------------------------------
 # Adapter dependencies
 # -----------------------------------------------------------------------------
-alloy = { version = "1.4.3", default-features = false, features = [
+alloy = { version = "1.5.2", default-features = false, features = [
   "sol-types",
   "contract",
 ] }
-alloy-signer = { version = "1.4.3", default-features = false }
-alloy-signer-local = { version = "1.4.3", default-features = false, features = [
+alloy-signer = { version = "1.5.2", default-features = false }
+alloy-signer-local = { version = "1.5.2", default-features = false, features = [
   "mnemonic",
 ] }
 alloy-sol-types = "1.5.2"
@@ -288,7 +291,7 @@ arc-swap = "1.8.0"
 bip32 = "0.5.3"
 cosmrs = { version = "0.22.0", default-features = false, features = ["bip32"] }
 csv = "1.4.0"
-databento = { version = "0.38.0", default-features = false, features = [
+databento = { version = "0.39.0", default-features = false, features = [
   "historical",
   "live",
 ] }
@@ -351,7 +354,7 @@ walkdir = "2.5.0"
 cargo-audit = "0.22.0"
 cargo-deny = "0.19.0"
 cargo-edit = "0.13.8"
-cargo-llvm-cov = "0.6.23"
+cargo-llvm-cov = "0.6.24"
 cargo-machete = "0.9.1"
 cargo-nextest = "0.9.122"
 cargo-vet = "0.10.2"

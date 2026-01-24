@@ -31,7 +31,7 @@
 //!
 //! **Any-based routing** provides flexibility for extensibility:
 //! - `subscriptions`/`topics` maps with `ShareableMessageHandler`.
-//! - Handlers implement `MessageHandler`, receive `&dyn Any`.
+//! - Handlers implement `Handler<dyn Any>`, receive `&dyn Any`.
 //! - Supports arbitrary message types without modifying the bus.
 //! - Required for Python interop where types aren't known at compile time.
 //!
@@ -557,9 +557,7 @@ mod tests {
     use crate::msgbus::{
         self, ShareableMessageHandler, get_message_bus,
         matching::is_matching_backtracking,
-        stubs::{
-            check_handler_was_called, get_call_check_shareable_handler, get_stub_shareable_handler,
-        },
+        stubs::{get_call_check_handler, get_stub_shareable_handler},
         subscriptions_count_any,
     };
 
@@ -653,15 +651,15 @@ mod tests {
     fn test_endpoint_send() {
         let msgbus = get_message_bus();
         let endpoint = "MyEndpoint".into();
-        let handler = get_call_check_shareable_handler(None);
+        let (handler, checker) = get_call_check_handler(None);
 
-        msgbus::register_any(endpoint, handler.clone());
+        msgbus::register_any(endpoint, handler);
         assert!(msgbus.borrow().get_endpoint(endpoint).is_some());
-        assert!(!check_handler_was_called(handler.clone()));
+        assert!(!checker.was_called());
 
         // Send a message to the endpoint
         msgbus::send_any(endpoint, &"Test Message");
-        assert!(check_handler_was_called(handler));
+        assert!(checker.was_called());
     }
 
     #[rstest]

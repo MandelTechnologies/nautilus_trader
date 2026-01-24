@@ -192,7 +192,7 @@ impl From<&LiveExecEngineConfig> for ExecutionManagerConfig {
             .clone()
             .unwrap_or_default()
             .into_iter()
-            .map(|value| InstrumentId::from(value.as_str()))
+            .map(InstrumentId::from)
             .collect();
 
         let open_check_threshold_ns =

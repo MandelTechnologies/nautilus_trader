@@ -138,10 +138,8 @@ mod serial_tests {
 
         let account = AccountAny::default();
         let last_event = account.last_event().unwrap();
-        if last_event.base_currency.is_some() {
-            database
-                .add_currency(&last_event.base_currency.unwrap())
-                .unwrap();
+        if let Some(base_currency) = &last_event.base_currency {
+            database.add_currency(base_currency).unwrap();
         }
 
         // Insert into database and wait

@@ -34,9 +34,26 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import Symbol
+from nautilus_trader.model.identifiers import TradeId
+from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+
+
+def make_composite_trade_id(trade_id: str, venue_order_id: VenueOrderId) -> TradeId:
+    """
+    Create a composite trade_id to ensure uniqueness across multi-order fills.
+
+    When multiple orders are filled by a single market order, Polymarket sends one
+    TRADE message with a single `id` for all fills. This function creates a unique
+    trade_id for each fill by combining the original trade ID with part of the
+    venue order ID.
+
+    Format: {trade_id[:27]}-{venue_order_id[-8:]} = 36 chars (TradeId max length)
+
+    """
+    return TradeId(f"{trade_id[:27]}-{str(venue_order_id)[-8:]}")
 
 
 def validate_ethereum_address(address: str) -> None:

@@ -120,6 +120,8 @@ pub(crate) struct FeedHandler {
     message_queue: VecDeque<AxOrdersWsMessage>,
     orders_metadata: Arc<DashMap<ClientOrderId, OrderMetadata>>,
     venue_to_client_id: Arc<DashMap<VenueOrderId, ClientOrderId>>,
+    bearer_token: Option<String>,
+    needs_reauthentication: bool,
 }
 
 impl FeedHandler {
@@ -146,6 +148,22 @@ impl FeedHandler {
             message_queue: VecDeque::new(),
             orders_metadata,
             venue_to_client_id,
+            bearer_token: None,
+            needs_reauthentication: false,
+        }
+    }
+
+    async fn reauthenticate(&mut self) {
+        if self.bearer_token.is_some() {
+            log::info!("Re-authenticating after reconnection");
+
+            // Ax uses Bearer token in connection headers which persist across reconnect
+            self.auth_tracker.succeed();
+            self.message_queue
+                .push_back(AxOrdersWsMessage::Authenticated);
+            log::info!("Re-authentication completed");
+        } else {
+            log::warn!("Cannot re-authenticate: no bearer token stored");
         }
     }
 
@@ -154,6 +172,11 @@ impl FeedHandler {
     /// This method blocks until a message is available or the handler is stopped.
     pub async fn next(&mut self) -> Option<AxOrdersWsMessage> {
         loop {
+            if self.needs_reauthentication && self.message_queue.is_empty() {
+                self.needs_reauthentication = false;
+                self.reauthenticate().await;
+            }
+
             if let Some(msg) = self.message_queue.pop_front() {
                 return Some(msg);
             }
@@ -164,7 +187,7 @@ impl FeedHandler {
                 }
 
                 () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    if self.signal.load(Ordering::Relaxed) {
+                    if self.signal.load(Ordering::Acquire) {
                         log::debug!("Stop signal received during idle period");
                         return None;
                     }
@@ -194,7 +217,7 @@ impl FeedHandler {
                         self.message_queue.extend(messages);
                     }
 
-                    if self.signal.load(Ordering::Relaxed) {
+                    if self.signal.load(Ordering::Acquire) {
                         log::debug!("Stop signal received");
                         return None;
                     }
@@ -211,14 +234,16 @@ impl FeedHandler {
             }
             HandlerCommand::Disconnect => {
                 log::debug!("Disconnect command received");
+                self.auth_tracker.fail("Disconnected");
                 if let Some(client) = self.client.take() {
                     client.disconnect().await;
                 }
             }
-            HandlerCommand::Authenticate { token: _ } => {
+            HandlerCommand::Authenticate { token } => {
                 log::debug!("Authenticate command received");
-                // Ax uses Bearer token in connection headers, not a message
-                // This is handled at connection time, so we just mark as authenticated
+                self.bearer_token = Some(token);
+
+                // Ax uses Bearer token in connection headers (handled at connect time)
                 self.auth_tracker.succeed();
                 self.message_queue
                     .push_back(AxOrdersWsMessage::Authenticated);
@@ -311,6 +336,8 @@ impl FeedHandler {
             Message::Text(text) => {
                 if text == nautilus_network::RECONNECTED {
                     log::info!("Received WebSocket reconnected signal");
+                    self.auth_tracker.fail("Reconnecting");
+                    self.needs_reauthentication = true;
                     return Some(vec![AxOrdersWsMessage::Reconnected]);
                 }
 

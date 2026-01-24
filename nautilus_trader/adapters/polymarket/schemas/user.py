@@ -27,6 +27,7 @@ from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderType
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketTradeStatus
 from nautilus_trader.adapters.polymarket.common.parsing import calculate_commission
 from nautilus_trader.adapters.polymarket.common.parsing import determine_order_side
+from nautilus_trader.adapters.polymarket.common.parsing import make_composite_trade_id
 from nautilus_trader.adapters.polymarket.common.parsing import parse_order_side
 from nautilus_trader.adapters.polymarket.common.parsing import parse_order_status
 from nautilus_trader.adapters.polymarket.common.parsing import parse_time_in_force
@@ -252,13 +253,15 @@ class PolymarketUserTrade(msgspec.Struct, tag="trade", tag_field="event_type", f
         last_px = instrument.make_price(self.last_px(filled_user_order_id))
         fee_rate_bps = self.get_fee_rate_bps(filled_user_order_id)
         commission = calculate_commission(last_qty, last_px, fee_rate_bps)
+        venue_order_id = self.venue_order_id(filled_user_order_id)
+        composite_trade_id = make_composite_trade_id(self.id, venue_order_id)
 
         return FillReport(
             account_id=account_id,
             instrument_id=instrument.id,
             client_order_id=client_order_id,
-            venue_order_id=self.venue_order_id(filled_user_order_id),
-            trade_id=TradeId(self.id),
+            venue_order_id=venue_order_id,
+            trade_id=composite_trade_id,
             order_side=self.order_side(filled_user_order_id),
             last_qty=last_qty,
             last_px=last_px,

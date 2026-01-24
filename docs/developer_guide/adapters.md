@@ -783,6 +783,35 @@ Define two message enums for the transformation pipeline:
 
 The handler parses incoming JSON into `{Venue}WsMessage`, transforms to `NautilusWsMessage`, and sends via `out_tx`. The client receives from `out_rx` and routes to data/execution callbacks.
 
+#### Message type naming convention
+
+Types prefixed with `Nautilus` contain only Nautilus domain types (normalized data ready for the trading system). Types prefixed with the venue name (e.g., `Binance`, `Deribit`) contain raw exchange-specific types that require further processing.
+
+**Top-level output enum:**
+
+```rust
+pub enum NautilusWsMessage {
+    Data(NautilusDataWsMessage),          // Normalized market data
+    Exec(NautilusExecWsMessage),          // Normalized execution events
+    Error(BinanceWsErrorMsg),
+    Reconnected,
+}
+```
+
+**Pattern for multi-stage processing:**
+
+When execution messages require additional context lookup (e.g., correlating order updates with pending order maps), use a `Raw` variant:
+
+1. The data handler emits `NautilusWsMessage::ExecRaw(raw_msg)` for raw execution messages.
+2. The execution handler receives `ExecRaw`, performs context lookup, and produces `NautilusExecWsMessage`.
+3. The outer client routes normalized `NautilusExecWsMessage` events to callbacks.
+
+This separation ensures:
+
+- `NautilusExecWsMessage` only contains fully-resolved Nautilus domain types.
+- Raw venue messages flow through internal channels without polluting the normalized output.
+- Each handler has a single responsibility (parsing vs context resolution).
+
 ### Error handling
 
 #### Client-side error propagation

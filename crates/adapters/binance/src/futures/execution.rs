@@ -26,7 +26,6 @@ use std::{
 
 use anyhow::Context;
 use async_trait::async_trait;
-use dashmap::DashMap;
 use futures_util::{StreamExt, pin_mut};
 use nautilus_common::{
     clients::ExecutionClient,
@@ -49,24 +48,22 @@ use nautilus_core::{
 use nautilus_live::ExecutionClientCore;
 use nautilus_model::{
     accounts::AccountAny,
-    enums::{AccountType, LiquiditySide, OmsType, OrderSide, PositionSideSpecified},
+    enums::{OmsType, OrderSide, PositionSideSpecified},
     events::{
-        AccountState, OrderAccepted, OrderCancelRejected, OrderCanceled, OrderEventAny,
-        OrderFilled, OrderModifyRejected, OrderRejected, OrderSubmitted, OrderUpdated,
+        AccountState, OrderCancelRejected, OrderCanceled, OrderEventAny, OrderModifyRejected,
+        OrderRejected, OrderSubmitted, OrderUpdated,
     },
     identifiers::{
-        AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, Venue,
-        VenueOrderId,
+        AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId, Venue, VenueOrderId,
     },
     instruments::Instrument,
-    orders::Order,
+    orders::{Order, OrderAny},
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
-    types::{AccountBalance, Currency, MarginBalance, Money, Price, Quantity},
+    types::{AccountBalance, Currency, MarginBalance, Money, Quantity},
 };
 use rust_decimal::Decimal;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use ustr::Ustr;
 
 use super::{
     http::{
@@ -80,10 +77,8 @@ use super::{
     },
     websocket::{
         client::BinanceFuturesWebSocketClient,
-        messages::{
-            BinanceExecutionType, BinanceFuturesAccountUpdateMsg, BinanceFuturesOrderUpdateMsg,
-            BinanceFuturesWsMessage, NautilusFuturesExecWsMessage,
-        },
+        handler_exec::BinanceFuturesExecWsFeedHandler,
+        messages::{ExecHandlerCommand, NautilusExecWsMessage},
     },
 };
 use crate::{
@@ -91,7 +86,6 @@ use crate::{
         consts::BINANCE_VENUE,
         credential::resolve_credentials,
         enums::{BinancePositionSide, BinanceProductType},
-        symbol::format_instrument_id,
     },
     config::BinanceExecClientConfig,
     futures::http::models::BinanceFuturesAccountInfo,
@@ -105,6 +99,9 @@ const LISTEN_KEY_KEEPALIVE_SECS: u64 = 30 * 60;
 /// Implements the [`ExecutionClient`] trait for order management on Binance
 /// USD-M and COIN-M Futures markets. Uses HTTP API for order operations and
 /// WebSocket for real-time order updates via user data stream.
+///
+/// Uses a two-tier architecture with an execution handler that maintains
+/// pending order maps for correlating WebSocket updates with order context.
 #[derive(Debug)]
 pub struct BinanceFuturesExecutionClient {
     clock: &'static AtomicTime,
@@ -114,8 +111,10 @@ pub struct BinanceFuturesExecutionClient {
     http_client: BinanceFuturesHttpClient,
     ws_client: Option<BinanceFuturesWebSocketClient>,
     exec_sender: tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
+    exec_cmd_tx: Option<tokio::sync::mpsc::UnboundedSender<ExecHandlerCommand>>,
     listen_key: Arc<RwLock<Option<String>>>,
     cancellation_token: CancellationToken,
+    handler_signal: Arc<AtomicBool>,
     ws_task: Mutex<Option<JoinHandle<()>>>,
     keepalive_task: Mutex<Option<JoinHandle<()>>>,
     started: bool,
@@ -179,8 +178,10 @@ impl BinanceFuturesExecutionClient {
             http_client,
             ws_client: Some(ws_client),
             exec_sender,
+            exec_cmd_tx: None,
             listen_key: Arc::new(RwLock::new(None)),
             cancellation_token: CancellationToken::new(),
+            handler_signal: Arc::new(AtomicBool::new(false)),
             ws_task: Mutex::new(None),
             keepalive_task: Mutex::new(None),
             started: false,
@@ -296,366 +297,99 @@ impl BinanceFuturesExecutionClient {
         Ok(response.dual_side_position)
     }
 
-    /// Handles WebSocket messages from the user data stream.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_ws_message(
-        message: BinanceFuturesWsMessage,
+    /// Handles execution events from the handler.
+    ///
+    /// The handler has already correlated WebSocket updates with order context
+    /// (strategy_id, etc.) and emits normalized Nautilus events.
+    fn handle_exec_event(
+        message: NautilusExecWsMessage,
         exec_sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
-        trader_id: TraderId,
-        account_id: AccountId,
-        account_type: AccountType,
-        product_type: BinanceProductType,
-        clock: &'static AtomicTime,
-        instruments: &DashMap<Ustr, BinanceFuturesInstrument>,
     ) {
         match message {
-            BinanceFuturesWsMessage::Exec(exec_msg) => {
-                Self::handle_exec_message(
-                    exec_msg,
-                    exec_sender,
-                    trader_id,
-                    account_id,
-                    account_type,
-                    product_type,
-                    clock,
-                    instruments,
-                );
-            }
-            BinanceFuturesWsMessage::Data(_) => {
-                // Data messages are for the data client, ignore here
-            }
-            BinanceFuturesWsMessage::Error(e) => {
-                log::error!(
-                    "Binance Futures WebSocket error: code={}, msg={}",
-                    e.code,
-                    e.msg
-                );
-            }
-            BinanceFuturesWsMessage::Reconnected => {
-                log::info!("User data stream WebSocket reconnected");
-            }
-        }
-    }
-
-    /// Handles execution messages from the user data stream.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_exec_message(
-        message: NautilusFuturesExecWsMessage,
-        exec_sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
-        trader_id: TraderId,
-        account_id: AccountId,
-        account_type: AccountType,
-        product_type: BinanceProductType,
-        clock: &'static AtomicTime,
-        instruments: &DashMap<Ustr, BinanceFuturesInstrument>,
-    ) {
-        match message {
-            NautilusFuturesExecWsMessage::OrderUpdate(update) => {
-                Self::handle_order_update(
-                    &update,
-                    exec_sender,
-                    trader_id,
-                    account_id,
-                    product_type,
-                    clock,
-                    instruments,
-                );
-            }
-            NautilusFuturesExecWsMessage::AccountUpdate(update) => {
-                Self::handle_account_update(&update, exec_sender, account_id, account_type, clock);
-            }
-            NautilusFuturesExecWsMessage::MarginCall(msg) => {
-                log::warn!(
-                    "Margin call: cross_wallet_balance={}, positions_at_risk={}",
-                    msg.cross_wallet_balance,
-                    msg.positions.len()
-                );
-            }
-            NautilusFuturesExecWsMessage::AccountConfigUpdate(msg) => {
-                if let Some(ref lc) = msg.leverage_config {
-                    log::info!(
-                        "Account config update: symbol={}, leverage={}",
-                        lc.symbol,
-                        lc.leverage
-                    );
-                }
-            }
-            NautilusFuturesExecWsMessage::ListenKeyExpired => {
-                log::warn!("Listen key expired - reconnection required");
-            }
-        }
-    }
-
-    /// Handles ORDER_TRADE_UPDATE events from the user data stream.
-    fn handle_order_update(
-        msg: &BinanceFuturesOrderUpdateMsg,
-        exec_sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
-        trader_id: TraderId,
-        account_id: AccountId,
-        product_type: BinanceProductType,
-        clock: &'static AtomicTime,
-        instruments: &DashMap<Ustr, BinanceFuturesInstrument>,
-    ) {
-        let order_data = &msg.order;
-        let ts_event = UnixNanos::from((msg.event_time * 1_000_000) as u64);
-        let ts_init = clock.get_time_ns();
-
-        // Build instrument_id from symbol
-        let instrument_id = format_instrument_id(&order_data.symbol, product_type);
-
-        let client_order_id = ClientOrderId::new(&order_data.client_order_id);
-        let venue_order_id = VenueOrderId::new(order_data.order_id.to_string());
-
-        // For external orders we don't have strategy_id, use EXTERNAL
-        let strategy_id = StrategyId::new("EXTERNAL");
-
-        match order_data.execution_type {
-            BinanceExecutionType::New => {
-                let event = OrderAccepted::new(
-                    trader_id,
-                    strategy_id,
-                    instrument_id,
-                    client_order_id,
-                    venue_order_id,
-                    account_id,
-                    UUID4::new(),
-                    ts_event,
-                    ts_init,
-                    false,
-                );
-
+            NautilusExecWsMessage::OrderAccepted(event) => {
                 if let Err(e) =
                     exec_sender.send(ExecutionEvent::Order(OrderEventAny::Accepted(event)))
                 {
                     log::warn!("Failed to send OrderAccepted event: {e}");
                 }
             }
-            BinanceExecutionType::Canceled | BinanceExecutionType::Expired => {
-                let event = OrderCanceled::new(
-                    trader_id,
-                    strategy_id,
-                    instrument_id,
-                    client_order_id,
-                    UUID4::new(),
-                    ts_event,
-                    ts_init,
-                    false,
-                    Some(venue_order_id),
-                    Some(account_id),
-                );
-
+            NautilusExecWsMessage::OrderCanceled(event) => {
                 if let Err(e) =
                     exec_sender.send(ExecutionEvent::Order(OrderEventAny::Canceled(event)))
                 {
                     log::warn!("Failed to send OrderCanceled event: {e}");
                 }
             }
-            BinanceExecutionType::Trade => {
-                Self::handle_trade_update(
-                    msg,
-                    exec_sender,
-                    trader_id,
-                    account_id,
-                    instrument_id,
-                    client_order_id,
-                    venue_order_id,
-                    strategy_id,
-                    ts_event,
-                    ts_init,
-                    instruments,
-                );
-            }
-            BinanceExecutionType::Amendment => {
-                // Look up precision from instrument cache
-                let symbol_key = Ustr::from(&order_data.symbol);
-                let (price_precision, size_precision) = if let Some(inst) =
-                    instruments.get(&symbol_key)
+            NautilusExecWsMessage::OrderRejected(event) => {
+                if let Err(e) =
+                    exec_sender.send(ExecutionEvent::Order(OrderEventAny::Rejected(event)))
                 {
-                    (
-                        inst.price_precision() as u8,
-                        inst.quantity_precision() as u8,
-                    )
-                } else {
-                    log::warn!(
-                        "Instrument not found in cache for amendment: symbol={}, using default precision",
-                        order_data.symbol
-                    );
-                    (8_u8, 8_u8)
-                };
-
-                let quantity: f64 = order_data.original_qty.parse().unwrap_or(0.0);
-                let price: f64 = order_data.original_price.parse().unwrap_or(0.0);
-
-                let event = OrderUpdated::new(
-                    trader_id,
-                    strategy_id,
-                    instrument_id,
-                    client_order_id,
-                    Quantity::new(quantity, size_precision),
-                    UUID4::new(),
-                    ts_event,
-                    ts_init,
-                    false,
-                    Some(venue_order_id),
-                    Some(account_id),
-                    Some(Price::new(price, price_precision)),
-                    None,
-                    None,
-                );
-
+                    log::warn!("Failed to send OrderRejected event: {e}");
+                }
+            }
+            NautilusExecWsMessage::OrderFilled(event) => {
+                if let Err(e) =
+                    exec_sender.send(ExecutionEvent::Order(OrderEventAny::Filled(event)))
+                {
+                    log::warn!("Failed to send OrderFilled event: {e}");
+                }
+            }
+            NautilusExecWsMessage::OrderUpdated(event) => {
                 if let Err(e) =
                     exec_sender.send(ExecutionEvent::Order(OrderEventAny::Updated(event)))
                 {
                     log::warn!("Failed to send OrderUpdated event: {e}");
                 }
             }
-            BinanceExecutionType::Calculated => {
-                // Liquidation/ADL - log but don't generate event
-                log::warn!(
-                    "Calculated execution (liquidation/ADL): symbol={}, client_order_id={}",
-                    order_data.symbol,
-                    order_data.client_order_id
-                );
+            NautilusExecWsMessage::AccountUpdate(event) => {
+                if let Err(e) = exec_sender.send(ExecutionEvent::Account(event)) {
+                    log::warn!("Failed to send AccountState event: {e}");
+                }
+            }
+            NautilusExecWsMessage::ListenKeyExpired => {
+                log::warn!("Listen key expired - reconnection required");
+            }
+            NautilusExecWsMessage::Reconnected => {
+                log::info!("User data stream WebSocket reconnected");
             }
         }
     }
 
-    /// Handles trade fills from ORDER_TRADE_UPDATE events.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_trade_update(
-        msg: &BinanceFuturesOrderUpdateMsg,
-        exec_sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
-        trader_id: TraderId,
-        account_id: AccountId,
-        instrument_id: InstrumentId,
-        client_order_id: ClientOrderId,
-        venue_order_id: VenueOrderId,
-        strategy_id: StrategyId,
-        ts_event: UnixNanos,
-        ts_init: UnixNanos,
-        instruments: &DashMap<Ustr, BinanceFuturesInstrument>,
-    ) {
-        let order_data = &msg.order;
-
-        // Look up precision from instrument cache
-        let symbol_key = Ustr::from(&order_data.symbol);
-        let Some(inst) = instruments.get(&symbol_key) else {
-            log::error!(
-                "Instrument not found in cache for fill: symbol={}, skipping fill event to avoid precision mismatch",
-                order_data.symbol
-            );
-            return;
-        };
-        let price_precision = inst.price_precision() as u8;
-        let size_precision = inst.quantity_precision() as u8;
-        drop(inst); // Release the DashMap lock
-
-        let last_qty: f64 = order_data.last_filled_qty.parse().unwrap_or(0.0);
-        let last_px: f64 = order_data.last_filled_price.parse().unwrap_or(0.0);
-        let cum_qty: f64 = order_data.cumulative_filled_qty.parse().unwrap_or(0.0);
-        let leaves_qty: f64 = order_data.original_qty.parse().unwrap_or(0.0) - cum_qty;
-        let commission: f64 = order_data
-            .commission
-            .as_deref()
-            .unwrap_or("0")
-            .parse()
-            .unwrap_or(0.0);
-
-        let commission_currency = order_data
-            .commission_asset
-            .as_ref()
-            .map_or_else(Currency::USDT, |a| Currency::from(a.as_str()));
-
-        let liquidity_side = if order_data.is_maker {
-            LiquiditySide::Maker
-        } else {
-            LiquiditySide::Taker
-        };
-
-        let event = OrderFilled::new(
-            trader_id,
-            strategy_id,
-            instrument_id,
-            client_order_id,
-            venue_order_id,
-            account_id,
-            TradeId::new(order_data.trade_id.to_string()),
-            order_data.side.into(),
-            order_data.order_type.into(),
-            Quantity::new(last_qty, size_precision),
-            Price::new(last_px, price_precision),
-            commission_currency,
-            liquidity_side,
-            UUID4::new(),
-            ts_event,
-            ts_init,
-            false,
-            None,
-            Some(Money::new(commission, commission_currency)),
-        );
-
-        if let Err(e) = exec_sender.send(ExecutionEvent::Order(OrderEventAny::Filled(event))) {
-            log::warn!("Failed to send OrderFilled event: {e}");
-        }
-
-        // Check if order is fully filled
-        if leaves_qty <= 0.0 {
-            log::debug!(
-                "Order fully filled: client_order_id={client_order_id}, venue_order_id={venue_order_id}"
-            );
+    /// Registers an order with the execution handler for context tracking.
+    fn register_order(&self, order: &OrderAny) {
+        if let Some(ref cmd_tx) = self.exec_cmd_tx {
+            let cmd = ExecHandlerCommand::RegisterOrder {
+                client_order_id: order.client_order_id(),
+                trader_id: order.trader_id(),
+                strategy_id: order.strategy_id(),
+                instrument_id: order.instrument_id(),
+            };
+            if let Err(e) = cmd_tx.send(cmd) {
+                log::error!("Failed to register order with handler: {e}");
+            }
         }
     }
 
-    /// Handles ACCOUNT_UPDATE events from the user data stream.
-    fn handle_account_update(
-        msg: &BinanceFuturesAccountUpdateMsg,
-        exec_sender: &tokio::sync::mpsc::UnboundedSender<ExecutionEvent>,
-        account_id: AccountId,
-        account_type: AccountType,
-        clock: &'static AtomicTime,
+    /// Registers a cancel request with the execution handler for context tracking.
+    fn register_cancel(
+        &self,
+        client_order_id: ClientOrderId,
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
     ) {
-        let ts_event = UnixNanos::from((msg.event_time * 1_000_000) as u64);
-
-        let balances: Vec<AccountBalance> = msg
-            .account
-            .balances
-            .iter()
-            .filter_map(|b| {
-                let wallet_balance: f64 = b.wallet_balance.parse().unwrap_or(0.0);
-                let cross_wallet: f64 = b.cross_wallet_balance.parse().unwrap_or(0.0);
-                let locked = wallet_balance - cross_wallet;
-
-                if wallet_balance == 0.0 {
-                    return None;
-                }
-
-                let currency = Currency::from(&b.asset);
-                Some(AccountBalance::new(
-                    Money::new(wallet_balance, currency),
-                    Money::new(locked.max(0.0), currency),
-                    Money::new(cross_wallet, currency),
-                ))
-            })
-            .collect();
-
-        if balances.is_empty() {
-            return;
-        }
-
-        let account_state = AccountState::new(
-            account_id,
-            account_type,
-            balances,
-            Vec::new(), // margins
-            true,       // reported
-            UUID4::new(),
-            ts_event,
-            clock.get_time_ns(),
-            None, // base currency
-        );
-
-        if let Err(e) = exec_sender.send(ExecutionEvent::Account(account_state)) {
-            log::warn!("Failed to send account state update: {e}");
+        if let Some(ref cmd_tx) = self.exec_cmd_tx {
+            let cmd = ExecHandlerCommand::RegisterCancel {
+                client_order_id,
+                trader_id,
+                strategy_id,
+                instrument_id,
+                venue_order_id,
+            };
+            if let Err(e) = cmd_tx.send(cmd) {
+                log::error!("Failed to register cancel with handler: {e}");
+            }
         }
     }
 
@@ -663,6 +397,10 @@ impl BinanceFuturesExecutionClient {
         let http_client = self.http_client.clone();
 
         let order = self.core.get_order(&cmd.client_order_id)?;
+
+        // Register order with handler for context tracking before HTTP request
+        self.register_order(&order);
+
         let exec_sender = self.exec_sender.clone();
         let trader_id = self.core.trader_id;
         let account_id = self.core.account_id;
@@ -708,6 +446,9 @@ impl BinanceFuturesExecutionClient {
                     );
                 }
                 Err(e) => {
+                    // Keep order registered - if HTTP failed due to timeout but order
+                    // reached Binance, WebSocket updates will still arrive. The order
+                    // will be cleaned up via WebSocket rejection or reconciliation.
                     let rejected_event = OrderRejected::new(
                         trader_id,
                         strategy_id,
@@ -741,6 +482,16 @@ impl BinanceFuturesExecutionClient {
     fn cancel_order_internal(&self, cmd: &CancelOrder) -> anyhow::Result<()> {
         let http_client = self.http_client.clone();
         let command = cmd.clone();
+
+        // Register cancel with handler for context tracking before HTTP request
+        self.register_cancel(
+            command.client_order_id,
+            self.core.trader_id,
+            command.strategy_id,
+            command.instrument_id,
+            command.venue_order_id,
+        );
+
         let exec_sender = self.exec_sender.clone();
         let trader_id = self.core.trader_id;
         let account_id = self.core.account_id;
@@ -941,7 +692,7 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
         log::info!("Hedge mode (dual side position): {is_hedge_mode}");
 
         // Load instruments if not already done
-        let instruments = if self.instruments_initialized.load(Ordering::Acquire) {
+        let _instruments = if self.instruments_initialized.load(Ordering::Acquire) {
             Vec::new()
         } else {
             let instruments = self
@@ -982,13 +733,8 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
             *key_guard = Some(listen_key.clone());
         }
 
-        // Connect WebSocket
+        // Connect WebSocket and set up execution handler
         if let Some(ref mut ws_client) = self.ws_client {
-            // Cache instruments in WebSocket client for message handling
-            if !instruments.is_empty() {
-                ws_client.cache_instruments(instruments);
-            }
-
             log::info!("Connecting to Binance Futures user data stream WebSocket...");
             ws_client.connect().await.map_err(|e| {
                 log::error!("Binance Futures WebSocket connection failed: {e:?}");
@@ -1004,39 +750,82 @@ impl ExecutionClient for BinanceFuturesExecutionClient {
                 .map_err(|e| anyhow::anyhow!("failed to subscribe to user data stream: {e}"))?;
             log::info!("Subscribed to user data stream");
 
-            // Start WebSocket message processing loop
-            let stream = ws_client.stream();
-            let exec_sender = self.exec_sender.clone();
-            let trader_id = self.core.trader_id;
-            let account_id = self.core.account_id;
-            let account_type = self.core.account_type;
-            let product_type = self.product_type;
-            let clock = self.clock;
-            let cancel = self.cancellation_token.clone();
-            let instruments = self.http_client.instruments_cache();
+            // Create channels for the execution handler
+            let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            let ws_task = get_runtime().spawn(async move {
+            // Store command channel for order registration
+            self.exec_cmd_tx = Some(cmd_tx.clone());
+
+            // Create and initialize the execution handler
+            let mut handler = BinanceFuturesExecWsFeedHandler::new(
+                self.clock,
+                self.core.trader_id,
+                self.core.account_id,
+                self.core.account_type,
+                self.product_type,
+                self.handler_signal.clone(),
+                cmd_rx,
+                raw_rx,
+            );
+
+            // Initialize handler with instruments
+            let instruments_for_handler: Vec<BinanceFuturesInstrument> = self
+                .http_client
+                .instruments_cache()
+                .iter()
+                .map(|r| r.value().clone())
+                .collect();
+            if let Err(e) = cmd_tx.send(ExecHandlerCommand::InitializeInstruments(
+                instruments_for_handler,
+            )) {
+                log::error!("Failed to send instruments to handler: {e}");
+            }
+
+            // Set up raw message forwarding from WebSocket to handler
+            let stream = ws_client.stream();
+            let cancel = self.cancellation_token.clone();
+            let raw_forward_task = get_runtime().spawn(async move {
                 pin_mut!(stream);
                 loop {
                     tokio::select! {
                         Some(message) = stream.next() => {
-                            Self::handle_ws_message(
-                                message,
-                                &exec_sender,
-                                trader_id,
-                                account_id,
-                                account_type,
-                                product_type,
-                                clock,
-                                &instruments,
-                            );
+                            if let Err(e) = raw_tx.send(message) {
+                                log::error!("Failed to forward raw message to handler: {e}");
+                                break;
+                            }
                         }
                         () = cancel.cancelled() => {
-                            log::debug!("User data stream task cancelled");
+                            log::debug!("Raw message forwarding task cancelled");
                             break;
                         }
                     }
                 }
+            });
+
+            // Start handler processing task
+            let exec_sender = self.exec_sender.clone();
+            let handler_cancel = self.cancellation_token.clone();
+            let ws_task = get_runtime().spawn(async move {
+                loop {
+                    tokio::select! {
+                        msg = handler.next() => {
+                            match msg {
+                                Some(event) => {
+                                    Self::handle_exec_event(event, &exec_sender);
+                                }
+                                None => break,
+                            }
+                        }
+                        () = handler_cancel.cancelled() => {
+                            log::debug!("Handler task cancelled");
+                            break;
+                        }
+                    }
+                }
+
+                // Clean up raw forwarding task
+                raw_forward_task.abort();
             });
             *self.ws_task.lock().expect(MUTEX_POISONED) = Some(ws_task);
 

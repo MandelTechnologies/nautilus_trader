@@ -269,7 +269,7 @@ cdef class AccountsManager:
             cumulative_locked = total_locked.get(currency)
 
             if cumulative_locked is not None:
-                cumulative_locked.add_assign(balance_locked)
+                total_locked[currency] = cumulative_locked + balance_locked
             else:
                 total_locked[currency] = balance_locked
 

@@ -23,6 +23,7 @@ use std::{
     },
 };
 
+use ahash::AHashSet;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use nautilus_core::{datetime::nanos_to_millis, nanos::UnixNanos, time::get_atomic_clock_realtime};
@@ -357,9 +358,11 @@ impl DeribitRawHttpClient {
     {
         // Create operation identifier combining URL and RPC method
         let operation_id = format!("{}#{}", self.base_url, method);
+        let params_clone = serde_json::to_value(&params)?;
+
         let operation = || {
             let method = method.to_string();
-            let params_clone = serde_json::to_value(&params).unwrap();
+            let params_clone = params_clone.clone();
 
             async move {
                 // Build JSON-RPC request
@@ -974,15 +977,16 @@ impl DeribitHttpClient {
             };
 
         // Convert timestamps to milliseconds
-        let start_timestamp = start.map_or_else(
-            || Utc::now().timestamp_millis() - 3_600_000, // Default: 1 hour ago
-            |dt| dt.timestamp_millis(),
-        );
+        let now = Utc::now();
+        let end_dt = end.unwrap_or(now);
+        let start_dt = start.unwrap_or(end_dt - chrono::Duration::hours(1));
 
-        let end_timestamp = end.map_or_else(
-            || Utc::now().timestamp_millis(), // Default: now
-            |dt| dt.timestamp_millis(),
-        );
+        if let (Some(s), Some(e)) = (start, end) {
+            anyhow::ensure!(s < e, "Invalid time range: start={s:?} end={e:?}");
+        }
+
+        let start_timestamp = start_dt.timestamp_millis();
+        let end_timestamp = end_dt.timestamp_millis();
 
         let params = GetLastTradesByInstrumentAndTimeParams::new(
             instrument_id.symbol.to_string(),
@@ -1273,8 +1277,8 @@ impl DeribitHttpClient {
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         let ts_init = self.generate_ts_init();
         let mut reports = Vec::new();
+        let mut seen_order_ids = AHashSet::new();
 
-        // Helper closure to parse order and add to reports
         let mut parse_and_add = |order: &DeribitOrderMsg| {
             let symbol = Ustr::from(&order.instrument_name);
             if let Some(instrument) = self.get_instrument(&symbol) {
@@ -1288,7 +1292,8 @@ impl DeribitHttpClient {
                             (None, Some(e)) => ts_last <= e,
                             (None, None) => true,
                         };
-                        if in_range {
+                        // Only deduplicate if in range (prevents dropping valid historical reports)
+                        if in_range && seen_order_ids.insert(order.order_id.clone()) {
                             reports.push(report);
                         }
                     }
@@ -1487,7 +1492,7 @@ impl DeribitHttpClient {
     /// Fetches positions from Deribit and converts them to Nautilus [`PositionStatusReport`].
     ///
     /// # Strategy
-    /// - Must iterate over currencies (Deribit requires currency param for positions)
+    /// - Uses `currency=any` to fetch all positions in one call
     /// - Filters by instrument_id if provided
     ///
     /// # Errors

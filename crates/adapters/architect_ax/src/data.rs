@@ -471,7 +471,7 @@ impl DataClient for AxDataClient {
         Ok(())
     }
 
-    fn request_instruments(&self, request: &RequestInstruments) -> anyhow::Result<()> {
+    fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let request_id = request.request_id;
@@ -479,7 +479,7 @@ impl DataClient for AxDataClient {
         let venue = *AX_VENUE;
         let start_nanos = datetime_to_unix_nanos(request.start);
         let end_nanos = datetime_to_unix_nanos(request.end);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
 
         get_runtime().spawn(async move {
@@ -512,7 +512,7 @@ impl DataClient for AxDataClient {
         Ok(())
     }
 
-    fn request_instrument(&self, request: &RequestInstrument) -> anyhow::Result<()> {
+    fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let request_id = request.request_id;
@@ -521,7 +521,7 @@ impl DataClient for AxDataClient {
         let symbol = instrument_id.symbol.to_string();
         let start_nanos = datetime_to_unix_nanos(request.start);
         let end_nanos = datetime_to_unix_nanos(request.end);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
 
         get_runtime().spawn(async move {
@@ -554,7 +554,7 @@ impl DataClient for AxDataClient {
         Ok(())
     }
 
-    fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
+    fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let request_id = request.request_id;
@@ -563,7 +563,7 @@ impl DataClient for AxDataClient {
         let symbol = bar_type.instrument_id().symbol.to_string();
         let start_nanos = datetime_to_unix_nanos(request.start);
         let end_nanos = datetime_to_unix_nanos(request.end);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let width = match map_bar_spec_to_candle_width(&bar_type.spec()) {
             Ok(w) => w,

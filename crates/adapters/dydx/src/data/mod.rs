@@ -688,7 +688,7 @@ impl DataClient for DydxDataClient {
         Ok(())
     }
 
-    fn request_instrument(&self, request: &RequestInstrument) -> anyhow::Result<()> {
+    fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
         let instruments_cache = self.instruments.clone();
         let sender = self.data_sender.clone();
         let http = self.http_client.clone();
@@ -697,7 +697,7 @@ impl DataClient for DydxDataClient {
         let client_id = request.client_id.unwrap_or(self.client_id);
         let start = request.start;
         let end = request.end;
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -750,7 +750,7 @@ impl DataClient for DydxDataClient {
         Ok(())
     }
 
-    fn request_instruments(&self, request: &RequestInstruments) -> anyhow::Result<()> {
+    fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instruments_cache = self.instruments.clone();
@@ -759,7 +759,7 @@ impl DataClient for DydxDataClient {
         let venue = self.venue();
         let start = request.start;
         let end = request.end;
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -814,7 +814,7 @@ impl DataClient for DydxDataClient {
         Ok(())
     }
 
-    fn request_trades(&self, request: &RequestTrades) -> anyhow::Result<()> {
+    fn request_trades(&self, request: RequestTrades) -> anyhow::Result<()> {
         let http = self.http_client.clone();
         let instruments = self.instruments.clone();
         let sender = self.data_sender.clone();
@@ -824,7 +824,7 @@ impl DataClient for DydxDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -979,7 +979,7 @@ impl DataClient for DydxDataClient {
         Ok(())
     }
 
-    fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
+    fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         const DYDX_MAX_BARS_PER_REQUEST: u32 = 1_000;
 
         let bar_type = request.bar_type;
@@ -1031,7 +1031,7 @@ impl DataClient for DydxDataClient {
             .to_string();
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
 
         let start = request.start;
@@ -2581,7 +2581,7 @@ mod tests {
 
         // We only verify that the partitioning logic executes without panicking;
         // HTTP calls are allowed to fail and are handled internally.
-        assert!(client.request_bars(&request).is_ok());
+        assert!(client.request_bars(request).is_ok());
     }
 
     #[tokio::test]
@@ -2662,7 +2662,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_bars(&request).is_ok());
+        assert!(client.request_bars(request).is_ok());
     }
 
     #[derive(Clone)]
@@ -2984,7 +2984,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_bars(&request).is_ok());
+        assert!(client.request_bars(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(3);
         if let Ok(Some(DataEvent::Response(DataResponse::Bars(resp)))) =
@@ -3524,7 +3524,8 @@ mod tests {
         );
 
         // Execute request (spawns async task)
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Wait for response (with timeout)
         let timeout = tokio::time::Duration::from_secs(5);
@@ -3534,7 +3535,7 @@ mod tests {
             Ok(Some(DataEvent::Response(resp))) => {
                 if let DataResponse::Instruments(inst_resp) = resp {
                     // Verify response structure
-                    assert_eq!(inst_resp.correlation_id, request.request_id);
+                    assert_eq!(inst_resp.correlation_id, request_id);
                     assert_eq!(inst_resp.client_id, client_id);
                     assert_eq!(inst_resp.venue, *DYDX_VENUE);
                     assert!(inst_resp.start.is_none());
@@ -3584,7 +3585,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Should receive empty response on error
         let timeout = tokio::time::Duration::from_secs(3);
@@ -3595,7 +3597,7 @@ mod tests {
                 resp.data.is_empty(),
                 "Expected empty instruments on HTTP error"
             );
-            assert_eq!(resp.correlation_id, request.request_id);
+            assert_eq!(resp.correlation_id, request_id);
             assert_eq!(resp.client_id, client_id);
         }
     }
@@ -3623,7 +3625,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Wait for async task to complete
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -3658,7 +3660,7 @@ mod tests {
         );
 
         // Should execute without panic (actual correlation checked in async handler)
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
     }
 
     #[tokio::test]
@@ -3684,7 +3686,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
     }
 
     #[tokio::test]
@@ -3713,7 +3715,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Wait for response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -3753,7 +3755,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(3);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -3790,7 +3792,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(3);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -3824,7 +3826,7 @@ mod tests {
         );
 
         // Should use client's default client_id
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
     }
 
     #[tokio::test]
@@ -3853,7 +3855,7 @@ mod tests {
             Some(params_map),
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Wait for response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -3898,7 +3900,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(3);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -3951,7 +3953,7 @@ mod tests {
             None,
         );
 
-        assert!(client1.request_instruments(&request1).is_ok());
+        assert!(client1.request_instruments(request1).is_ok());
 
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp1)))) =
             tokio::time::timeout(timeout, rx.recv()).await
@@ -3980,7 +3982,7 @@ mod tests {
             None,
         );
 
-        assert!(client2.request_instruments(&request2).is_ok());
+        assert!(client2.request_instruments(request2).is_ok());
 
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp2)))) =
             tokio::time::timeout(timeout, rx.recv()).await
@@ -4018,7 +4020,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(5);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -4066,7 +4068,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Should get immediate response from cache
         let timeout = tokio::time::Duration::from_millis(500);
@@ -4103,7 +4105,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Wait for async HTTP fetch and response
         let timeout = tokio::time::Duration::from_secs(5);
@@ -4159,7 +4161,7 @@ mod tests {
         );
 
         // Should not panic on invalid instrument
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Note: No response sent when instrument not found (by design)
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -4190,7 +4192,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Wait for async bulk fetch
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -4230,7 +4232,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Verify correlation_id matches
         let timeout = tokio::time::Duration::from_millis(500);
@@ -4269,7 +4271,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Verify response is properly boxed
         let timeout = tokio::time::Duration::from_millis(500);
@@ -4339,7 +4341,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Should use client's default client_id
         let timeout = tokio::time::Duration::from_millis(500);
@@ -4423,7 +4425,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(1);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -4505,7 +4507,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(1);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -4612,7 +4614,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(1);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -4684,7 +4686,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -4759,7 +4761,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -4805,7 +4807,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         // Should receive empty response when instrument not found
         let timeout = tokio::time::Duration::from_millis(500);
@@ -4870,7 +4872,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let state_clone = state.clone();
         wait_until_async(
@@ -4948,7 +4950,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Should receive empty response on 404
         let timeout = tokio::time::Duration::from_secs(2);
@@ -5000,7 +5002,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         // Should receive empty response on 500 error
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5046,7 +5048,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Should timeout and return empty response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5097,7 +5099,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Should handle connection refused gracefully
         let timeout = tokio::time::Duration::from_secs(2);
@@ -5153,7 +5155,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle DNS failure gracefully with empty response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5202,7 +5204,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle 503 gracefully with empty response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5254,7 +5256,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         // Should handle rate limit with empty response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5302,7 +5304,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_instruments(&request_instruments).is_ok());
+        assert!(client.request_instruments(request_instruments).is_ok());
 
         let instrument_id = InstrumentId::from("INVALID.DYDX");
         let request_instrument = RequestInstrument::new(
@@ -5314,7 +5316,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_instrument(&request_instrument).is_ok());
+        assert!(client.request_instrument(request_instrument).is_ok());
 
         let request_trades = RequestTrades::new(
             instrument_id,
@@ -5326,7 +5328,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_trades(&request_trades).is_ok());
+        assert!(client.request_trades(request_trades).is_ok());
     }
 
     #[tokio::test]
@@ -5388,7 +5390,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle malformed JSON gracefully with empty response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5472,7 +5474,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle missing fields gracefully (may skip instruments or return empty)
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5481,7 +5484,7 @@ mod tests {
         {
             // Parse errors should result in empty or partial response
             // The important part is no panic
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -5558,7 +5561,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle type errors gracefully
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5566,7 +5570,7 @@ mod tests {
             tokio::time::timeout(timeout, rx.recv()).await
         {
             // Type mismatch should result in parse failure and empty/partial response
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -5639,7 +5643,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle unexpected structure gracefully with empty response
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5650,7 +5655,7 @@ mod tests {
                 resp.data.is_empty(),
                 "Expected empty response on unexpected structure"
             );
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -5715,7 +5720,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle empty markets gracefully
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5726,7 +5732,7 @@ mod tests {
                 resp.data.is_empty(),
                 "Expected empty response for empty markets"
             );
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -5799,7 +5805,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_instruments(request).is_ok());
 
         // Should handle null values gracefully
         let timeout = tokio::time::Duration::from_secs(3);
@@ -5807,7 +5814,7 @@ mod tests {
             tokio::time::timeout(timeout, rx.recv()).await
         {
             // Null values should cause parse failures and result in empty/partial response
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -5845,7 +5852,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         // Should handle non-existent instrument gracefully
         let timeout = tokio::time::Duration::from_secs(2);
@@ -5904,7 +5911,8 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_trades(request).is_ok());
 
         // Should handle invalid range gracefully - may return empty or no response
         let timeout = tokio::time::Duration::from_secs(2);
@@ -5912,7 +5920,7 @@ mod tests {
             tokio::time::timeout(timeout, rx.recv()).await
         {
             // Empty response expected for invalid date range
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -5956,7 +5964,7 @@ mod tests {
         );
 
         // Should not panic with minimum limit
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
     }
 
     #[tokio::test]
@@ -5997,14 +6005,15 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_trades(request).is_ok());
 
         // Should handle None limit gracefully (uses API default)
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
             tokio::time::timeout(timeout, rx.recv()).await
         {
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -6046,14 +6055,15 @@ mod tests {
         );
 
         // Should not panic with very large limit
-        assert!(client.request_trades(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_trades(request).is_ok());
 
         // Should handle large limit gracefully
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
             tokio::time::timeout(timeout, rx.recv()).await
         {
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -6095,13 +6105,14 @@ mod tests {
         );
 
         // Should work fine with None limit (uses API default)
-        assert!(client.request_trades(&request).is_ok());
+        let request_id = request.request_id;
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
             tokio::time::timeout(timeout, rx.recv()).await
         {
-            assert!(resp.correlation_id == request.request_id);
+            assert!(resp.correlation_id == request_id);
         }
     }
 
@@ -6142,7 +6153,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_instrument(&req1).is_ok());
+        assert!(client.request_instrument(req1).is_ok());
 
         // Test 2: Invalid date range
         let start = Utc::now();
@@ -6157,7 +6168,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_trades(&req2).is_ok());
+        assert!(client.request_trades(req2).is_ok());
 
         // Test 3: Minimum limit (1)
         let req3 = RequestTrades::new(
@@ -6170,7 +6181,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_trades(&req3).is_ok());
+        assert!(client.request_trades(req3).is_ok());
 
         // Test 4: Very large limit
         let req4 = RequestTrades::new(
@@ -6183,7 +6194,7 @@ mod tests {
             get_atomic_clock_realtime().get_time_ns(),
             None,
         );
-        assert!(client.request_trades(&req4).is_ok());
+        assert!(client.request_trades(req4).is_ok());
 
         // All validation edge cases handled without panic
     }
@@ -6275,7 +6286,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(3);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6317,7 +6328,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6363,7 +6374,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6408,7 +6419,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6457,7 +6468,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6509,7 +6520,7 @@ mod tests {
             None, // params
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6551,7 +6562,7 @@ mod tests {
             None, // No params
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6601,7 +6612,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instruments(&request).is_ok());
+        assert!(client.request_instruments(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instruments(resp)))) =
@@ -6662,7 +6673,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instrument(boxed_resp)))) =
@@ -6710,7 +6721,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instrument(resp)))) =
@@ -6758,7 +6769,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instrument(resp)))) =
@@ -6813,7 +6824,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instrument(resp)))) =
@@ -6872,7 +6883,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instrument(resp)))) =
@@ -6937,7 +6948,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_instrument(&request).is_ok());
+        assert!(client.request_instrument(request).is_ok());
 
         let timeout = tokio::time::Duration::from_secs(2);
         if let Ok(Some(DataEvent::Response(DataResponse::Instrument(resp)))) =
@@ -7040,7 +7051,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -7122,7 +7133,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -7229,7 +7240,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -7324,7 +7335,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -7433,7 +7444,7 @@ mod tests {
             None,
         );
 
-        assert!(client.request_trades(&request).is_ok());
+        assert!(client.request_trades(request).is_ok());
 
         let timeout = tokio::time::Duration::from_millis(500);
         if let Ok(Some(DataEvent::Response(DataResponse::Trades(resp)))) =
@@ -7490,7 +7501,7 @@ mod tests {
 
         for i in 0..100 {
             let symbol = format!("INSTRUMENT-{i}");
-            let instrument_id = InstrumentId::from(format!("{symbol}-PERP.DYDX").as_str());
+            let instrument_id = InstrumentId::from(format!("{symbol}-PERP.DYDX"));
             client.order_books.insert(
                 instrument_id,
                 OrderBook::new(instrument_id, BookType::L2_MBP),
@@ -7600,7 +7611,7 @@ mod tests {
             None,
         );
 
-        let result = client.request_bars(&request);
+        let result = client.request_bars(request);
         assert!(result.is_ok());
     }
 
@@ -7657,7 +7668,7 @@ mod tests {
             None,
         );
 
-        let result = client.request_bars(&request);
+        let result = client.request_bars(request);
         assert!(result.is_ok());
     }
 
@@ -7707,7 +7718,7 @@ mod tests {
             None,
         );
 
-        let result = client.request_trades(&request);
+        let result = client.request_trades(request);
         assert!(result.is_ok());
     }
 

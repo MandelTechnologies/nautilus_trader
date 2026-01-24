@@ -14,12 +14,36 @@
 // -------------------------------------------------------------------------------------------------
 
 //! Represents an amount of money in a specified currency denomination.
+//!
+//! [`Money`] is an immutable value type for representing monetary amounts with an associated
+//! currency. It supports both positive and negative values (for debits, losses, etc.) and
+//! enforces currency consistency in arithmetic operations.
+//!
+//! # Arithmetic behavior
+//!
+//! `Money` implements `Add` and `Sub` for same-type operations:
+//!
+//! | Operation       | Result  | Notes                             |
+//! |-----------------|---------|-----------------------------------|
+//! | `Money + Money` | `Money` | Panics if currencies don't match. |
+//! | `Money - Money` | `Money` | Panics if currencies don't match. |
+//!
+//! For Python bindings with mixed-type operations, see the Python API documentation.
+//!
+//! # Currency constraints
+//!
+//! When performing arithmetic between two `Money` values, both must have the same currency.
+//! Attempting to add or subtract money with different currencies raises an error.
+//!
+//! # Immutability
+//!
+//! `Money` is immutable. All arithmetic operations return new instances.
 
 use std::{
     cmp::Ordering,
     fmt::{Debug, Display},
     hash::{Hash, Hasher},
-    ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign},
+    ops::{Add, Div, Mul, Neg, Sub},
     str::FromStr,
 };
 
@@ -436,34 +460,6 @@ impl Sub for Money {
     }
 }
 
-impl AddAssign for Money {
-    fn add_assign(&mut self, other: Self) {
-        assert_eq!(
-            self.currency, other.currency,
-            "Currency mismatch: cannot add {} to {}",
-            other.currency.code, self.currency.code
-        );
-        self.raw = self
-            .raw
-            .checked_add(other.raw)
-            .expect("Overflow occurred when adding `Money`");
-    }
-}
-
-impl SubAssign for Money {
-    fn sub_assign(&mut self, other: Self) {
-        assert_eq!(
-            self.currency, other.currency,
-            "Currency mismatch: cannot subtract {} from {}",
-            other.currency.code, self.currency.code
-        );
-        self.raw = self
-            .raw
-            .checked_sub(other.raw)
-            .expect("Underflow occurred when subtracting `Money`");
-    }
-}
-
 impl Add<f64> for Money {
     type Output = f64;
     fn add(self, rhs: f64) -> Self::Output {
@@ -701,15 +697,6 @@ mod tests {
     }
 
     #[rstest]
-    fn test_add_assign() {
-        let usd = Currency::USD();
-        let mut money = Money::new(100.0, usd);
-        money += Money::new(50.0, usd);
-        assert!(approx_eq!(f64, money.as_f64(), 150.0, epsilon = 1e-9));
-        assert_eq!(money.currency, usd);
-    }
-
-    #[rstest]
     fn test_sub() {
         let usd = Currency::USD();
         let money1 = Money::new(1000.0, usd);
@@ -717,15 +704,6 @@ mod tests {
         let result = money1 - money2;
         assert!(approx_eq!(f64, result.as_f64(), 750.0, epsilon = 1e-9));
         assert_eq!(result.currency, usd);
-    }
-
-    #[rstest]
-    fn test_sub_assign() {
-        let usd = Currency::USD();
-        let mut money = Money::new(100.0, usd);
-        money -= Money::new(25.0, usd);
-        assert!(approx_eq!(f64, money.as_f64(), 75.0, epsilon = 1e-9));
-        assert_eq!(money.currency, usd);
     }
 
     #[rstest]

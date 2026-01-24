@@ -480,7 +480,7 @@ impl BookLadder {
 
                 // Add this fill and continue
                 fills.push((book_order.price, current));
-                cumulative_denominator += current;
+                cumulative_denominator = cumulative_denominator + current;
             }
         }
 

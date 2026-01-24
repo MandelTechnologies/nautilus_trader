@@ -48,6 +48,7 @@ use nautilus_core::{
 };
 use nautilus_model::{
     data::{Data, OrderBookDeltas_API},
+    enums::BookType,
     identifiers::{ClientId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
 };
@@ -56,7 +57,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     common::{
-        consts::DERIBIT_VENUE,
+        consts::{
+            DERIBIT_BOOK_DEFAULT_DEPTH, DERIBIT_BOOK_DEFAULT_GROUP, DERIBIT_BOOK_VALID_DEPTHS,
+            DERIBIT_VENUE,
+        },
         parse::{bar_spec_to_resolution, parse_instrument_kind_currency},
     },
     config::DeribitDataClientConfig,
@@ -532,6 +536,10 @@ impl DataClient for DeribitDataClient {
     }
 
     fn subscribe_book_deltas(&mut self, cmd: &SubscribeBookDeltas) -> anyhow::Result<()> {
+        if cmd.book_type != BookType::L2_MBP {
+            anyhow::bail!("Deribit only supports L2_MBP order book deltas");
+        }
+
         let ws = self
             .ws_client
             .as_ref()
@@ -546,15 +554,42 @@ impl DataClient for DeribitDataClient {
             .and_then(|p| p.get("interval"))
             .and_then(|v| v.parse::<DeribitUpdateInterval>().ok());
 
+        let depth = cmd
+            .params
+            .as_ref()
+            .and_then(|p| p.get("depth"))
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DERIBIT_BOOK_DEFAULT_DEPTH);
+
+        if !DERIBIT_BOOK_VALID_DEPTHS.contains(&depth) {
+            anyhow::bail!("invalid depth {depth}; supported depths: {DERIBIT_BOOK_VALID_DEPTHS:?}");
+        }
+
+        let group = cmd
+            .params
+            .as_ref()
+            .and_then(|p| p.get("group"))
+            .map_or(DERIBIT_BOOK_DEFAULT_GROUP, String::as_str)
+            .to_string();
+
         log::info!(
-            "Subscribing to book deltas for {} (interval: {}, book_type: {:?})",
+            "Subscribing to book deltas for {} (group: {}, depth: {}, interval: {}, book_type: {:?})",
             instrument_id,
+            group,
+            depth,
             interval.map_or("100ms (default)".to_string(), |i| i.to_string()),
             cmd.book_type
         );
 
         get_runtime().spawn(async move {
-            if let Err(e) = ws.subscribe_book(instrument_id, interval).await {
+            let result = if interval == Some(DeribitUpdateInterval::Raw) {
+                ws.subscribe_book(instrument_id, interval).await
+            } else {
+                ws.subscribe_book_grouped(instrument_id, &group, depth, interval)
+                    .await
+            };
+
+            if let Err(e) = result {
                 log::error!("Failed to subscribe to book deltas for {instrument_id}: {e}");
             }
         });
@@ -563,6 +598,10 @@ impl DataClient for DeribitDataClient {
     }
 
     fn subscribe_book_depth10(&mut self, cmd: &SubscribeBookDepth10) -> anyhow::Result<()> {
+        if cmd.book_type != BookType::L2_MBP {
+            anyhow::bail!("Deribit only supports L2_MBP order book depth");
+        }
+
         let ws = self
             .ws_client
             .as_ref()
@@ -582,7 +621,7 @@ impl DataClient for DeribitDataClient {
             .params
             .as_ref()
             .and_then(|p| p.get("group"))
-            .map_or("none", String::as_str)
+            .map_or(DERIBIT_BOOK_DEFAULT_GROUP, String::as_str)
             .to_string();
 
         log::info!(
@@ -852,14 +891,41 @@ impl DataClient for DeribitDataClient {
             .and_then(|p| p.get("interval"))
             .and_then(|v| v.parse::<DeribitUpdateInterval>().ok());
 
+        let depth = cmd
+            .params
+            .as_ref()
+            .and_then(|p| p.get("depth"))
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(DERIBIT_BOOK_DEFAULT_DEPTH);
+
+        if !DERIBIT_BOOK_VALID_DEPTHS.contains(&depth) {
+            anyhow::bail!("invalid depth {depth}; supported depths: {DERIBIT_BOOK_VALID_DEPTHS:?}");
+        }
+
+        let group = cmd
+            .params
+            .as_ref()
+            .and_then(|p| p.get("group"))
+            .map_or(DERIBIT_BOOK_DEFAULT_GROUP, String::as_str)
+            .to_string();
+
         log::info!(
-            "Unsubscribing from book deltas for {} (interval: {})",
+            "Unsubscribing from book deltas for {} (group: {}, depth: {}, interval: {})",
             instrument_id,
+            group,
+            depth,
             interval.map_or("100ms (default)".to_string(), |i| i.to_string())
         );
 
         get_runtime().spawn(async move {
-            if let Err(e) = ws.unsubscribe_book(instrument_id, interval).await {
+            let result = if interval == Some(DeribitUpdateInterval::Raw) {
+                ws.unsubscribe_book(instrument_id, interval).await
+            } else {
+                ws.unsubscribe_book_grouped(instrument_id, &group, depth, interval)
+                    .await
+            };
+
+            if let Err(e) = result {
                 log::error!("Failed to unsubscribe from book deltas for {instrument_id}: {e}");
             }
         });
@@ -887,7 +953,7 @@ impl DataClient for DeribitDataClient {
             .params
             .as_ref()
             .and_then(|p| p.get("group"))
-            .map_or("none", String::as_str)
+            .map_or(DERIBIT_BOOK_DEFAULT_GROUP, String::as_str)
             .to_string();
 
         log::info!(
@@ -1081,7 +1147,7 @@ impl DataClient for DeribitDataClient {
         Ok(())
     }
 
-    fn request_instruments(&self, request: &RequestInstruments) -> anyhow::Result<()> {
+    fn request_instruments(&self, request: RequestInstruments) -> anyhow::Result<()> {
         if request.start.is_some() {
             log::warn!(
                 "Requesting instruments for {:?} with specified `start` which has no effect",
@@ -1102,7 +1168,7 @@ impl DataClient for DeribitDataClient {
         let client_id = request.client_id.unwrap_or(self.client_id);
         let start_nanos = datetime_to_unix_nanos(request.start);
         let end_nanos = datetime_to_unix_nanos(request.end);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let venue = *DERIBIT_VENUE;
 
@@ -1173,7 +1239,7 @@ impl DataClient for DeribitDataClient {
         Ok(())
     }
 
-    fn request_instrument(&self, request: &RequestInstrument) -> anyhow::Result<()> {
+    fn request_instrument(&self, request: RequestInstrument) -> anyhow::Result<()> {
         if request.start.is_some() {
             log::warn!(
                 "Requesting instrument {} with specified `start` which has no effect",
@@ -1203,7 +1269,7 @@ impl DataClient for DeribitDataClient {
                 datetime_to_unix_nanos(request.start),
                 datetime_to_unix_nanos(request.end),
                 self.clock.get_time_ns(),
-                request.params.clone(),
+                request.params,
             )));
 
             if let Err(e) = self.data_sender.send(DataEvent::Response(response)) {
@@ -1225,7 +1291,7 @@ impl DataClient for DeribitDataClient {
         let client_id = request.client_id.unwrap_or(self.client_id);
         let start_nanos = datetime_to_unix_nanos(request.start);
         let end_nanos = datetime_to_unix_nanos(request.end);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
 
         get_runtime().spawn(async move {
@@ -1270,7 +1336,7 @@ impl DataClient for DeribitDataClient {
         Ok(())
     }
 
-    fn request_trades(&self, request: &RequestTrades) -> anyhow::Result<()> {
+    fn request_trades(&self, request: RequestTrades) -> anyhow::Result<()> {
         let http_client = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instrument_id = request.instrument_id;
@@ -1279,7 +1345,7 @@ impl DataClient for DeribitDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -1312,7 +1378,7 @@ impl DataClient for DeribitDataClient {
         Ok(())
     }
 
-    fn request_bars(&self, request: &RequestBars) -> anyhow::Result<()> {
+    fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         let http_client = self.http_client.clone();
         let sender = self.data_sender.clone();
         let bar_type = request.bar_type;
@@ -1321,7 +1387,7 @@ impl DataClient for DeribitDataClient {
         let limit = request.limit.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
         let start_nanos = datetime_to_unix_nanos(start);
         let end_nanos = datetime_to_unix_nanos(end);
@@ -1354,14 +1420,14 @@ impl DataClient for DeribitDataClient {
         Ok(())
     }
 
-    fn request_book_snapshot(&self, request: &RequestBookSnapshot) -> anyhow::Result<()> {
+    fn request_book_snapshot(&self, request: RequestBookSnapshot) -> anyhow::Result<()> {
         let http_client = self.http_client.clone();
         let sender = self.data_sender.clone();
         let instrument_id = request.instrument_id;
         let depth = request.depth.map(|n| n.get() as u32);
         let request_id = request.request_id;
         let client_id = request.client_id.unwrap_or(self.client_id);
-        let params = request.params.clone();
+        let params = request.params;
         let clock = self.clock;
 
         get_runtime().spawn(async move {

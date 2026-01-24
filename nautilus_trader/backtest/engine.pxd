@@ -240,6 +240,8 @@ cdef class SimulatedExchange:
     """If orders with GTD time in force will be supported by the venue.\n\n:returns: `bool`"""
     cdef readonly bint support_contingent_orders
     """If contingent orders will be supported/respected by the venue.\n\n:returns: `bool`"""
+    cdef readonly bint oto_full_trigger
+    """If OTO child orders are released only on full parent fill.\n\n:returns: `bool`"""
     cdef readonly bint use_position_ids
     """If venue position IDs will be generated on order fills.\n\n:returns: `bool`"""
     cdef readonly bint use_random_ids
@@ -345,6 +347,7 @@ cdef class OrderMatchingEngine:
     cdef bint _reject_stop_orders
     cdef bint _support_gtd_orders
     cdef bint _support_contingent_orders
+    cdef bint _oto_full_trigger
     cdef bint _use_position_ids
     cdef bint _use_random_ids
     cdef bint _use_reduce_only
@@ -464,7 +467,7 @@ cdef class OrderMatchingEngine:
     cpdef list determine_market_price_and_volume(self, Order order)
     cdef list determine_market_fills_with_simulation(self, Order order)
     cdef list determine_limit_fills_with_simulation(self, Order order)
-    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side, QuantityRaw max_qty_raw=*)
+    cdef list _apply_liquidity_consumption(self, list fills, OrderSide order_side, QuantityRaw max_qty_raw=*, list[Price] book_prices=*)
     cdef Quantity determine_trade_fill_qty(self, Order order)
     cpdef void fill_market_order(self, Order order)
     cpdef void fill_limit_order(self, Order order)

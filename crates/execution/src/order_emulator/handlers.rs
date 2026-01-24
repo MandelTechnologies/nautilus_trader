@@ -15,10 +15,7 @@
 
 use std::any::Any;
 
-use nautilus_common::{
-    messages::execution::TradingCommand,
-    msgbus::{Handler, handler::MessageHandler},
-};
+use nautilus_common::{messages::execution::TradingCommand, msgbus::Handler};
 use nautilus_core::WeakCell;
 use nautilus_model::events::OrderEventAny;
 use ustr::Ustr;
@@ -39,7 +36,7 @@ impl OrderEmulatorExecuteHandler {
     }
 }
 
-impl MessageHandler for OrderEmulatorExecuteHandler {
+impl Handler<dyn Any> for OrderEmulatorExecuteHandler {
     fn id(&self) -> Ustr {
         self.id
     }
@@ -52,10 +49,6 @@ impl MessageHandler for OrderEmulatorExecuteHandler {
                 log::error!("OrderEmulator received unexpected message type");
             }
         }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }
 
@@ -82,25 +75,5 @@ impl Handler<OrderEventAny> for OrderEmulatorOnEventHandler {
         if let Some(emulator) = self.emulator.upgrade() {
             emulator.borrow_mut().on_event(event.clone());
         }
-    }
-}
-
-impl MessageHandler for OrderEmulatorOnEventHandler {
-    fn id(&self) -> Ustr {
-        self.id
-    }
-
-    fn handle(&self, msg: &dyn Any) {
-        if let Some(emulator) = self.emulator.upgrade() {
-            if let Some(event) = msg.downcast_ref::<OrderEventAny>() {
-                emulator.borrow_mut().on_event(event.clone());
-            } else {
-                log::error!("OrderEmulator on_event received unexpected message type");
-            }
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 }

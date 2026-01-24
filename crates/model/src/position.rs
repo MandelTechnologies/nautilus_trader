@@ -304,7 +304,7 @@ impl Position {
         if let Some(commission) = fill.commission {
             let commission_currency = commission.currency;
             if let Some(existing_commission) = self.commissions.get_mut(&commission_currency) {
-                *existing_commission += commission;
+                *existing_commission = *existing_commission + commission;
             } else {
                 self.commissions.insert(commission_currency, commission);
             }
@@ -412,7 +412,7 @@ impl Position {
         ));
 
         self.signed_qty += last_qty;
-        self.buy_qty += last_qty_object;
+        self.buy_qty = self.buy_qty + last_qty_object;
     }
 
     fn handle_sell_order_fill(&mut self, fill: &OrderFilled) {
@@ -458,7 +458,7 @@ impl Position {
         ));
 
         self.signed_qty -= last_qty;
-        self.sell_qty += last_qty_object;
+        self.sell_qty = self.sell_qty + last_qty_object;
     }
 
     /// Applies a position adjustment event.
@@ -489,11 +489,10 @@ impl Position {
 
         // Apply PnL change if present
         if let Some(pnl_change) = adjustment.pnl_change {
-            let current_pnl = self.realized_pnl.map_or(0.0, |p| p.as_f64());
-            self.realized_pnl = Some(Money::new(
-                current_pnl + pnl_change.as_f64(),
-                self.settlement_currency,
-            ));
+            self.realized_pnl = Some(match self.realized_pnl {
+                Some(current) => current + pnl_change,
+                None => pnl_change,
+            });
         }
 
         // Update position state based on new signed quantity
@@ -688,11 +687,11 @@ impl Position {
     /// Returns total P&L (realized + unrealized) based on the last price.
     #[must_use]
     pub fn total_pnl(&self, last: Price) -> Money {
-        let realized_pnl = self.realized_pnl.map_or(0.0, |pnl| pnl.as_f64());
-        Money::new(
-            realized_pnl + self.unrealized_pnl(last).as_f64(),
-            self.settlement_currency,
-        )
+        let unrealized = self.unrealized_pnl(last);
+        match self.realized_pnl {
+            Some(realized) => realized + unrealized,
+            None => unrealized,
+        }
     }
 
     /// Returns unrealized P&L based on the last price.

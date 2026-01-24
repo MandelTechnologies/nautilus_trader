@@ -70,7 +70,7 @@ impl DataClientAdapter {
     ///
     /// Returns an error if the underlying client request fails.
     #[inline]
-    pub fn execute_defi_request(&self, cmd: &DefiRequestCommand) -> anyhow::Result<()> {
+    pub fn execute_defi_request(&self, cmd: DefiRequestCommand) -> anyhow::Result<()> {
         match cmd {
             DefiRequestCommand::PoolSnapshot(cmd) => self.request_pool_snapshot(cmd),
         }
@@ -271,7 +271,7 @@ impl DataClientAdapter {
     /// # Errors
     ///
     /// Returns an error if the client fails to process the pool snapshot request.
-    pub fn request_pool_snapshot(&self, req: &RequestPoolSnapshot) -> anyhow::Result<()> {
+    pub fn request_pool_snapshot(&self, req: RequestPoolSnapshot) -> anyhow::Result<()> {
         self.client.request_pool_snapshot(req)
     }
 }

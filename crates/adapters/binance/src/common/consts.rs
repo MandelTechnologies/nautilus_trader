@@ -223,3 +223,6 @@ pub static BINANCE_WS_CONNECTION_QUOTA: LazyLock<Quota> =
 /// Pre-interned rate limit key for WebSocket subscription operations.
 pub static BINANCE_RATE_LIMIT_KEY_SUBSCRIPTION: LazyLock<[Ustr; 1]> =
     LazyLock::new(|| [Ustr::from("subscription")]);
+
+/// Valid order book depth levels for Binance.
+pub const BINANCE_BOOK_DEPTHS: [u32; 7] = [5, 10, 20, 50, 100, 500, 1000];
