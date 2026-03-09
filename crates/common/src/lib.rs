@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Common componentry for [NautilusTrader](http://nautilustrader.io).
+//! Common componentry for [NautilusTrader](https://nautilustrader.io).
 //!
 //! The `nautilus-common` crate provides shared components and utilities that form the system foundation for
 //! NautilusTrader applications. This includes the actor system, message bus, caching layer, and other
@@ -21,7 +21,7 @@
 //!
 //! # Platform
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, high-performance, production-grade
 //! algorithmic trading platform, providing quantitative traders with the ability to backtest
 //! portfolios of automated trading strategies on historical data with an event-driven engine,
 //! and also deploy those same strategies live, with no code changes.
@@ -38,10 +38,11 @@
 //!
 //! - `ffi`: Enables the C foreign function interface (FFI) from [cbindgen](https://github.com/mozilla/cbindgen).
 //! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
-//! - `stubs`: Enables type stubs for use in testing scenarios.
 //! - `defi`: Enables DeFi (Decentralized Finance) support.
 //! - `indicators`: Includes the `nautilus-indicators` crate and indicator utilities.
 //! - `capnp`: Enables [Cap'n Proto](https://capnproto.org/) serialization support.
+//! - `live`: Enables the Tokio async runtime for live trading.
+//! - `tracing-bridge`: Enables the `tracing` subscriber bridge for log integration.
 //! - `extension-module`: Builds the crate as a Python extension module.
 
 #![warn(rustc::all)]
@@ -66,6 +67,7 @@ pub mod greeks;
 pub mod logging;
 pub mod messages;
 pub mod msgbus;
+pub mod providers;
 pub mod runner;
 pub mod signal;
 pub mod testing;

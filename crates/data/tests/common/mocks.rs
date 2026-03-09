@@ -36,15 +36,16 @@ use nautilus_common::{
     clock::Clock,
     messages::data::{
         DataCommand, RequestBars, RequestBookDepth, RequestBookSnapshot, RequestCommand,
-        RequestCustomData, RequestInstrument, RequestInstruments, RequestQuotes, RequestTrades,
-        SubscribeBars, SubscribeBookDeltas, SubscribeBookDepth10, SubscribeCommand,
-        SubscribeCustomData, SubscribeFundingRates, SubscribeIndexPrices, SubscribeInstrument,
-        SubscribeInstrumentClose, SubscribeInstrumentStatus, SubscribeInstruments,
-        SubscribeMarkPrices, SubscribeQuotes, SubscribeTrades, UnsubscribeBars,
+        RequestCustomData, RequestForwardPrices, RequestFundingRates, RequestInstrument,
+        RequestInstruments, RequestQuotes, RequestTrades, SubscribeBars, SubscribeBookDeltas,
+        SubscribeBookDepth10, SubscribeCommand, SubscribeCustomData, SubscribeFundingRates,
+        SubscribeIndexPrices, SubscribeInstrument, SubscribeInstrumentClose,
+        SubscribeInstrumentStatus, SubscribeInstruments, SubscribeMarkPrices,
+        SubscribeOptionGreeks, SubscribeQuotes, SubscribeTrades, UnsubscribeBars,
         UnsubscribeBookDeltas, UnsubscribeBookDepth10, UnsubscribeCommand, UnsubscribeCustomData,
         UnsubscribeFundingRates, UnsubscribeIndexPrices, UnsubscribeInstrument,
         UnsubscribeInstrumentClose, UnsubscribeInstrumentStatus, UnsubscribeInstruments,
-        UnsubscribeMarkPrices, UnsubscribeQuotes, UnsubscribeTrades,
+        UnsubscribeMarkPrices, UnsubscribeOptionGreeks, UnsubscribeQuotes, UnsubscribeTrades,
     },
 };
 use nautilus_model::identifiers::{ClientId, Venue};
@@ -268,6 +269,16 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
+    fn subscribe_option_greeks(&mut self, cmd: &SubscribeOptionGreeks) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut()
+                .push(DataCommand::Subscribe(SubscribeCommand::OptionGreeks(
+                    cmd.clone(),
+                )));
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "defi")]
     fn subscribe_blocks(&mut self, cmd: &SubscribeBlocks) -> anyhow::Result<()> {
         if let Some(rec) = &self.recorder {
@@ -474,6 +485,16 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
+    fn unsubscribe_option_greeks(&mut self, cmd: &UnsubscribeOptionGreeks) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut()
+                .push(DataCommand::Unsubscribe(UnsubscribeCommand::OptionGreeks(
+                    cmd.clone(),
+                )));
+        }
+        Ok(())
+    }
+
     #[cfg(feature = "defi")]
     fn unsubscribe_blocks(&mut self, cmd: &UnsubscribeBlocks) -> anyhow::Result<()> {
         if let Some(rec) = &self.recorder {
@@ -594,6 +615,14 @@ impl DataClient for MockDataClient {
         Ok(())
     }
 
+    fn request_funding_rates(&self, request: RequestFundingRates) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut()
+                .push(DataCommand::Request(RequestCommand::FundingRates(request)));
+        }
+        Ok(())
+    }
+
     fn request_bars(&self, request: RequestBars) -> anyhow::Result<()> {
         if let Some(rec) = &self.recorder {
             rec.borrow_mut()
@@ -606,6 +635,14 @@ impl DataClient for MockDataClient {
         if let Some(rec) = &self.recorder {
             rec.borrow_mut()
                 .push(DataCommand::Request(RequestCommand::BookDepth(request)));
+        }
+        Ok(())
+    }
+
+    fn request_forward_prices(&self, request: RequestForwardPrices) -> anyhow::Result<()> {
+        if let Some(rec) = &self.recorder {
+            rec.borrow_mut()
+                .push(DataCommand::Request(RequestCommand::ForwardPrices(request)));
         }
         Ok(())
     }

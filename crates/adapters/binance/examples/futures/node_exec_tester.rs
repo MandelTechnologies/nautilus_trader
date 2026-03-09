@@ -17,11 +17,12 @@
 //!
 //! Run with: `cargo run --example binance-futures-exec-tester --package nautilus-binance`
 //!
-//! Uses testnet by default for safety.
-//!
-//! Requires environment variables:
-//! - BINANCE_FUTURES_TESTNET_API_KEY: Your Binance Futures testnet API key
-//! - BINANCE_FUTURES_TESTNET_API_SECRET: Your Binance Futures testnet API secret
+//! Requires environment variables based on the configured environment
+//! (Ed25519 keys are auto-detected):
+//! - Mainnet: `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+//! - Testnet (Spot): `BINANCE_TESTNET_API_KEY` / `BINANCE_TESTNET_API_SECRET`
+//! - Testnet (Futures): `BINANCE_FUTURES_TESTNET_API_KEY` / `BINANCE_FUTURES_TESTNET_API_SECRET`
+//! - Demo: `BINANCE_DEMO_API_KEY` / `BINANCE_DEMO_API_SECRET`
 
 use nautilus_binance::{
     common::enums::{BinanceEnvironment, BinanceProductType},
@@ -35,7 +36,6 @@ use nautilus_model::{
     types::Quantity,
 };
 use nautilus_testkit::testers::{ExecTester, ExecTesterConfig};
-use rust_decimal::{Decimal, prelude::FromStr};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,8 +53,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         environment: BinanceEnvironment::Testnet,
         api_key: None,
         api_secret: None,
-        ed25519_api_key: None,
-        ed25519_api_secret: None,
         ..Default::default()
     };
 
@@ -63,10 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_id,
         product_types: vec![BinanceProductType::UsdM],
         environment: BinanceEnvironment::Testnet,
-        api_key: None,    // Will use 'BINANCE_FUTURES_TESTNET_API_KEY' env var
-        api_secret: None, // Will use 'BINANCE_FUTURES_TESTNET_API_SECRET' env var
-        base_url_http: None,
-        base_url_ws: None,
+        ..Default::default()
     };
 
     let data_factory = BinanceDataClientFactory::new();
@@ -81,14 +76,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_delay_post_stop_secs(5)
         .build()?;
 
+    let order_qty = Quantity::from("0.01"); // Small quantity for testing
+
     let mut tester_config = ExecTesterConfig::new(
         StrategyId::from("EXEC_TESTER-001"),
         instrument_id,
         client_id,
-        Quantity::from("0.01"), // Small quantity for testing
+        order_qty,
     )
     .with_log_data(false)
-    .with_open_position_on_start(Some(Decimal::from_str("0.01").unwrap()))
+    .with_open_position_on_start(order_qty.as_decimal())
     .with_cancel_orders_on_stop(true)
     .with_close_positions_on_stop(true);
 

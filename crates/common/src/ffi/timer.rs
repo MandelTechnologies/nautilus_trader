@@ -36,16 +36,18 @@
 //! This design removes all manual INCREF/DECREF on `callback_ptr`, eliminates
 //! leaks, and is safe on any thread.
 
-use std::{
-    ffi::c_char,
-    sync::{Mutex, OnceLock},
-};
+use std::ffi::c_char;
+#[cfg(feature = "python")]
+use std::sync::{Mutex, OnceLock};
 
+#[cfg(feature = "python")]
 use ahash::AHashMap;
+#[cfg(feature = "python")]
+use nautilus_core::MUTEX_POISONED;
 #[cfg(feature = "python")]
 use nautilus_core::python::clone_py_object;
 use nautilus_core::{
-    MUTEX_POISONED, UUID4,
+    UUID4,
     ffi::string::{cstr_to_ustr, str_to_cstr},
 };
 #[cfg(feature = "python")]
@@ -209,8 +211,6 @@ impl TimeEventHandler_API {
 
 /// Drops a `TimeEventHandler_API`, releasing any Python callback reference.
 ///
-/// # Safety
-///
 /// The handler must be valid and not previously dropped.
 #[unsafe(no_mangle)]
 pub extern "C" fn time_event_handler_drop(handler: TimeEventHandler_API) {
@@ -279,6 +279,7 @@ pub unsafe extern "C" fn time_event_new(
     ts_event: u64,
     ts_init: u64,
 ) -> TimeEvent {
+    // SAFETY: `name_ptr` is guaranteed to be a valid C string by the FFI caller contract.
     TimeEvent::new(
         unsafe { cstr_to_ustr(name_ptr) },
         event_id,

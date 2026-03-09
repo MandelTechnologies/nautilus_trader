@@ -26,17 +26,13 @@ use axum::{
     routing::{get, post},
 };
 use nautilus_binance::{
-    common::{
-        enums::{BinanceEnvironment, BinanceProductType},
-        sbe::spot::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION},
-    },
+    common::sbe::spot::{SBE_SCHEMA_ID, SBE_SCHEMA_VERSION},
     config::BinanceExecClientConfig,
     spot::execution::BinanceSpotExecutionClient,
 };
 use nautilus_common::{
     cache::Cache,
     clients::ExecutionClient,
-    clock::{Clock, TestClock},
     live::runner::set_exec_event_sender,
     messages::{
         ExecutionEvent,
@@ -552,7 +548,6 @@ fn create_test_execution_client(
     let client_id = ClientId::from("BINANCE");
 
     let cache = Rc::new(RefCell::new(Cache::default()));
-    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
 
     let core = ExecutionClientCore::new(
         trader_id,
@@ -562,19 +557,16 @@ fn create_test_execution_client(
         account_id,
         AccountType::Cash,
         None,
-        clock,
         cache.clone(),
     );
 
     let config = BinanceExecClientConfig {
         trader_id,
         account_id,
-        product_types: vec![BinanceProductType::Spot],
-        environment: BinanceEnvironment::Mainnet,
         base_url_http: Some(base_url),
-        base_url_ws: None,
         api_key: Some("test_api_key".to_string()),
         api_secret: Some("test_api_secret".to_string()),
+        ..Default::default()
     };
 
     // Set up event channel (must be set before creating client)
@@ -662,6 +654,7 @@ async fn test_submit_order_generates_submitted_and_accepted_events() {
     let (mut client, mut rx, cache) = create_test_execution_client(base_url);
     add_test_account_to_cache(&cache, AccountId::from("BINANCE-001"));
 
+    client.start().unwrap();
     client.connect().await.unwrap();
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
@@ -744,6 +737,7 @@ async fn test_cancel_all_orders_generates_canceled_events() {
     let (mut client, mut rx, cache) = create_test_execution_client(base_url);
     add_test_account_to_cache(&cache, AccountId::from("BINANCE-001"));
 
+    client.start().unwrap();
     client.connect().await.unwrap();
 
     let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
@@ -774,7 +768,7 @@ async fn test_cancel_all_orders_generates_canceled_events() {
 
     assert!(
         canceled_count >= 1,
-        "Expected at least one OrderCanceled event, got {canceled_count}"
+        "Expected at least one OrderCanceled event, was {canceled_count}"
     );
 }
 
@@ -791,6 +785,7 @@ async fn test_query_account_generates_account_state_event() {
     let (mut client, mut rx, cache) = create_test_execution_client(base_url);
     add_test_account_to_cache(&cache, AccountId::from("BINANCE-001"));
 
+    client.start().unwrap();
     client.connect().await.unwrap();
 
     let query_cmd = QueryAccount::new(

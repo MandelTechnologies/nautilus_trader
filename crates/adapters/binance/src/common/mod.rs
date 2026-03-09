@@ -17,6 +17,7 @@
 
 pub mod consts;
 pub mod credential;
+pub mod encoder;
 pub mod enums;
 pub mod fixed;
 pub mod models;

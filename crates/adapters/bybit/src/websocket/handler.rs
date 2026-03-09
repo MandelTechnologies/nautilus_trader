@@ -17,7 +17,6 @@
 
 use std::{
     collections::VecDeque,
-    num::NonZero,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -25,12 +24,15 @@ use std::{
 };
 
 use ahash::AHashMap;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use nautilus_common::cache::quote::QuoteCache;
-use nautilus_core::{UUID4, nanos::UnixNanos, time::get_atomic_clock_realtime};
+use nautilus_core::{
+    UUID4,
+    nanos::UnixNanos,
+    time::{AtomicTime, get_atomic_clock_realtime},
+};
 use nautilus_model::{
-    data::{BarSpecification, BarType, Data},
-    enums::{AggregationSource, BarAggregation, PriceType},
+    data::{BarType, Data},
     events::{OrderCancelRejected, OrderModifyRejected, OrderRejected},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
@@ -50,10 +52,12 @@ use super::{
         BybitWsResponse, BybitWsSubscriptionMsg, NautilusWsMessage,
     },
     parse::{
-        parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_orderbook_quote,
-        parse_ticker_linear_funding, parse_ws_account_state, parse_ws_fill_report,
-        parse_ws_kline_bar, parse_ws_order_status_report, parse_ws_position_status_report,
-        parse_ws_trade_tick,
+        parse_millis_i64, parse_orderbook_deltas, parse_orderbook_quote,
+        parse_ticker_linear_funding, parse_ticker_linear_index_price,
+        parse_ticker_linear_mark_price, parse_ticker_option_greeks,
+        parse_ticker_option_index_price, parse_ticker_option_mark_price, parse_ws_account_state,
+        parse_ws_fill_report, parse_ws_kline_bar, parse_ws_order_status_report,
+        parse_ws_position_status_report, parse_ws_trade_tick,
     },
 };
 use crate::{
@@ -159,6 +163,7 @@ type BatchOrderData = (ClientOrderId, PlaceRequestData);
 type BatchCancelData = (ClientOrderId, CancelRequestData);
 
 pub(super) struct FeedHandler {
+    clock: &'static AtomicTime,
     signal: Arc<AtomicBool>,
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
@@ -173,12 +178,14 @@ pub(super) struct FeedHandler {
     bars_timestamp_on_close: bool,
     quote_cache: QuoteCache,
     funding_cache: FundingCache,
+    bar_types_cache: Arc<DashMap<String, BarType>>,
     retry_manager: RetryManager<BybitWsError>,
     pending_place_requests: DashMap<String, PlaceRequestData>,
     pending_cancel_requests: DashMap<String, CancelRequestData>,
     pending_amend_requests: DashMap<String, AmendRequestData>,
     pending_batch_place_requests: DashMap<String, Vec<BatchOrderData>>,
     pending_batch_cancel_requests: DashMap<String, Vec<BatchCancelData>>,
+    option_greeks_subs: Arc<DashSet<InstrumentId>>,
     message_queue: VecDeque<NautilusWsMessage>,
 }
 
@@ -197,8 +204,11 @@ impl FeedHandler {
         auth_tracker: AuthTracker,
         subscriptions: SubscriptionState,
         funding_cache: FundingCache,
+        bar_types_cache: Arc<DashMap<String, BarType>>,
+        option_greeks_subs: Arc<DashSet<InstrumentId>>,
     ) -> Self {
         Self {
+            clock: get_atomic_clock_realtime(),
             signal,
             client: None,
             cmd_rx,
@@ -213,12 +223,14 @@ impl FeedHandler {
             bars_timestamp_on_close,
             quote_cache: QuoteCache::new(),
             funding_cache,
+            bar_types_cache,
             retry_manager: create_websocket_retry_manager(),
             pending_place_requests: DashMap::new(),
             pending_cancel_requests: DashMap::new(),
             pending_amend_requests: DashMap::new(),
             pending_batch_place_requests: DashMap::new(),
             pending_batch_cancel_requests: DashMap::new(),
+            option_greeks_subs,
             message_queue: VecDeque::new(),
         }
     }
@@ -429,8 +441,7 @@ impl FeedHandler {
             return;
         };
 
-        let clock = get_atomic_clock_realtime();
-        let ts_init = clock.get_time_ns();
+        let ts_init = self.clock.get_time_ns();
 
         for (idx, (client_order_id, (_, trader_id, strategy_id, instrument_id))) in
             batch_data.into_iter().enumerate()
@@ -469,8 +480,7 @@ impl FeedHandler {
         errors: Vec<BybitBatchOrderError>,
         result: &mut Vec<NautilusWsMessage>,
     ) {
-        let clock = get_atomic_clock_realtime();
-        let ts_init = clock.get_time_ns();
+        let ts_init = self.clock.get_time_ns();
 
         for (idx, (client_order_id, (_, trader_id, strategy_id, instrument_id, venue_order_id))) in
             batch_data.into_iter().enumerate()
@@ -503,7 +513,7 @@ impl FeedHandler {
     }
 
     pub(super) async fn next(&mut self) -> Option<NautilusWsMessage> {
-        let clock = get_atomic_clock_realtime();
+        let clock = self.clock;
 
         loop {
             if let Some(msg) = self.message_queue.pop_front() {
@@ -526,6 +536,7 @@ impl FeedHandler {
                         }
                         HandlerCommand::Authenticate { payload } => {
                             log::debug!("Authenticate command received");
+
                             if let Err(e) = self.send_with_retry(payload).await {
                                 log::error!("Failed to send authentication after retries: {e}");
                             }
@@ -666,8 +677,6 @@ impl FeedHandler {
                             }
                         }
                     }
-
-                    continue;
                 }
 
                 () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
@@ -675,7 +684,6 @@ impl FeedHandler {
                         log::debug!("Stop signal received during idle period");
                         return None;
                     }
-                    continue;
                 }
 
                 msg = self.raw_rx.recv() => {
@@ -835,62 +843,46 @@ impl FeedHandler {
                 }
             }
             BybitWsMessage::Kline(msg) => {
-                let (interval_str, raw_symbol) = match parse_kline_topic(&msg.topic) {
-                    Ok(parts) => parts,
-                    Err(e) => {
-                        log::warn!("Failed to parse kline topic: {e}");
+                let bar_type = match self.bar_types_cache.get(msg.topic.as_str()) {
+                    Some(bt) => *bt,
+                    None => {
+                        log::debug!("No bar type subscription found for topic: {}", msg.topic);
                         return result;
                     }
                 };
 
-                let symbol = product_type
-                    .map_or_else(|| raw_symbol.into(), |pt| make_bybit_symbol(raw_symbol, pt));
-
-                if let Some(instrument) = instruments.get(&symbol) {
-                    let (step, aggregation) = match interval_str.parse::<usize>() {
-                        Ok(minutes) if minutes > 0 => (minutes, BarAggregation::Minute),
-                        _ => {
-                            log::warn!("Unsupported kline interval: {interval_str}");
-                            return result;
-                        }
-                    };
-
-                    if let Some(non_zero_step) = NonZero::new(step) {
-                        let bar_spec = BarSpecification {
-                            step: non_zero_step,
-                            aggregation,
-                            price_type: PriceType::Last,
-                        };
-                        let bar_type =
-                            BarType::new(instrument.id(), bar_spec, AggregationSource::External);
-
-                        let mut data_vec = Vec::new();
-                        for kline in &msg.data {
-                            // Only process confirmed bars (not partial/building bars)
-                            if !kline.confirm {
-                                continue;
-                            }
-                            match parse_ws_kline_bar(
-                                kline,
-                                instrument,
-                                bar_type,
-                                self.bars_timestamp_on_close,
-                                ts_init,
-                            ) {
-                                Ok(bar) => data_vec.push(Data::Bar(bar)),
-                                Err(e) => log::error!("Error parsing kline to bar: {e}"),
-                            }
-                        }
-                        if !data_vec.is_empty() {
-                            result.push(NautilusWsMessage::Data(data_vec));
-                        }
-                    } else {
-                        log::error!("Invalid step value: {step}");
+                let symbol = Ustr::from(bar_type.instrument_id().symbol.as_str());
+                let instrument = match instruments.get(&symbol) {
+                    Some(inst) => inst,
+                    None => {
+                        log::debug!(
+                            "No instrument found for bar type: {}",
+                            bar_type.instrument_id()
+                        );
+                        return result;
                     }
-                } else {
-                    log::debug!(
-                        "No instrument found for symbol in Kline message: raw_symbol={raw_symbol}, full_symbol={symbol}"
-                    );
+                };
+
+                let mut data_vec = Vec::new();
+                for kline in &msg.data {
+                    // Only process confirmed bars (not partial/building bars)
+                    if !kline.confirm {
+                        continue;
+                    }
+                    match parse_ws_kline_bar(
+                        kline,
+                        instrument,
+                        bar_type,
+                        self.bars_timestamp_on_close,
+                        ts_init,
+                    ) {
+                        Ok(bar) => data_vec.push(Data::Bar(bar)),
+                        Err(e) => log::error!("Error parsing kline to bar: {e}"),
+                    }
+                }
+
+                if !data_vec.is_empty() {
+                    result.push(NautilusWsMessage::Data(data_vec));
                 }
             }
             BybitWsMessage::TickerLinear(msg) => {
@@ -962,7 +954,6 @@ impl FeedHandler {
                         }
                     }
 
-                    // Extract funding rate if available
                     if msg.data.funding_rate.is_some() && msg.data.next_funding_time.is_some() {
                         let should_publish = {
                             let cache = funding_cache.read().await;
@@ -994,6 +985,32 @@ impl FeedHandler {
                                 Err(e) => {
                                     log::debug!("Skipping funding rate update: {e}");
                                 }
+                            }
+                        }
+                    }
+
+                    if msg.data.mark_price.is_some() {
+                        match parse_ticker_linear_mark_price(
+                            &msg.data, instrument, ts_event, ts_init,
+                        ) {
+                            Ok(mark_price) => {
+                                result.push(NautilusWsMessage::MarkPrices(vec![mark_price]));
+                            }
+                            Err(e) => {
+                                log::debug!("Skipping mark price update: {e}");
+                            }
+                        }
+                    }
+
+                    if msg.data.index_price.is_some() {
+                        match parse_ticker_linear_index_price(
+                            &msg.data, instrument, ts_event, ts_init,
+                        ) {
+                            Ok(index_price) => {
+                                result.push(NautilusWsMessage::IndexPrices(vec![index_price]));
+                            }
+                            Err(e) => {
+                                log::debug!("Skipping index price update: {e}");
                             }
                         }
                     }
@@ -1069,6 +1086,33 @@ impl FeedHandler {
                             );
                         }
                     }
+
+                    match parse_ticker_option_mark_price(&msg, instrument, ts_init) {
+                        Ok(mark_price) => {
+                            result.push(NautilusWsMessage::MarkPrices(vec![mark_price]));
+                        }
+                        Err(e) => {
+                            log::debug!("Skipping option mark price update: {e}");
+                        }
+                    }
+
+                    match parse_ticker_option_index_price(&msg, instrument, ts_init) {
+                        Ok(index_price) => {
+                            result.push(NautilusWsMessage::IndexPrices(vec![index_price]));
+                        }
+                        Err(e) => {
+                            log::debug!("Skipping option index price update: {e}");
+                        }
+                    }
+
+                    if self.option_greeks_subs.contains(&instrument_id) {
+                        match parse_ticker_option_greeks(&msg, instrument, ts_init) {
+                            Ok(greeks) => {
+                                result.push(NautilusWsMessage::OptionGreeks(greeks));
+                            }
+                            Err(e) => log::debug!("Skipping option greeks: {e}"),
+                        }
+                    }
                 } else {
                     log::debug!(
                         "No instrument found for symbol in TickerOption message: raw_symbol={raw_symbol}, full_symbol={symbol}"
@@ -1095,6 +1139,7 @@ impl FeedHandler {
                             );
                         }
                     }
+
                     if !reports.is_empty() {
                         result.push(NautilusWsMessage::OrderStatusReports(reports));
                     }
@@ -1118,6 +1163,7 @@ impl FeedHandler {
                             );
                         }
                     }
+
                     if !reports.is_empty() {
                         result.push(NautilusWsMessage::FillReports(reports));
                     }
@@ -1183,6 +1229,7 @@ impl FeedHandler {
                     {
                         // Bybit sometimes omits req_id, search by client_order_id instead
                         let client_order_id = ClientOrderId::from(order_link_id);
+
                         if resp.op.contains("create") {
                             self.find_and_remove_place_request_by_client_order_id(&client_order_id);
                         } else if resp.op.contains("cancel") {
@@ -1194,8 +1241,7 @@ impl FeedHandler {
                         }
                     }
                 } else if let Some(req_id) = &resp.req_id {
-                    let clock = get_atomic_clock_realtime();
-                    let ts_init = clock.get_time_ns();
+                    let ts_init = self.clock.get_time_ns();
 
                     if resp.op.contains("batch") {
                         self.handle_batch_failure(
@@ -1288,8 +1334,7 @@ impl FeedHandler {
                     resp.data.get("orderLinkId").and_then(|v| v.as_str())
                 {
                     // Bybit sometimes omits req_id, search by client_order_id instead
-                    let clock = get_atomic_clock_realtime();
-                    let ts_init = clock.get_time_ns();
+                    let ts_init = self.clock.get_time_ns();
                     let client_order_id = ClientOrderId::from(order_link_id);
 
                     if resp.op.contains("create") {
@@ -1417,6 +1462,7 @@ impl FeedHandler {
                     }
                     BybitWsOperation::Unsubscribe => {
                         let pending_unsub = self.subscriptions.pending_unsubscribe_topics();
+
                         if sub_msg.success {
                             for topic in pending_unsub {
                                 self.subscriptions.confirm_unsubscribe(&topic);
@@ -1569,6 +1615,7 @@ mod tests {
         let auth_tracker = AuthTracker::new();
         let subscriptions = SubscriptionState::new(BYBIT_WS_TOPIC_DELIMITER);
         let funding_cache = Arc::new(tokio::sync::RwLock::new(AHashMap::new()));
+        let bar_types_cache = Arc::new(DashMap::new());
 
         FeedHandler::new(
             signal,
@@ -1582,6 +1629,8 @@ mod tests {
             auth_tracker,
             subscriptions,
             funding_cache,
+            bar_types_cache,
+            Arc::new(DashSet::new()),
         )
     }
 

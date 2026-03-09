@@ -98,6 +98,7 @@ use nautilus_model::{
     data::{
         Bar, Data, FundingRateUpdate, GreeksData, IndexPriceUpdate, MarkPriceUpdate,
         OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+        option_chain::{OptionChainSlice, OptionGreeks},
     },
     events::{AccountState, OrderEventAny, PositionEvent},
     identifiers::TraderId,
@@ -239,6 +240,8 @@ pub struct MessageBus {
     pub(crate) router_orders: TopicRouter<OrderAny>,
     pub(crate) router_positions: TopicRouter<Position>,
     pub(crate) router_greeks: TopicRouter<GreeksData>,
+    pub(crate) router_option_greeks: TopicRouter<OptionGreeks>,
+    pub(crate) router_option_chain: TopicRouter<OptionChainSlice>,
     #[cfg(feature = "defi")]
     pub(crate) router_defi_blocks: TopicRouter<nautilus_model::defi::Block>, // nautilus-import-ok
     #[cfg(feature = "defi")]
@@ -308,6 +311,8 @@ impl MessageBus {
             router_orders: TopicRouter::new(),
             router_positions: TopicRouter::new(),
             router_greeks: TopicRouter::new(),
+            router_option_greeks: TopicRouter::new(),
+            router_option_chain: TopicRouter::new(),
             #[cfg(feature = "defi")]
             router_defi_blocks: TopicRouter::new(),
             #[cfg(feature = "defi")]
@@ -406,7 +411,7 @@ impl MessageBus {
     ///
     /// # Panics
     ///
-    /// Returns an error if the topic is not valid.
+    /// Panics if the `topic` is not a valid topic string.
     #[must_use]
     pub fn subscriptions_count<T: AsRef<str>>(&self, topic: T) -> usize {
         let topic = MStr::<Topic>::topic(topic).expect(FAILED);
@@ -434,7 +439,7 @@ impl MessageBus {
     ///
     /// # Panics
     ///
-    /// Returns an error if the endpoint is not valid topic string.
+    /// Panics if the `endpoint` conversion to `MStr<Endpoint>` fails.
     #[must_use]
     pub fn is_registered<T: Into<MStr<Endpoint>>>(&self, endpoint: T) -> bool {
         let endpoint: MStr<Endpoint> = endpoint.into();
@@ -549,7 +554,7 @@ impl MessageBus {
 
 #[cfg(test)]
 mod tests {
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
     use rstest::rstest;
     use ustr::Ustr;
 
@@ -948,11 +953,9 @@ mod tests {
                 pattern.push('*');
             } else if val < 0.3 {
                 pattern.push('?');
-            } else if val < 0.5 {
-                continue;
-            } else {
+            } else if val >= 0.5 {
                 pattern.push(c);
-            };
+            }
         }
 
         pattern

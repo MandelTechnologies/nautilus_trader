@@ -799,10 +799,10 @@ cdef extern from "../includes/model.h":
         # UNIX timestamp (nanoseconds) when the instance was created.
         uint64_t ts_init;
 
-    # A built-in Nautilus data type.
+    # A C-compatible representation of [`Data`] for FFI.
     #
-    # Not recommended for storing large amounts of data, as the largest variant is significantly
-    # larger (10x) than the smallest.
+    # This enum matches the standard variants of [`Data`] but excludes the `Custom`
+    # variant which is not FFI-safe.
     cpdef enum Data_t_Tag:
         DELTA,
         DELTAS,
@@ -1233,8 +1233,6 @@ cdef extern from "../includes/model.h":
     uint64_t orderbook_delta_hash(const OrderBookDelta_t *delta);
 
     # Creates a new [`OrderBookDeltas_API`] instance from a `CVec` of `OrderBookDelta`.
-    #
-    # # Safety
     #
     # - The `deltas` must be a valid pointer to a `CVec` containing `OrderBookDelta` objects.
     # - This function clones the data pointed to by `deltas` into Rust-managed memory, then forgets the original `Vec` to prevent Rust from auto-deallocating it.
@@ -2078,11 +2076,34 @@ cdef extern from "../includes/model.h":
 
     void orderbook_apply_deltas(OrderBook_API *book, const OrderBookDeltas_API *deltas);
 
+    # Creates an `OrderBookDeltas` snapshot from the current order book state.
+    #
+    # This is the reverse operation of `orderbook_apply_deltas`: it converts the current book state
+    # back into a snapshot format with a `Clear` delta followed by `Add` deltas for all orders.
+    #
+    # # Parameters
+    #
+    # * `book` - The order book to convert.
+    # * `sequence` - The message sequence number for the snapshot.
+    # * `ts_event` - UNIX timestamp (nanoseconds) when the book event occurred.
+    # * `ts_init` - UNIX timestamp (nanoseconds) when the instance was created.
+    #
+    # # Returns
+    #
+    # An `OrderBookDeltas_API` containing a snapshot of the current order book state.
+    OrderBookDeltas_API orderbook_to_snapshot_deltas(const OrderBook_API *book,
+                                                     uint64_t ts_event,
+                                                     uint64_t ts_init);
+
     void orderbook_apply_depth(OrderBook_API *book, const OrderBookDepth10_t *depth);
 
     CVec orderbook_bids(OrderBook_API *book);
 
     CVec orderbook_asks(OrderBook_API *book);
+
+    CVec orderbook_bids_down_to(OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
+
+    CVec orderbook_asks_up_to(OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
 
     uint8_t orderbook_has_bid(OrderBook_API *book);
 
@@ -2121,6 +2142,10 @@ cdef extern from "../includes/model.h":
     double orderbook_get_avg_px_for_quantity(OrderBook_API *book,
                                              Quantity_t qty,
                                              OrderSide order_side);
+
+    Price_t orderbook_get_worst_px_for_quantity(OrderBook_API *book,
+                                                Quantity_t qty,
+                                                OrderSide order_side);
 
     double orderbook_get_quantity_for_price(OrderBook_API *book,
                                             Price_t price,
@@ -2172,6 +2197,8 @@ cdef extern from "../includes/model.h":
     CVec level_orders(const BookLevel_API *level);
 
     double level_size(const BookLevel_API *level);
+
+    QuantityRaw level_size_raw(const BookLevel_API *level);
 
     double level_exposure(const BookLevel_API *level);
 

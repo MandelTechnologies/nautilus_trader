@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Live system node for [NautilusTrader](http://nautilustrader.io).
+//! Live system node for [NautilusTrader](https://nautilustrader.io).
 //!
 //! The `nautilus-live` crate provides high-level abstractions and infrastructure for running live trading
 //! systems, including data streaming, execution management, and system lifecycle handling.
@@ -25,7 +25,7 @@
 //!
 //! # Platform
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, high-performance, production-grade
 //! algorithmic trading platform, providing quantitative traders with the ability to backtest
 //! portfolios of automated trading strategies on historical data with an event-driven engine,
 //! and also deploy those same strategies live, with no code changes.
@@ -57,12 +57,15 @@
 
 pub mod builder;
 pub mod config;
+pub mod emitter;
 pub mod manager;
 pub mod node;
 pub mod runner;
 
 // Re-exports for adapters
-pub use nautilus_execution::client::base::ExecutionClientCore;
+pub use emitter::ExecutionEventEmitter;
+pub use nautilus_common::factories::OrderEventFactory;
+pub use nautilus_execution::client::core::ExecutionClientCore;
 
 #[cfg(feature = "python")]
 pub mod python;

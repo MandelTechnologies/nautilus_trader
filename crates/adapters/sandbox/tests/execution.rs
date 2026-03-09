@@ -24,7 +24,7 @@ use nautilus_common::{
     msgbus::{self, MessagingSwitchboard, stubs::get_typed_into_message_saving_handler},
 };
 use nautilus_core::UnixNanos;
-use nautilus_execution::client::base::ExecutionClientCore;
+use nautilus_execution::client::core::ExecutionClientCore;
 use nautilus_model::{
     data::QuoteTick,
     enums::{AccountType, BookType, OmsType},
@@ -37,8 +37,6 @@ use nautilus_sandbox::{SandboxExecutionClient, SandboxExecutionClientConfig};
 use rstest::{fixture, rstest};
 use rust_decimal::Decimal;
 use ustr::Ustr;
-
-// -- FIXTURES ---------------------------------------------------------------------------
 
 #[fixture]
 fn trader_id() -> TraderId {
@@ -122,7 +120,6 @@ fn create_test_context(trader_id: TraderId, account_id: AccountId, venue: Venue)
         config.account_id,
         config.account_type,
         config.base_currency,
-        clock.clone(),
         cache.clone(),
     );
 
@@ -160,8 +157,6 @@ fn setup_order_event_handler() {
     msgbus::register_order_event_endpoint(MessagingSwitchboard::exec_engine_process(), handler);
 }
 
-// -- CONFIG TESTS ---------------------------------------------------------------------------
-
 #[rstest]
 fn test_config_default() {
     let config = SandboxExecutionClientConfig::default();
@@ -177,7 +172,7 @@ fn test_config_default() {
     assert_eq!(config.book_type, BookType::L1_MBP);
     assert!(!config.frozen_account);
     assert!(config.bar_execution);
-    assert!(!config.trade_execution);
+    assert!(config.trade_execution);
     assert!(config.reject_stop_orders);
     assert!(config.support_gtd_orders);
     assert!(config.support_contingent_orders);
@@ -238,8 +233,6 @@ fn test_config_to_matching_engine_config(config: SandboxExecutionClientConfig) {
     assert!(!engine_config.use_random_ids);
     assert!(engine_config.use_reduce_only);
 }
-
-// -- EXECUTION CLIENT LIFECYCLE TESTS ---------------------------------------------------------------------------
 
 #[rstest]
 fn test_client_initial_state(execution_client: SandboxExecutionClient, venue: Venue) {
@@ -336,8 +329,6 @@ fn test_client_stop_when_not_started(mut execution_client: SandboxExecutionClien
 
     assert!(result.is_ok());
 }
-
-// -- MARKET DATA PROCESSING TESTS ---------------------------------------------------------------------------
 
 #[rstest]
 fn test_process_quote_tick_creates_matching_engine(
@@ -454,8 +445,6 @@ fn test_process_bar_disabled(test_context: TestContext, instrument: InstrumentAn
     assert_eq!(test_context.client.matching_engine_count(), 0);
 }
 
-// -- RESET TESTS ---------------------------------------------------------------------------
-
 #[rstest]
 fn test_reset_with_no_engines(execution_client: SandboxExecutionClient) {
     setup_order_event_handler();
@@ -467,8 +456,6 @@ fn test_reset_with_no_engines(execution_client: SandboxExecutionClient) {
 
     assert_eq!(execution_client.matching_engine_count(), 0);
 }
-
-// -- GETTER TESTS ---------------------------------------------------------------------------
 
 #[rstest]
 fn test_client_id(execution_client: SandboxExecutionClient, client_id: ClientId) {

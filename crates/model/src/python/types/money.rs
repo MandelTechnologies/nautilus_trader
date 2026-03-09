@@ -346,8 +346,14 @@ impl Money {
 
     #[staticmethod]
     #[pyo3(name = "from_raw")]
-    fn py_from_raw(raw: MoneyRaw, currency: Currency) -> PyResult<Self> {
-        Ok(Self::from_raw(raw, currency))
+    fn py_from_raw(raw: MoneyRaw, currency: Currency) -> Self {
+        Self::from_raw(raw, currency)
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "from_decimal")]
+    fn py_from_decimal(value: Decimal, currency: Currency) -> PyResult<Self> {
+        Self::from_decimal(value, currency).map_err(to_pyvalue_err)
     }
 
     #[staticmethod]

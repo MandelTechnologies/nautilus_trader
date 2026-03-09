@@ -348,6 +348,7 @@ impl<'a, T> Hole<'a, T> {
     unsafe fn move_to(&mut self, index: usize) {
         debug_assert!(index != self.pos);
         debug_assert!(index < self.data.len());
+        // SAFETY: `index` and `pos` are bounds-checked by the debug assertions above.
         unsafe {
             let ptr = self.data.as_mut_ptr();
             let index_ptr: *const _ = ptr.add(index);
@@ -361,10 +362,15 @@ impl<'a, T> Hole<'a, T> {
 impl<T> Drop for Hole<'_, T> {
     #[inline]
     fn drop(&mut self) {
-        // Fill the hole again
+        // SAFETY: `pos` was valid when the hole was created and all moves
+        // maintain the invariant that `pos < data.len()`.
         unsafe {
             let pos = self.pos;
-            ptr::copy_nonoverlapping(&*self.elt, self.data.get_unchecked_mut(pos), 1);
+            ptr::copy_nonoverlapping(
+                ptr::from_ref(&*self.elt),
+                self.data.get_unchecked_mut(pos),
+                1,
+            );
         }
     }
 }

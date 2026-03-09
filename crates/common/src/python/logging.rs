@@ -68,11 +68,8 @@ impl FileWriterConfig {
 /// Logging can be configured to filter components and write up to a specific level only
 /// by passing a configuration using the `NAUTILUS_LOG` environment variable.
 ///
-/// # Safety
-///
 /// Should only be called once during an applications run, ideally at the
 /// beginning of the run.
-/// Initializes logging via Python interface.
 ///
 /// # Errors
 ///
@@ -108,6 +105,7 @@ pub fn py_init_logging(
         log_components_only.unwrap_or(false),
         is_colored.unwrap_or(true),
         print_config.unwrap_or(false),
+        false, // use_tracing - Python handles this separately in kernel
     );
 
     let file_config = FileWriterConfig::new(directory, file_name, file_format, file_rotate);
@@ -181,6 +179,35 @@ pub fn py_logging_clock_set_static_time(time_ns: u64) {
     logging_clock_set_static_time(time_ns);
 }
 
+/// Returns whether the tracing subscriber has been initialized.
+#[cfg(feature = "tracing-bridge")]
+#[pyfunction]
+#[pyo3(name = "tracing_is_initialized")]
+#[must_use]
+pub fn py_tracing_is_initialized() -> bool {
+    crate::logging::bridge::tracing_is_initialized()
+}
+
+/// Initialize a tracing subscriber for external Rust crate logging.
+///
+/// This sets up a tracing subscriber that outputs directly to stdout, allowing
+/// external Rust libraries that use the `tracing` crate to display their logs.
+/// Output is separate from Nautilus logging and uses real-time timestamps.
+///
+/// The `RUST_LOG` environment variable controls filtering:
+/// - Example: `RUST_LOG=hyper_util=debug,tokio=warn`.
+/// - Default: `warn` (if not set).
+///
+/// # Errors
+///
+/// Returns a Python exception if initialization fails or if already initialized.
+#[cfg(feature = "tracing-bridge")]
+#[pyfunction]
+#[pyo3(name = "init_tracing")]
+pub fn py_init_tracing() -> PyResult<()> {
+    crate::logging::bridge::init_tracing().map_err(to_pyvalue_err)
+}
+
 /// A thin wrapper around the global Rust logger which exposes ergonomic
 /// logging helpers for Python code.
 ///
@@ -190,7 +217,8 @@ pub fn py_logging_clock_set_static_time(time_ns: u64) {
 #[pyclass(
     module = "nautilus_trader.core.nautilus_pyo3.common",
     name = "Logger",
-    unsendable
+    unsendable,
+    from_py_object
 )]
 #[derive(Debug, Clone)]
 pub struct PyLogger {
@@ -259,6 +287,7 @@ impl PyLogger {
         if pyo3::PyErr::occurred(py) {
             let err = PyErr::fetch(py);
             let err_str = err.to_string();
+
             if full_msg.is_empty() {
                 full_msg = err_str;
             } else {

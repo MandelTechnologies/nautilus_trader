@@ -31,6 +31,10 @@ use nautilus_system::config::{NautilusKernelConfig, StreamingConfig};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for live data engines.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveDataEngineConfig {
     /// The queue size for the engine's internal queue buffers.
@@ -50,6 +54,10 @@ impl From<LiveDataEngineConfig> for DataEngineConfig {
 }
 
 /// Configuration for live risk engines.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveRiskEngineConfig {
     /// The queue size for the engine's internal queue buffers.
@@ -69,6 +77,10 @@ impl From<LiveRiskEngineConfig> for RiskEngineConfig {
 }
 
 /// Configuration for live execution engines.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveExecEngineConfig {
     /// If reconciliation is active at start-up.
@@ -113,6 +125,8 @@ pub struct LiveExecEngineConfig {
     pub position_check_lookback_mins: u32,
     /// The minimum elapsed time (milliseconds) since a position update before acting on discrepancies.
     pub position_check_threshold_ms: u32,
+    /// The maximum number of reconciliation attempts for a position discrepancy.
+    pub position_check_retries: u32,
     /// The interval (minutes) between purging closed orders from the in-memory cache.
     pub purge_closed_orders_interval_mins: Option<u32>,
     /// The time buffer (minutes) before closed orders can be purged.
@@ -159,6 +173,7 @@ impl Default for LiveExecEngineConfig {
             position_check_interval_secs: None,
             position_check_lookback_mins: 60,
             position_check_threshold_ms: 60_000,
+            position_check_retries: 3,
             purge_closed_orders_interval_mins: None,
             purge_closed_orders_buffer_mins: None,
             purge_closed_positions_interval_mins: None,
@@ -180,6 +195,10 @@ impl From<LiveExecEngineConfig> for ExecutionEngineConfig {
 }
 
 /// Configuration for live client message routing.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct RoutingConfig {
     /// If the client should be registered as the default routing client.
@@ -189,6 +208,10 @@ pub struct RoutingConfig {
 }
 
 /// Configuration for instrument providers.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstrumentProviderConfig {
     /// Whether to load all instruments on startup.
@@ -210,6 +233,10 @@ impl Default for InstrumentProviderConfig {
 }
 
 /// Configuration for live data clients.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct LiveDataClientConfig {
     /// If `DataClient` will emit bar updates when a new bar opens.
@@ -221,6 +248,10 @@ pub struct LiveDataClientConfig {
 }
 
 /// Configuration for live execution clients.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct LiveExecClientConfig {
     /// The client's instrument provider configuration.
@@ -230,6 +261,10 @@ pub struct LiveExecClientConfig {
 }
 
 /// Configuration for live Nautilus system nodes.
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.live", from_py_object)
+)]
 #[derive(Debug, Clone)]
 pub struct LiveNodeConfig {
     /// The trading environment.
@@ -435,6 +470,7 @@ mod tests {
         assert_eq!(config.open_check_lookback_mins, Some(60));
         assert_eq!(config.open_check_missing_retries, 5);
         assert!(config.open_check_open_only);
+        assert_eq!(config.position_check_retries, 3);
         assert!(!config.purge_from_database);
         assert!(!config.graceful_shutdown_on_error);
         assert_eq!(config.qsize, 100_000);

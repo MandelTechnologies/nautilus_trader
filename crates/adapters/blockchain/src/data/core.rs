@@ -487,9 +487,11 @@ impl BlockchainDataClientCore {
             burn_event_signature,
             collect_event_signature,
         ];
+
         if let Some(event) = dex_extended.initialize_event.as_ref() {
             event_signatures.push(event);
         }
+
         if let Some(event) = dex_extended.flash_created_event.as_ref() {
             event_signatures.push(event);
         }
@@ -657,7 +659,7 @@ impl BlockchainDataClientCore {
 
     #[allow(clippy::too_many_arguments)]
     async fn flush_event_batches(
-        &mut self,
+        &self,
         event_batch_size: usize,
         swap_batch: &mut Vec<PoolSwap>,
         liquidity_batch: &mut Vec<PoolLiquidityUpdate>,
@@ -672,6 +674,7 @@ impl BlockchainDataClientCore {
                 .await?;
             swap_batch.clear();
         }
+
         if (force_flush_all || liquidity_batch.len() >= event_batch_size)
             && !liquidity_batch.is_empty()
         {
@@ -680,6 +683,7 @@ impl BlockchainDataClientCore {
                 .await?;
             liquidity_batch.clear();
         }
+
         if (force_flush_all || collect_batch.len() >= event_batch_size) && !collect_batch.is_empty()
         {
             self.cache
@@ -687,6 +691,7 @@ impl BlockchainDataClientCore {
                 .await?;
             collect_batch.clear();
         }
+
         if (force_flush_all || flash_batch.len() >= event_batch_size) && !flash_batch.is_empty() {
             self.cache.add_pool_flash_batch(flash_batch).await?;
             flash_batch.clear();
@@ -699,10 +704,6 @@ impl BlockchainDataClientCore {
     /// # Errors
     ///
     /// Returns an error if swap event processing fails.
-    ///
-    /// # Panics
-    ///
-    /// Panics if swap event conversion to trade data fails.
     pub fn process_pool_swap_event(
         &self,
         swap_event: &SwapEvent,
@@ -829,7 +830,7 @@ impl BlockchainDataClientCore {
 
     /// Synchronizes all pools and their tokens for a specific DEX within the given block range.
     ///
-    /// This method performs a comprehensive sync of:
+    /// This method performs a full sync of:
     /// 1. Pool creation events from the DEX factory
     /// 2. Token metadata for all tokens in discovered pools
     /// 3. Pool entities with proper token associations
@@ -1152,7 +1153,7 @@ impl BlockchainDataClientCore {
         match self.get_on_chain_snapshot(&profiler).await {
             Ok(on_chain_snapshot) => profiler.restore_from_snapshot(on_chain_snapshot)?,
             Err(e) => log::error!(
-                "Failed to restore from on-chain snapshot: {e}. Sending not hydrated state to client."
+                "Failed to restore from on-chain snapshot: {e}, sending not hydrated state to client"
             ),
         }
 

@@ -19,6 +19,7 @@
 
 pub mod config;
 pub mod database;
+pub mod fifo;
 pub mod quote;
 
 mod index;
@@ -28,7 +29,7 @@ mod tests;
 
 use std::{
     collections::VecDeque,
-    fmt::Debug,
+    fmt::{Debug, Display},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -49,7 +50,7 @@ use nautilus_model::{
     accounts::{Account, AccountAny},
     data::{
         Bar, BarType, FundingRateUpdate, GreeksData, IndexPriceUpdate, MarkPriceUpdate, QuoteTick,
-        TradeTick, YieldCurveData,
+        TradeTick, YieldCurveData, option_chain::OptionGreeks,
     },
     enums::{AggregationSource, OmsType, OrderSide, PositionSide, PriceType, TriggerType},
     identifiers::{
@@ -89,9 +90,10 @@ pub struct Cache {
     mark_xrates: AHashMap<(Currency, Currency), f64>,
     mark_prices: AHashMap<InstrumentId, VecDeque<MarkPriceUpdate>>,
     index_prices: AHashMap<InstrumentId, VecDeque<IndexPriceUpdate>>,
-    funding_rates: AHashMap<InstrumentId, FundingRateUpdate>,
+    funding_rates: AHashMap<InstrumentId, VecDeque<FundingRateUpdate>>,
     bars: AHashMap<BarType, VecDeque<Bar>>,
     greeks: AHashMap<InstrumentId, GreeksData>,
+    option_greeks: AHashMap<InstrumentId, OptionGreeks>,
     yield_curves: AHashMap<String, YieldCurveData>,
     accounts: AHashMap<AccountId, AccountAny>,
     orders: AHashMap<ClientOrderId, OrderAny>,
@@ -121,6 +123,7 @@ impl Debug for Cache {
             .field("funding_rates", &self.funding_rates)
             .field("bars", &self.bars)
             .field("greeks", &self.greeks)
+            .field("option_greeks", &self.option_greeks)
             .field("yield_curves", &self.yield_curves)
             .field("accounts", &self.accounts)
             .field("orders", &self.orders)
@@ -166,6 +169,7 @@ impl Cache {
             funding_rates: AHashMap::new(),
             bars: AHashMap::new(),
             greeks: AHashMap::new(),
+            option_greeks: AHashMap::new(),
             yield_curves: AHashMap::new(),
             accounts: AHashMap::new(),
             orders: AHashMap::new(),
@@ -470,7 +474,7 @@ impl Cache {
                 .position_orders
                 .entry(*position_id)
                 .or_default()
-                .extend(position.client_order_ids().into_iter());
+                .extend(position.client_order_ids());
 
             // 4: Build index.instrument_positions -> {InstrumentId, {PositionId}}
             self.index
@@ -585,30 +589,35 @@ impl Cache {
                 );
                 error_count += 1;
             }
+
             if !self.index.orders.contains(client_order_id) {
                 log::error!(
                     "{failure} in orders: {client_order_id} not found in `self.index.orders`",
                 );
                 error_count += 1;
             }
+
             if order.is_inflight() && !self.index.orders_inflight.contains(client_order_id) {
                 log::error!(
                     "{failure} in orders: {client_order_id} not found in `self.index.orders_inflight`",
                 );
                 error_count += 1;
             }
+
             if order.is_open() && !self.index.orders_open.contains(client_order_id) {
                 log::error!(
                     "{failure} in orders: {client_order_id} not found in `self.index.orders_open`",
                 );
                 error_count += 1;
             }
+
             if order.is_closed() && !self.index.orders_closed.contains(client_order_id) {
                 log::error!(
                     "{failure} in orders: {client_order_id} not found in `self.index.orders_closed`",
                 );
                 error_count += 1;
             }
+
             if let Some(exec_algorithm_id) = order.exec_algorithm_id() {
                 if !self
                     .index
@@ -620,6 +629,7 @@ impl Cache {
                     );
                     error_count += 1;
                 }
+
                 if order.exec_spawn_id().is_none()
                     && !self.index.exec_spawn_orders.contains_key(client_order_id)
                 {
@@ -638,24 +648,28 @@ impl Cache {
                 );
                 error_count += 1;
             }
+
             if !self.index.position_orders.contains_key(position_id) {
                 log::error!(
                     "{failure} in positions: {position_id} not found in `self.index.position_orders`",
                 );
                 error_count += 1;
             }
+
             if !self.index.positions.contains(position_id) {
                 log::error!(
                     "{failure} in positions: {position_id} not found in `self.index.positions`",
                 );
                 error_count += 1;
             }
+
             if position.is_open() && !self.index.positions_open.contains(position_id) {
                 log::error!(
                     "{failure} in positions: {position_id} not found in `self.index.positions_open`",
                 );
                 error_count += 1;
             }
+
             if position.is_closed() && !self.index.positions_closed.contains(position_id) {
                 log::error!(
                     "{failure} in positions: {position_id} not found in `self.index.positions_closed`",
@@ -955,9 +969,10 @@ impl Cache {
         for order_list_id in affected_order_list_ids {
             if let Some(order_list) = self.order_lists.get(&order_list_id) {
                 let all_purged = order_list
-                    .orders
+                    .client_order_ids
                     .iter()
-                    .all(|o| !self.orders.contains_key(&o.client_order_id()));
+                    .all(|id| !self.orders.contains_key(id));
+
                 if all_purged {
                     self.order_lists.remove(&order_list_id);
                     log::info!("Purged {order_list_id}");
@@ -997,7 +1012,7 @@ impl Cache {
         // Check if order exists and is safe to purge before removing
         let order = self.orders.get(&client_order_id).cloned();
 
-        // SAFETY: Prevent purging open orders
+        // Prevent purging open orders
         if let Some(ref ord) = order
             && ord.is_open()
         {
@@ -1110,7 +1125,7 @@ impl Cache {
         // Check if position exists and is safe to purge before removing
         let position = self.positions.get(&position_id).cloned();
 
-        // SAFETY: Prevent purging open positions
+        // Prevent purging open positions
         if let Some(ref pos) = position
             && pos.is_open()
         {
@@ -1223,6 +1238,7 @@ impl Cache {
         self.mark_xrates.clear();
         self.mark_prices.clear();
         self.index_prices.clear();
+        self.funding_rates.clear();
         self.bars.clear();
         self.accounts.clear();
         self.orders.clear();
@@ -1373,8 +1389,44 @@ impl Cache {
             // TODO: Placeholder and return Result for consistency
         }
 
-        self.funding_rates
-            .insert(funding_rate.instrument_id, funding_rate);
+        let funding_rates_deque = self
+            .funding_rates
+            .entry(funding_rate.instrument_id)
+            .or_insert_with(|| VecDeque::with_capacity(self.config.tick_capacity));
+        funding_rates_deque.push_front(funding_rate);
+        Ok(())
+    }
+
+    /// Adds the given `funding rates` to the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if persisting the trade ticks to the backing database fails.
+    pub fn add_funding_rates(&mut self, funding_rates: &[FundingRateUpdate]) -> anyhow::Result<()> {
+        check_slice_not_empty(funding_rates, stringify!(funding_rates))?;
+
+        let instrument_id = funding_rates[0].instrument_id;
+        log::debug!(
+            "Adding `FundingRateUpdate`[{}] {instrument_id}",
+            funding_rates.len()
+        );
+
+        if self.config.save_market_data
+            && let Some(database) = &mut self.database
+        {
+            for funding_rate in funding_rates {
+                database.add_funding_rate(funding_rate)?;
+            }
+        }
+
+        let funding_rate_deque = self
+            .funding_rates
+            .entry(instrument_id)
+            .or_insert_with(|| VecDeque::with_capacity(self.config.tick_capacity));
+
+        for funding_rate in funding_rates {
+            funding_rate_deque.push_front(*funding_rate);
+        }
         Ok(())
     }
 
@@ -1555,6 +1607,18 @@ impl Cache {
     /// Gets the greeks data for the `instrument_id`.
     pub fn greeks(&self, instrument_id: &InstrumentId) -> Option<GreeksData> {
         self.greeks.get(instrument_id).cloned()
+    }
+
+    /// Adds exchange-provided option greeks to the cache.
+    pub fn add_option_greeks(&mut self, greeks: OptionGreeks) {
+        log::debug!("Adding `OptionGreeks` {}", greeks.instrument_id);
+        self.option_greeks.insert(greeks.instrument_id, greeks);
+    }
+
+    /// Gets a reference to the exchange-provided option greeks for the `instrument_id`.
+    #[must_use]
+    pub fn option_greeks(&self, instrument_id: &InstrumentId) -> Option<&OptionGreeks> {
+        self.option_greeks.get(instrument_id)
     }
 
     /// Adds the `yield_curve` data to the cache.
@@ -1956,6 +2020,9 @@ impl Cache {
     ///
     /// Returns an error if updating the account in the database fails.
     pub fn update_account(&mut self, account: AccountAny) -> anyhow::Result<()> {
+        let account_id = account.id();
+        self.accounts.insert(account_id, account.clone());
+
         if let Some(database) = &mut self.database {
             database.update_account(&account)?;
         }
@@ -2373,6 +2440,7 @@ impl Cache {
                 .orders
                 .get(client_order_id)
                 .unwrap_or_else(|| panic!("Order {client_order_id} not found"));
+
             if side == OrderSide::NoOrderSide || side == order.order_side() {
                 orders.push(order);
             }
@@ -2399,6 +2467,7 @@ impl Cache {
                 .positions
                 .get(position_id)
                 .unwrap_or_else(|| panic!("Position {position_id} not found"));
+
             if side == PositionSide::NoPositionSide || side == position.side {
                 positions.push(position);
             }
@@ -2597,6 +2666,23 @@ impl Cache {
     #[must_use]
     pub fn order(&self, client_order_id: &ClientOrderId) -> Option<&OrderAny> {
         self.orders.get(client_order_id)
+    }
+
+    /// Gets cloned orders for the given `client_order_ids`, logging an error for any missing.
+    #[must_use]
+    pub fn orders_for_ids(
+        &self,
+        client_order_ids: &[ClientOrderId],
+        context: &dyn Display,
+    ) -> Vec<OrderAny> {
+        let mut orders = Vec::with_capacity(client_order_ids.len());
+        for id in client_order_ids {
+            match self.orders.get(id) {
+                Some(order) => orders.push(order.clone()),
+                None => log::error!("Order {id} not found in cache for {context}"),
+            }
+        }
+        orders
     }
 
     /// Gets a reference to the order with the `client_order_id` (if found).
@@ -2846,8 +2932,11 @@ impl Cache {
 
         if let Some(account_id) = account_id {
             order_lists.retain(|ol| {
-                ol.first()
-                    .is_some_and(|order| order.account_id().as_ref() == Some(account_id))
+                ol.client_order_ids.iter().any(|client_order_id| {
+                    self.orders
+                        .get(client_order_id)
+                        .is_some_and(|order| order.account_id().as_ref() == Some(account_id))
+                })
             });
         }
 
@@ -3195,6 +3284,14 @@ impl Cache {
             .map(|index_prices| index_prices.iter().copied().collect())
     }
 
+    /// Gets all funding rate updates for the `instrument_id`.
+    #[must_use]
+    pub fn funding_rates(&self, instrument_id: &InstrumentId) -> Option<Vec<FundingRateUpdate>> {
+        self.funding_rates
+            .get(instrument_id)
+            .map(|funding_rates| funding_rates.iter().copied().collect())
+    }
+
     /// Gets all bars for the `bar_type`.
     #[must_use]
     pub fn bars(&self, bar_type: &BarType) -> Option<Vec<Bar>> {
@@ -3262,10 +3359,12 @@ impl Cache {
             .and_then(|index_prices| index_prices.front())
     }
 
-    /// Gets a reference to the funding rate update for the `instrument_id`.
+    /// Gets a reference to the latest funding rate update for the `instrument_id`.
     #[must_use]
     pub fn funding_rate(&self, instrument_id: &InstrumentId) -> Option<&FundingRateUpdate> {
-        self.funding_rates.get(instrument_id)
+        self.funding_rates
+            .get(instrument_id)
+            .and_then(|funding_rates| funding_rates.front())
     }
 
     /// Gets a reference to the latest bar for the `bar_type`.

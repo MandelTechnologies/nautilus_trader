@@ -44,7 +44,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct BookPrice {
     pub value: Price,
@@ -196,6 +196,7 @@ impl BookLadder {
         let is_batch = RecordFlag::F_MBP.matches(flags) || RecordFlag::F_SNAPSHOT.matches(flags);
         if self.book_type == BookType::L1_MBP && is_batch {
             self.retain_best_only();
+
             if RecordFlag::F_LAST.matches(flags) {
                 self.batch_state = L1BatchState::None;
             }

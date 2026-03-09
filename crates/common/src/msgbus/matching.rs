@@ -78,7 +78,7 @@ fn is_matching_greedy(topic: &[u8], pattern: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
     use regex::Regex;
     use rstest::rstest;
 
@@ -178,14 +178,10 @@ mod tests {
             else if val < 0.3 {
                 pattern.push('?');
             }
-            // 20% chance of skipping
-            else if val < 0.5 {
-                continue;
-            }
             // 50% chance of keeping the character
-            else {
+            else if val >= 0.5 {
                 pattern.push(c);
-            };
+            }
         }
 
         pattern

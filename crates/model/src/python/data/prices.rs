@@ -77,18 +77,8 @@ impl MarkPriceUpdate {
 #[pymethods]
 impl MarkPriceUpdate {
     #[new]
-    fn py_new(
-        instrument_id: InstrumentId,
-        value: Price,
-        ts_event: u64,
-        ts_init: u64,
-    ) -> PyResult<Self> {
-        Ok(Self::new(
-            instrument_id,
-            value,
-            ts_event.into(),
-            ts_init.into(),
-        ))
+    fn py_new(instrument_id: InstrumentId, value: Price, ts_event: u64, ts_init: u64) -> Self {
+        Self::new(instrument_id, value, ts_event.into(), ts_init.into())
     }
 
     fn __setstate__(&mut self, state: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -196,8 +186,8 @@ impl MarkPriceUpdate {
     fn py_get_metadata(
         instrument_id: &InstrumentId,
         price_precision: u8,
-    ) -> PyResult<HashMap<String, String>> {
-        Ok(Self::get_metadata(instrument_id, price_precision))
+    ) -> HashMap<String, String> {
+        Self::get_metadata(instrument_id, price_precision)
     }
 
     #[staticmethod]
@@ -239,14 +229,12 @@ impl MarkPriceUpdate {
     /// Return JSON encoded bytes representation of the object.
     #[pyo3(name = "to_json_bytes")]
     fn py_to_json_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_json_bytes().unwrap().into_py_any_unwrap(py)
     }
 
     /// Return MsgPack encoded bytes representation of the object.
     #[pyo3(name = "to_msgpack_bytes")]
     fn py_to_msgpack_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_msgpack_bytes().unwrap().into_py_any_unwrap(py)
     }
 }
@@ -283,18 +271,8 @@ impl IndexPriceUpdate {
 #[pymethods]
 impl IndexPriceUpdate {
     #[new]
-    fn py_new(
-        instrument_id: InstrumentId,
-        value: Price,
-        ts_event: u64,
-        ts_init: u64,
-    ) -> PyResult<Self> {
-        Ok(Self::new(
-            instrument_id,
-            value,
-            ts_event.into(),
-            ts_init.into(),
-        ))
+    fn py_new(instrument_id: InstrumentId, value: Price, ts_event: u64, ts_init: u64) -> Self {
+        Self::new(instrument_id, value, ts_event.into(), ts_init.into())
     }
 
     fn __setstate__(&mut self, state: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -402,8 +380,8 @@ impl IndexPriceUpdate {
     fn py_get_metadata(
         instrument_id: &InstrumentId,
         price_precision: u8,
-    ) -> PyResult<HashMap<String, String>> {
-        Ok(Self::get_metadata(instrument_id, price_precision))
+    ) -> HashMap<String, String> {
+        Self::get_metadata(instrument_id, price_precision)
     }
 
     #[staticmethod]
@@ -445,14 +423,12 @@ impl IndexPriceUpdate {
     /// Return JSON encoded bytes representation of the object.
     #[pyo3(name = "to_json_bytes")]
     fn py_to_json_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_json_bytes().unwrap().into_py_any_unwrap(py)
     }
 
     /// Return MsgPack encoded bytes representation of the object.
     #[pyo3(name = "to_msgpack_bytes")]
     fn py_to_msgpack_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_msgpack_bytes().unwrap().into_py_any_unwrap(py)
     }
 }
@@ -491,7 +467,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let dict_string = mark_price.py_to_dict(py).unwrap().to_string();
-            let expected_string = r"{'type': 'MarkPriceUpdate', 'instrument_id': 'BTC-USDT.OKX', 'value': '100000.00', 'ts_event': 1, 'ts_init': 2}";
+            let expected_string = "{'type': 'MarkPriceUpdate', 'instrument_id': 'BTC-USDT.OKX', 'value': '100000.00', 'ts_event': 1, 'ts_init': 2}";
             assert_eq!(dict_string, expected_string);
         });
     }
@@ -521,7 +497,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let dict_string = index_price.py_to_dict(py).unwrap().to_string();
-            let expected_string = r"{'type': 'IndexPriceUpdate', 'instrument_id': 'BTC-USDT.OKX', 'value': '100000.00', 'ts_event': 1, 'ts_init': 2}";
+            let expected_string = "{'type': 'IndexPriceUpdate', 'instrument_id': 'BTC-USDT.OKX', 'value': '100000.00', 'ts_event': 1, 'ts_init': 2}";
             assert_eq!(dict_string, expected_string);
         });
     }

@@ -24,7 +24,10 @@ use bytes::Bytes;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     accounts::AccountAny,
-    data::{Bar, DataType, GreeksData, QuoteTick, TradeTick, YieldCurveData},
+    data::{
+        Bar, CustomData, DataType, FundingRateUpdate, QuoteTick, TradeTick,
+        greeks::{GreeksData, YieldCurveData},
+    },
     events::{OrderEventAny, OrderSnapshot, position::snapshot::PositionSnapshot},
     identifiers::{
         AccountId, ClientId, ClientOrderId, ComponentId, InstrumentId, PositionId, StrategyId,
@@ -38,7 +41,7 @@ use nautilus_model::{
 };
 use ustr::Ustr;
 
-use crate::{custom::CustomData, signal::Signal};
+use crate::signal::Signal;
 
 #[derive(Debug, Default)]
 pub struct CacheMap {
@@ -267,6 +270,16 @@ pub trait CacheDatabaseAdapter {
     /// Returns an error if loading trades fails.
     fn load_trades(&self, instrument_id: &InstrumentId) -> anyhow::Result<Vec<TradeTick>>;
 
+    /// Loads funding rate updates by instrument ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if loading funding rates fails.
+    fn load_funding_rates(
+        &self,
+        instrument_id: &InstrumentId,
+    ) -> anyhow::Result<Vec<FundingRateUpdate>>;
+
     /// Loads bars by instrument ID.
     ///
     /// # Errors
@@ -371,6 +384,13 @@ pub trait CacheDatabaseAdapter {
     ///
     /// Returns an error if adding a trade tick fails.
     fn add_trade(&self, trade: &TradeTick) -> anyhow::Result<()>;
+
+    /// Adds a funding rate update to the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if adding a funding rate update fails.
+    fn add_funding_rate(&self, funding_rate: &FundingRateUpdate) -> anyhow::Result<()>;
 
     /// Adds a bar to the cache.
     ///

@@ -30,6 +30,7 @@ use nautilus_common::{
             RequestBookSnapshot,
             RequestCommand,
             RequestCustomData,
+            RequestFundingRates,
             RequestInstrument,
             RequestInstruments,
             RequestQuotes,
@@ -124,7 +125,7 @@ fn test_custom_data_subscription(
     );
 
     // Define a custom data type
-    let data_type = DataType::new("MyType", None);
+    let data_type = DataType::new("MyType", None, None);
 
     let sub = SubscribeCommand::Data(SubscribeCustomData::new(
         Some(client_id),
@@ -673,7 +674,7 @@ fn test_custom_data_unsubscribe_noop(
     let mut adapter = DataClientAdapter::new(client_id, Some(venue), false, false, client);
 
     // Unsubscribe without prior subscribe should be no-op
-    let data_type = DataType::new("NoOpType", None);
+    let data_type = DataType::new("NoOpType", None, None);
     let unsub = UnsubscribeCommand::Data(UnsubscribeCustomData::new(
         Some(client_id),
         Some(venue),
@@ -700,7 +701,7 @@ fn test_custom_data_unsubscribe_idempotent(
     let mut adapter = DataClientAdapter::new(client_id, Some(venue), false, false, client);
 
     // Subscribe then unsubscribe twice
-    let data_type = DataType::new("IdemType", None);
+    let data_type = DataType::new("IdemType", None, None);
     let sub = SubscribeCommand::Data(SubscribeCustomData::new(
         Some(client_id),
         Some(venue),
@@ -1456,7 +1457,7 @@ fn test_request_data(
     ));
     let adapter = DataClientAdapter::new(client_id, Some(venue), false, false, client);
 
-    let data_type = DataType::new("ReqType", None);
+    let data_type = DataType::new("ReqType", None, None);
     let req = RequestCustomData {
         client_id,
         data_type,
@@ -1652,6 +1653,44 @@ fn test_request_trades(
     let rec = recorder.borrow();
     assert_eq!(rec.len(), 1);
     assert_eq!(rec[0], DataCommand::Request(RequestCommand::Trades(req)));
+}
+
+#[rstest]
+fn test_request_funding_rates(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    client_id: ClientId,
+    venue: Venue,
+) {
+    let recorder = Rc::new(RefCell::new(Vec::<DataCommand>::new()));
+    let client = Box::new(MockDataClient::new_with_recorder(
+        clock,
+        cache,
+        client_id,
+        Some(venue),
+        Some(recorder.clone()),
+    ));
+    let adapter = DataClientAdapter::new(client_id, Some(venue), false, false, client);
+
+    let inst_id = audusd_sim().id;
+    let req = RequestFundingRates::new(
+        inst_id,
+        None,
+        None,
+        None,
+        Some(client_id),
+        UUID4::new(),
+        UnixNanos::default(),
+        None,
+    );
+    adapter.request_funding_rates(req.clone()).unwrap();
+
+    let rec = recorder.borrow();
+    assert_eq!(rec.len(), 1);
+    assert_eq!(
+        rec[0],
+        DataCommand::Request(RequestCommand::FundingRates(req))
+    );
 }
 
 #[rstest]

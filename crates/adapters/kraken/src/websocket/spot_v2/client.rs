@@ -48,7 +48,8 @@ use super::{
     messages::{KrakenWsParams, KrakenWsRequest, NautilusWsMessage},
 };
 use crate::{
-    config::KrakenDataClientConfig, http::KrakenSpotHttpClient, websocket::error::KrakenWsError,
+    common::parse::normalize_spot_symbol, config::KrakenDataClientConfig,
+    http::KrakenSpotHttpClient, websocket::error::KrakenWsError,
 };
 
 const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
@@ -57,7 +58,7 @@ const WS_PING_MSG: &str = r#"{"method":"ping"}"#;
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", from_py_object)
 )]
 pub struct KrakenSpotWebSocketClient {
     url: String,
@@ -147,6 +148,7 @@ impl KrakenSpotWebSocketClient {
             reconnect_backoff_factor: Some(1.5),
             reconnect_jitter_ms: Some(250),
             reconnect_max_attempts: None,
+            idle_timeout_ms: None,
         };
 
         let ws_client = WebSocketClient::connect(
@@ -248,9 +250,10 @@ impl KrakenSpotWebSocketClient {
                                                 snapshot: None,
                                                 depth: None,
                                                 interval: None,
+                                                event_trigger: None,
                                                 token: Some(token.clone()),
-                                                snap_orders: Some(true),
-                                                snap_trades: Some(true),
+                                                snap_orders: Some(false),
+                                                snap_trades: Some(false),
                                             }),
                                             req_id: Some(req_id),
                                         };
@@ -273,7 +276,7 @@ impl KrakenSpotWebSocketClient {
                                     continue;
                                 }
 
-                                // Parse topic format: "Channel:symbol" or "Channel:symbol:interval"
+                                // Parse topic format: "channel:symbol" or "channel:symbol:interval"
                                 let parts: Vec<&str> = topic.splitn(3, ':').collect();
                                 if parts.len() < 2 {
                                     log::warn!(
@@ -284,12 +287,11 @@ impl KrakenSpotWebSocketClient {
 
                                 let channel_str = parts[0];
                                 let channel = match channel_str {
-                                    "Book" => Some(KrakenWsChannel::Book),
-                                    "Trade" => Some(KrakenWsChannel::Trade),
-                                    "Ticker" => Some(KrakenWsChannel::Ticker),
-                                    "Ohlc" => Some(KrakenWsChannel::Ohlc),
                                     "book" => Some(KrakenWsChannel::Book),
-                                    "quotes" => Some(KrakenWsChannel::Book),
+                                    "trade" => Some(KrakenWsChannel::Trade),
+                                    "ticker" => Some(KrakenWsChannel::Ticker),
+                                    "quotes" => Some(KrakenWsChannel::Ticker),
+                                    "ohlc" => Some(KrakenWsChannel::Ohlc),
                                     _ => None,
                                 };
 
@@ -302,19 +304,27 @@ impl KrakenSpotWebSocketClient {
                                 *counter += 1;
                                 let req_id = *counter;
 
-                                let depth = if channel_str == "quotes" {
-                                    Some(10)
+                                // Extract symbol and optional interval
+                                let (symbol_str, interval) = if parts.len() == 3 {
+                                    // Format: "ohlc:BTC/USD:1" -> symbol="BTC/USD", interval=1
+                                    (parts[1], parts[2].parse::<u32>().ok())
+                                } else {
+                                    // Format: "book:BTC/USD" -> symbol="BTC/USD", interval=None
+                                    (parts[1], None)
+                                };
+
+                                // Quotes use event_trigger: "bbo", raw ticker does not
+                                let event_trigger = if channel_str == "quotes" {
+                                    Some("bbo".to_string())
                                 } else {
                                     None
                                 };
 
-                                // Extract symbol and optional interval
-                                let (symbol_str, interval) = if parts.len() == 3 {
-                                    // Format: "Ohlc:BTC/USD:1" -> symbol="BTC/USD", interval=1
-                                    (parts[1], parts[2].parse::<u32>().ok())
+                                // Disable snapshots for OHLC to avoid historical bar flood
+                                let snapshot = if channel == KrakenWsChannel::Ohlc {
+                                    Some(false)
                                 } else {
-                                    // Format: "Book:BTC/USD" -> symbol="BTC/USD", interval=None
-                                    (parts[1], None)
+                                    None
                                 };
 
                                 let request = KrakenWsRequest {
@@ -322,9 +332,10 @@ impl KrakenSpotWebSocketClient {
                                     params: Some(KrakenWsParams {
                                         channel,
                                         symbol: Some(vec![Ustr::from(symbol_str)]),
-                                        snapshot: None,
-                                        depth,
+                                        snapshot,
+                                        depth: None,
                                         interval,
+                                        event_trigger,
                                         token: None,
                                         snap_orders: None,
                                         snap_trades: None,
@@ -350,7 +361,6 @@ impl KrakenSpotWebSocketClient {
                             log::error!("Failed to send message (receiver dropped)");
                             break;
                         }
-                        continue;
                     }
                     Some(msg) => {
                         if out_tx.send(msg).is_err() {
@@ -556,6 +566,18 @@ impl KrakenSpotWebSocketClient {
         }
     }
 
+    /// Caches a truncated cl_ord_id mapping for reverse lookup.
+    pub fn cache_truncated_id(&self, truncated: String, original: ClientOrderId) {
+        if let Ok(cmd_tx) = self.cmd_tx.try_read()
+            && let Err(e) = cmd_tx.send(SpotHandlerCommand::CacheTruncatedId {
+                truncated,
+                original,
+            })
+        {
+            log::debug!("Failed to send cache truncated ID command to handler: {e}");
+        }
+    }
+
     /// Cancels all pending requests.
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
@@ -574,8 +596,9 @@ impl KrakenSpotWebSocketClient {
         depth: Option<u32>,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_subscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{channel:?}:{symbol}");
+            let key = format!("{channel_str}:{symbol}");
             if self.subscriptions.add_reference(&key) {
                 self.subscriptions.mark_subscribe(&key);
                 symbols_to_subscribe.push(*symbol);
@@ -610,6 +633,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth,
                 interval: None,
+                event_trigger: None,
                 token,
                 snap_orders: None,
                 snap_trades: None,
@@ -620,7 +644,7 @@ impl KrakenSpotWebSocketClient {
         self.send_request(&request).await?;
 
         for symbol in &symbols_to_subscribe {
-            let key = format!("{channel:?}:{symbol}");
+            let key = format!("{channel_str}:{symbol}");
             self.subscriptions.confirm_subscribe(&key);
         }
 
@@ -635,8 +659,9 @@ impl KrakenSpotWebSocketClient {
         interval: u32,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_subscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             if self.subscriptions.add_reference(&key) {
                 self.subscriptions.mark_subscribe(&key);
                 symbols_to_subscribe.push(*symbol);
@@ -653,9 +678,10 @@ impl KrakenSpotWebSocketClient {
             params: Some(KrakenWsParams {
                 channel,
                 symbol: Some(symbols_to_subscribe.clone()),
-                snapshot: None,
+                snapshot: Some(false),
                 depth: None,
                 interval: Some(interval),
+                event_trigger: None,
                 token: None,
                 snap_orders: None,
                 snap_trades: None,
@@ -666,7 +692,7 @@ impl KrakenSpotWebSocketClient {
         self.send_request(&request).await?;
 
         for symbol in &symbols_to_subscribe {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             self.subscriptions.confirm_subscribe(&key);
         }
 
@@ -681,8 +707,9 @@ impl KrakenSpotWebSocketClient {
         interval: u32,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_unsubscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             if self.subscriptions.remove_reference(&key) {
                 self.subscriptions.mark_unsubscribe(&key);
                 symbols_to_unsubscribe.push(*symbol);
@@ -702,6 +729,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 interval: Some(interval),
+                event_trigger: None,
                 token: None,
                 snap_orders: None,
                 snap_trades: None,
@@ -712,7 +740,7 @@ impl KrakenSpotWebSocketClient {
         self.send_request(&request).await?;
 
         for symbol in &symbols_to_unsubscribe {
-            let key = format!("{channel:?}:{symbol}:{interval}");
+            let key = format!("{channel_str}:{symbol}:{interval}");
             self.subscriptions.confirm_unsubscribe(&key);
         }
 
@@ -726,14 +754,15 @@ impl KrakenSpotWebSocketClient {
         symbols: Vec<Ustr>,
     ) -> Result<(), KrakenWsError> {
         let mut symbols_to_unsubscribe = Vec::new();
+        let channel_str = channel.as_ref();
         for symbol in &symbols {
-            let key = format!("{channel:?}:{symbol}");
+            let key = format!("{channel_str}:{symbol}");
             if self.subscriptions.remove_reference(&key) {
                 self.subscriptions.mark_unsubscribe(&key);
                 symbols_to_unsubscribe.push(*symbol);
             } else {
                 log::debug!(
-                    "Channel {channel:?} symbol {symbol} still has active subscriptions, not unsubscribing"
+                    "Channel {channel_str} symbol {symbol} still has active subscriptions, not unsubscribing"
                 );
             }
         }
@@ -766,6 +795,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 interval: None,
+                event_trigger: None,
                 token,
                 snap_orders: None,
                 snap_trades: None,
@@ -776,7 +806,7 @@ impl KrakenSpotWebSocketClient {
         self.send_request(&request).await?;
 
         for symbol in &symbols_to_unsubscribe {
-            let key = format!("{channel:?}:{symbol}");
+            let key = format!("{channel_str}:{symbol}");
             self.subscriptions.confirm_unsubscribe(&key);
         }
 
@@ -842,17 +872,31 @@ impl KrakenSpotWebSocketClient {
     }
 
     /// Returns a stream of WebSocket messages.
-    pub fn stream(&mut self) -> impl futures_util::Stream<Item = NautilusWsMessage> + use<> {
-        let rx = self
-            .out_rx
-            .take()
-            .expect("Stream receiver already taken or client not connected");
-        let mut rx = Arc::try_unwrap(rx).expect("Cannot take ownership - other references exist");
-        async_stream::stream! {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The stream receiver has already been taken
+    /// - Other clones of this client still hold references to the receiver
+    pub fn stream(
+        &mut self,
+    ) -> Result<impl futures_util::Stream<Item = NautilusWsMessage> + use<>, KrakenWsError> {
+        let rx = self.out_rx.take().ok_or_else(|| {
+            KrakenWsError::ChannelError(
+                "Stream receiver already taken or client not connected".to_string(),
+            )
+        })?;
+        let mut rx = Arc::try_unwrap(rx).map_err(|_| {
+            KrakenWsError::ChannelError(
+                "Cannot take ownership of stream - other client clones still hold references"
+                    .to_string(),
+            )
+        })?;
+        Ok(async_stream::stream! {
             while let Some(msg) = rx.recv().await {
                 yield msg;
             }
-        }
+        })
     }
 
     /// Subscribes to order book updates for the given instrument.
@@ -861,41 +905,50 @@ impl KrakenSpotWebSocketClient {
         instrument_id: InstrumentId,
         depth: Option<u32>,
     ) -> Result<(), KrakenWsError> {
-        // Kraken v2 WebSocket expects ISO 4217-A3 format (e.g., "ETH/USD")
-        let symbol = instrument_id.symbol.inner();
-        let book_key = format!("book:{symbol}");
-
-        if !self.subscriptions.add_reference(&book_key) {
-            return Ok(());
-        }
-
-        self.subscriptions.mark_subscribe(&book_key);
-        self.subscriptions.confirm_subscribe(&book_key);
-
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
         self.subscribe(KrakenWsChannel::Book, vec![symbol], depth)
             .await
     }
 
     /// Subscribes to quote updates for the given instrument.
     ///
-    /// Uses the order book channel with depth 10 for low-latency top-of-book quotes
-    /// instead of the throttled ticker feed.
+    /// Uses the Ticker channel with `event_trigger: "bbo"` for updates only on
+    /// best bid/offer changes.
     pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
-        let quotes_key = format!("quotes:{symbol}");
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
+        let key = format!("quotes:{symbol}");
 
-        if !self.subscriptions.add_reference(&quotes_key) {
+        if !self.subscriptions.add_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.mark_subscribe(&quotes_key);
-        self.subscriptions.confirm_subscribe(&quotes_key);
-        self.ensure_book_subscribed(symbol).await
+        self.subscriptions.mark_subscribe(&key);
+
+        let req_id = self.get_next_req_id().await;
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Subscribe,
+            params: Some(KrakenWsParams {
+                channel: KrakenWsChannel::Ticker,
+                symbol: Some(vec![symbol]),
+                snapshot: None,
+                depth: None,
+                interval: None,
+                event_trigger: Some("bbo".to_string()),
+                token: None,
+                snap_orders: None,
+                snap_trades: None,
+            }),
+            req_id: Some(req_id),
+        };
+
+        self.send_request(&request).await?;
+        self.subscriptions.confirm_subscribe(&key);
+        Ok(())
     }
 
     /// Subscribes to trade updates for the given instrument.
     pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
         self.subscribe(KrakenWsChannel::Trade, vec![symbol], None)
             .await
     }
@@ -906,7 +959,7 @@ impl KrakenSpotWebSocketClient {
     ///
     /// Returns an error if the bar aggregation is not supported by Kraken.
     pub async fn subscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
-        let symbol = bar_type.instrument_id().symbol.inner();
+        let symbol = to_ws_v2_symbol(bar_type.instrument_id().symbol.inner());
         let interval = bar_type_to_ws_interval(bar_type)?;
         self.subscribe_with_interval(KrakenWsChannel::Ohlc, vec![symbol], interval)
             .await
@@ -937,6 +990,7 @@ impl KrakenSpotWebSocketClient {
                 snapshot: None,
                 depth: None,
                 interval: None,
+                event_trigger: None,
                 token: Some(token),
                 snap_orders: Some(snap_orders),
                 snap_trades: Some(snap_trades),
@@ -956,19 +1010,9 @@ impl KrakenSpotWebSocketClient {
     }
 
     /// Unsubscribes from order book updates for the given instrument.
-    ///
-    /// Note: Will only actually unsubscribe if quotes are not also subscribed.
     pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
-        let book_key = format!("book:{symbol}");
-
-        if !self.subscriptions.remove_reference(&book_key) {
-            return Ok(());
-        }
-
-        self.subscriptions.mark_unsubscribe(&book_key);
-        self.subscriptions.confirm_unsubscribe(&book_key);
-        self.maybe_unsubscribe_book(symbol).await
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
+        self.unsubscribe(KrakenWsChannel::Book, vec![symbol]).await
     }
 
     /// Unsubscribes from quote updates for the given instrument.
@@ -976,16 +1020,35 @@ impl KrakenSpotWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
-        let quotes_key = format!("quotes:{symbol}");
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
+        let key = format!("quotes:{symbol}");
 
-        if !self.subscriptions.remove_reference(&quotes_key) {
+        if !self.subscriptions.remove_reference(&key) {
             return Ok(());
         }
 
-        self.subscriptions.mark_unsubscribe(&quotes_key);
-        self.subscriptions.confirm_unsubscribe(&quotes_key);
-        self.maybe_unsubscribe_book(symbol).await
+        self.subscriptions.mark_unsubscribe(&key);
+
+        let req_id = self.get_next_req_id().await;
+        let request = KrakenWsRequest {
+            method: KrakenWsMethod::Unsubscribe,
+            params: Some(KrakenWsParams {
+                channel: KrakenWsChannel::Ticker,
+                symbol: Some(vec![symbol]),
+                snapshot: None,
+                depth: None,
+                interval: None,
+                event_trigger: Some("bbo".to_string()),
+                token: None,
+                snap_orders: None,
+                snap_trades: None,
+            }),
+            req_id: Some(req_id),
+        };
+
+        self.send_request(&request).await?;
+        self.subscriptions.confirm_unsubscribe(&key);
+        Ok(())
     }
 
     /// Unsubscribes from trade updates for the given instrument.
@@ -993,7 +1056,7 @@ impl KrakenSpotWebSocketClient {
         &self,
         instrument_id: InstrumentId,
     ) -> Result<(), KrakenWsError> {
-        let symbol = instrument_id.symbol.inner();
+        let symbol = to_ws_v2_symbol(instrument_id.symbol.inner());
         self.unsubscribe(KrakenWsChannel::Trade, vec![symbol]).await
     }
 
@@ -1003,25 +1066,10 @@ impl KrakenSpotWebSocketClient {
     ///
     /// Returns an error if the bar aggregation is not supported by Kraken.
     pub async fn unsubscribe_bars(&self, bar_type: BarType) -> Result<(), KrakenWsError> {
-        let symbol = bar_type.instrument_id().symbol.inner();
+        let symbol = to_ws_v2_symbol(bar_type.instrument_id().symbol.inner());
         let interval = bar_type_to_ws_interval(bar_type)?;
         self.unsubscribe_with_interval(KrakenWsChannel::Ohlc, vec![symbol], interval)
             .await
-    }
-
-    /// Ensures book channel is subscribed for the given symbol (used internally by quotes).
-    ///
-    /// Reference counting is handled by `subscribe` method.
-    async fn ensure_book_subscribed(&self, symbol: Ustr) -> Result<(), KrakenWsError> {
-        self.subscribe(KrakenWsChannel::Book, vec![symbol], Some(10))
-            .await
-    }
-
-    /// Unsubscribes from book channel if no more dependent subscriptions.
-    ///
-    /// Reference counting is handled by `unsubscribe` method.
-    async fn maybe_unsubscribe_book(&self, symbol: Ustr) -> Result<(), KrakenWsError> {
-        self.unsubscribe(KrakenWsChannel::Book, vec![symbol]).await
     }
 }
 
@@ -1065,10 +1113,11 @@ async fn refresh_auth_token(config: &KrakenDataClientConfig) -> Result<String, K
     Ok(ws_token.token)
 }
 
-/// Converts a Nautilus BarType to Kraken WebSocket OHLC interval (in minutes).
-///
-/// Supported intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
-/// (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 2w).
+#[inline]
+fn to_ws_v2_symbol(symbol: Ustr) -> Ustr {
+    Ustr::from(&normalize_spot_symbol(symbol.as_str()))
+}
+
 fn bar_type_to_ws_interval(bar_type: BarType) -> Result<u32, KrakenWsError> {
     const VALID_INTERVALS: [u32; 9] = [1, 5, 15, 30, 60, 240, 1440, 10080, 21600];
 
@@ -1097,4 +1146,27 @@ fn bar_type_to_ws_interval(bar_type: BarType) -> Result<u32, KrakenWsError> {
     }
 
     Ok(interval)
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    #[case("XBT/EUR", "BTC/EUR")]
+    #[case("XBT/USD", "BTC/USD")]
+    #[case("XBT/USDT", "BTC/USDT")]
+    #[case("ETH/USD", "ETH/USD")]
+    #[case("ETH/XBT", "ETH/BTC")]
+    #[case("SOL/XBT", "SOL/BTC")]
+    #[case("SOL/USD", "SOL/USD")]
+    #[case("BTC/USD", "BTC/USD")]
+    #[case("ETH/BTC", "ETH/BTC")]
+    fn test_to_kraken_ws_v2_symbol(#[case] input: &str, #[case] expected: &str) {
+        let symbol = Ustr::from(input);
+        let result = to_ws_v2_symbol(symbol);
+        assert_eq!(result.as_str(), expected);
+    }
 }

@@ -18,7 +18,7 @@ use std::{num::NonZeroUsize, sync::OnceLock};
 use ahash::AHashMap;
 use nautilus_model::{
     data::{BarType, DataType},
-    identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId, Venue},
+    identifiers::{ClientOrderId, InstrumentId, OptionSeriesId, PositionId, StrategyId, Venue},
 };
 
 use super::mstr::{Endpoint, MStr, Topic};
@@ -26,17 +26,19 @@ use crate::msgbus::get_message_bus;
 
 pub const CLOSE_TOPIC: &str = "CLOSE";
 
-static DATA_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static DATA_QUEUE_COMMAND_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_PROCESS_ANY_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_PROCESS_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 #[cfg(feature = "defi")]
 static DATA_PROCESS_DEFI_DATA_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static DATA_RESPONSE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static EXEC_QUEUE_COMMAND_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static EXEC_RECONCILE_REPORT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static RISK_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
+static RISK_QUEUE_EXECUTE_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static RISK_PROCESS_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static ORDER_EMULATOR_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
 static PORTFOLIO_ACCOUNT_ENDPOINT: OnceLock<MStr<Endpoint>> = OnceLock::new();
@@ -76,7 +78,7 @@ macro_rules! define_switchboard {
             #[inline]
             #[must_use]
             pub fn data_engine_queue_execute() -> MStr<Endpoint> {
-                *DATA_QUEUE_EXECUTE_ENDPOINT.get_or_init(|| "DataEngine.queue_execute".into())
+                *DATA_QUEUE_COMMAND_ENDPOINT.get_or_init(|| "DataEngine.queue_execute".into())
             }
 
             #[inline]
@@ -119,6 +121,12 @@ macro_rules! define_switchboard {
 
             #[inline]
             #[must_use]
+            pub fn exec_engine_queue_execute() -> MStr<Endpoint> {
+                *EXEC_QUEUE_COMMAND_ENDPOINT.get_or_init(|| "ExecEngine.queue_execute".into())
+            }
+
+            #[inline]
+            #[must_use]
             pub fn exec_engine_process() -> MStr<Endpoint> {
                 *EXEC_PROCESS_ENDPOINT.get_or_init(|| "ExecEngine.process".into())
             }
@@ -133,6 +141,15 @@ macro_rules! define_switchboard {
             #[must_use]
             pub fn risk_engine_execute() -> MStr<Endpoint> {
                 *RISK_EXECUTE_ENDPOINT.get_or_init(|| "RiskEngine.execute".into())
+            }
+
+            /// Queued endpoint for deferred command execution (re-entrancy safe).
+            /// Falls back to direct endpoint when no `TradingCommandSender` is
+            /// available (backtest / test environments).
+            #[inline]
+            #[must_use]
+            pub fn risk_engine_queue_execute() -> MStr<Endpoint> {
+                *RISK_QUEUE_EXECUTE_ENDPOINT.get_or_init(|| "RiskEngine.queue_execute".into())
             }
 
             #[inline]
@@ -224,6 +241,14 @@ define_switchboard! {
     get_instrument_close_topic(instrument_id: InstrumentId) -> instrument_id,
     "data.close.{}.{}", instrument_id.venue, instrument_id.symbol;
 
+    option_greeks_topics: InstrumentId,
+    get_option_greeks_topic(instrument_id: InstrumentId) -> instrument_id,
+    "data.option_greeks.{}.{}", instrument_id.venue, instrument_id.symbol;
+
+    option_chain_topics: OptionSeriesId,
+    get_option_chain_topic(series_id: OptionSeriesId) -> series_id,
+    "data.option_chain.{}", series_id;
+
     order_fills_topics: InstrumentId,
     get_order_fills_topic(instrument_id: InstrumentId) -> instrument_id,
     "events.fills.{}", instrument_id;
@@ -284,6 +309,8 @@ define_wrappers! {
     get_funding_rate_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_status_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_close_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_option_greeks_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_option_chain_topic(series_id: OptionSeriesId) -> MStr<Topic>,
     get_order_fills_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_order_cancels_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_order_snapshots_topic(client_order_id: ClientOrderId) -> MStr<Topic>,
@@ -314,7 +341,7 @@ mod tests {
 
     #[rstest]
     fn test_get_custom_topic(mut switchboard: MessagingSwitchboard) {
-        let data_type = DataType::new("ExampleDataType", None);
+        let data_type = DataType::new("ExampleDataType", None, None);
         let expected_topic = "data.ExampleDataType".into();
         let result = switchboard.get_custom_topic(&data_type);
         assert_eq!(result, expected_topic);

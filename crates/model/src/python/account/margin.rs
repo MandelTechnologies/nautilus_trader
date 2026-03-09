@@ -97,8 +97,8 @@ impl MarginAccount {
     }
 
     #[pyo3(name = "is_unleveraged")]
-    fn py_is_unleveraged(&self, instrument_id: InstrumentId) -> PyResult<bool> {
-        Ok(self.is_unleveraged(instrument_id))
+    fn py_is_unleveraged(&self, instrument_id: InstrumentId) -> bool {
+        self.is_unleveraged(instrument_id)
     }
 
     #[pyo3(name = "initial_margins")]
@@ -124,18 +124,13 @@ impl MarginAccount {
     }
 
     #[pyo3(name = "update_initial_margin")]
-    fn py_update_initial_margin(
-        &mut self,
-        instrument_id: InstrumentId,
-        initial_margin: Money,
-    ) -> PyResult<()> {
+    fn py_update_initial_margin(&mut self, instrument_id: InstrumentId, initial_margin: Money) {
         self.update_initial_margin(instrument_id, initial_margin);
-        Ok(())
     }
 
     #[pyo3(name = "initial_margin")]
-    fn py_initial_margin(&self, instrument_id: InstrumentId) -> PyResult<Money> {
-        Ok(self.initial_margin(instrument_id))
+    fn py_initial_margin(&self, instrument_id: InstrumentId) -> Money {
+        self.initial_margin(instrument_id)
     }
 
     #[pyo3(name = "update_maintenance_margin")]
@@ -143,14 +138,13 @@ impl MarginAccount {
         &mut self,
         instrument_id: InstrumentId,
         maintenance_margin: Money,
-    ) -> PyResult<()> {
+    ) {
         self.update_maintenance_margin(instrument_id, maintenance_margin);
-        Ok(())
     }
 
     #[pyo3(name = "maintenance_margin")]
-    fn py_maintenance_margin(&self, instrument_id: InstrumentId) -> PyResult<Money> {
-        Ok(self.maintenance_margin(instrument_id))
+    fn py_maintenance_margin(&self, instrument_id: InstrumentId) -> Money {
+        self.maintenance_margin(instrument_id)
     }
 
     #[pyo3(name = "calculate_initial_margin")]
@@ -171,28 +165,51 @@ impl MarginAccount {
     ) -> PyResult<Money> {
         let instrument_type = pyobject_to_instrument_any(py, instrument)?;
         match instrument_type {
-            InstrumentAny::CryptoPerpetual(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+            InstrumentAny::Betting(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::BinaryOption(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::Cfd(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::Commodity(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::CryptoFuture(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::CryptoOption(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::CryptoPerpetual(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::CurrencyPair(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::Equity(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::FuturesContract(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::FuturesSpread(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::IndexInstrument(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::OptionContract(inst) => self
-                .calculate_initial_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
-            _ => Err(to_pyvalue_err("Unsupported instrument type")),
+            InstrumentAny::OptionSpread(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::PerpetualContract(inst) => self
+                .calculate_initial_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
         }
     }
 
@@ -214,28 +231,51 @@ impl MarginAccount {
     ) -> PyResult<Money> {
         let instrument_type = pyobject_to_instrument_any(py, instrument)?;
         match instrument_type {
-            InstrumentAny::CryptoFuture(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+            InstrumentAny::Betting(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
-            InstrumentAny::CryptoPerpetual(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+            InstrumentAny::BinaryOption(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::Cfd(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::Commodity(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::CryptoFuture(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::CryptoOption(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::CryptoPerpetual(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::CurrencyPair(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::Equity(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::FuturesContract(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::FuturesSpread(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::IndexInstrument(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
             InstrumentAny::OptionContract(inst) => self
-                .calculate_maintenance_margin(inst, quantity, price, use_quote_for_inverse)
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
                 .map_err(to_pyvalue_err),
-            _ => Err(to_pyvalue_err("Unsupported instrument type")),
+            InstrumentAny::OptionSpread(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
+            InstrumentAny::PerpetualContract(inst) => self
+                .calculate_maintenance_margin(&inst, quantity, price, use_quote_for_inverse)
+                .map_err(to_pyvalue_err),
         }
     }
 

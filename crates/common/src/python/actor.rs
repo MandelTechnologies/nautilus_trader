@@ -23,8 +23,8 @@ use std::{
     rc::Rc,
 };
 
-use indexmap::IndexMap;
 use nautilus_core::{
+    from_pydict,
     nanos::UnixNanos,
     python::{IntoPyObjectNautilusExt, to_pyruntime_err, to_pyvalue_err},
 };
@@ -34,8 +34,10 @@ use nautilus_model::defi::{
 };
 use nautilus_model::{
     data::{
-        Bar, BarType, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
-        MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick, close::InstrumentClose,
+        Bar, BarType, CustomData, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
+        MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick,
+        close::InstrumentClose,
+        option_chain::{OptionChainSlice, OptionGreeks},
     },
     enums::BookType,
     identifiers::{ActorId, ClientId, InstrumentId, TraderId, Venue},
@@ -43,7 +45,7 @@ use nautilus_model::{
     orderbook::OrderBook,
     python::instruments::instrument_any_to_pyobject,
 };
-use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
+use pyo3::{prelude::*, types::PyDict};
 
 use crate::{
     actor::{
@@ -78,17 +80,19 @@ impl ImportableActorConfig {
     #[new]
     fn py_new(actor_path: String, config_path: String, config: Py<PyDict>) -> PyResult<Self> {
         let json_config = Python::attach(|py| -> PyResult<HashMap<String, serde_json::Value>> {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("default", py.eval(pyo3::ffi::c_str!("str"), None, None)?)?;
             let json_str: String = PyModule::import(py, "json")?
-                .call_method("dumps", (config.bind(py),), None)?
+                .call_method("dumps", (config.bind(py),), Some(&kwargs))?
                 .extract()?;
 
-            let json_value: serde_json::Value = serde_json::from_str(&json_str)
-                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+            let json_value: serde_json::Value =
+                serde_json::from_str(&json_str).map_err(to_pyvalue_err)?;
 
             if let serde_json::Value::Object(map) = json_value {
                 Ok(map.into_iter().collect())
             } else {
-                Err(PyErr::new::<PyValueError, _>("Config must be a dictionary"))
+                Err(to_pyvalue_err("Config must be a dictionary"))
             }
         })?;
 
@@ -115,8 +119,7 @@ impl ImportableActorConfig {
         let py_dict = PyDict::new(py);
         for (key, value) in &self.config {
             // Convert serde_json::Value back to Python object via JSON
-            let json_str = serde_json::to_string(value)
-                .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+            let json_str = serde_json::to_string(value).map_err(to_pyvalue_err)?;
             let py_value = PyModule::import(py, "json")?.call_method("loads", (json_str,), None)?;
             py_dict.set_item(key, py_value)?;
         }
@@ -161,6 +164,7 @@ impl DerefMut for PyDataActorInner {
     }
 }
 
+#[allow(clippy::needless_pass_by_ref_mut)]
 impl PyDataActorInner {
     fn dispatch_on_start(&self) -> PyResult<()> {
         if let Some(ref py_self) = self.py_self {
@@ -335,6 +339,24 @@ impl PyDataActorInner {
         Ok(())
     }
 
+    fn dispatch_on_option_greeks(&mut self, greeks: OptionGreeks) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_option_greeks", (greeks.into_py_any_unwrap(py),))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn dispatch_on_option_chain(&mut self, slice: OptionChainSlice) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_option_chain", (slice.into_py_any_unwrap(py),))
+            })?;
+        }
+        Ok(())
+    }
+
     fn dispatch_on_historical_data(&mut self, data: Py<PyAny>) -> PyResult<()> {
         if let Some(ref py_self) = self.py_self {
             Python::attach(|py| py_self.call_method1(py, "on_historical_data", (data,)))?;
@@ -475,6 +497,16 @@ impl PyDataActorInner {
     }
 }
 
+fn dict_to_params(
+    py: Python<'_>,
+    params: Option<Py<PyDict>>,
+) -> PyResult<Option<nautilus_core::Params>> {
+    match params {
+        Some(dict) => from_pydict(py, dict),
+        None => Ok(None),
+    }
+}
+
 /// Python-facing wrapper for DataActor.
 ///
 /// This wrapper holds shared ownership of `PyDataActorInner` via `Rc<UnsafeCell<>>`.
@@ -570,8 +602,6 @@ impl PyDataActor {
     }
 
     /// Updates the actor_id in both the core config and the actor_id field.
-    ///
-    /// # Safety
     ///
     /// This method is only exposed for the Python actor to assist with configuration and should
     /// **never** be called post registration. Calling this after registration will cause
@@ -697,12 +727,9 @@ impl DataActor for PyDataActorInner {
     }
 
     #[allow(unused_variables)]
-    fn on_data(&mut self, data: &dyn Any) -> anyhow::Result<()> {
+    fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
         Python::attach(|py| {
-            // TODO: Create a placeholder object since we can't easily convert &dyn Any to Py<PyAny>
-            // For now, we'll pass None and let Python subclasses handle specific data types
-            let py_data = py.None();
-
+            let py_data: Py<PyAny> = Py::new(py, data.clone())?.into_any();
             self.dispatch_on_data(py_data)
                 .map_err(|e| anyhow::anyhow!("Python on_data failed: {e}"))
         })
@@ -770,6 +797,16 @@ impl DataActor for PyDataActorInner {
     fn on_instrument_close(&mut self, update: &InstrumentClose) -> anyhow::Result<()> {
         self.dispatch_on_instrument_close(*update)
             .map_err(|e| anyhow::anyhow!("Python on_instrument_close failed: {e}"))
+    }
+
+    fn on_option_greeks(&mut self, greeks: &OptionGreeks) -> anyhow::Result<()> {
+        self.dispatch_on_option_greeks(*greeks)
+            .map_err(|e| anyhow::anyhow!("Python on_option_greeks failed: {e}"))
+    }
+
+    fn on_option_chain(&mut self, slice: &OptionChainSlice) -> anyhow::Result<()> {
+        self.dispatch_on_option_chain(slice.clone())
+            .map_err(|e| anyhow::anyhow!("Python on_option_chain failed: {e}"))
     }
 
     #[cfg(feature = "defi")]
@@ -849,8 +886,8 @@ impl DataActor for PyDataActorInner {
 impl PyDataActor {
     #[new]
     #[pyo3(signature = (config=None))]
-    fn py_new(config: Option<DataActorConfig>) -> PyResult<Self> {
-        Ok(Self::new(config))
+    fn py_new(config: Option<DataActorConfig>) -> Self {
+        Self::new(config)
     }
 
     #[getter]
@@ -860,7 +897,7 @@ impl PyDataActor {
         if inner.core.is_registered() {
             Ok(inner.clock.clone())
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            Err(to_pyruntime_err(
                 "Actor must be registered with a trader before accessing clock",
             ))
         }
@@ -873,7 +910,7 @@ impl PyDataActor {
         if inner.core.is_registered() {
             Ok(PyCache::from_rc(inner.core.cache_rc()))
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            Err(to_pyruntime_err(
                 "Actor must be registered with a trader before accessing cache",
             ))
         }
@@ -969,9 +1006,8 @@ impl PyDataActor {
 
     #[pyo3(name = "shutdown_system")]
     #[pyo3(signature = (reason=None))]
-    fn py_shutdown_system(&self, reason: Option<String>) -> PyResult<()> {
+    fn py_shutdown_system(&self, reason: Option<String>) {
         self.inner().core.shutdown_system(reason);
-        Ok(())
     }
 
     #[pyo3(name = "on_start")]
@@ -1079,6 +1115,16 @@ impl PyDataActor {
         self.inner_mut().dispatch_on_instrument_close(close)
     }
 
+    #[pyo3(name = "on_option_greeks")]
+    fn py_on_option_greeks(&mut self, greeks: OptionGreeks) -> PyResult<()> {
+        self.inner_mut().dispatch_on_option_greeks(greeks)
+    }
+
+    #[pyo3(name = "on_option_chain")]
+    fn py_on_option_chain(&mut self, slice: OptionChainSlice) -> PyResult<()> {
+        self.inner_mut().dispatch_on_option_chain(slice)
+    }
+
     #[cfg(feature = "defi")]
     #[pyo3(name = "on_block")]
     fn py_on_block(&mut self, block: Block) -> PyResult<()> {
@@ -1119,10 +1165,12 @@ impl PyDataActor {
     #[pyo3(signature = (data_type, client_id=None, params=None))]
     fn py_subscribe_data(
         &mut self,
+        py: Python<'_>,
         data_type: DataType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_data(self.inner_mut(), data_type, client_id, params);
         Ok(())
     }
@@ -1131,10 +1179,12 @@ impl PyDataActor {
     #[pyo3(signature = (venue, client_id=None, params=None))]
     fn py_subscribe_instruments(
         &mut self,
+        py: Python<'_>,
         venue: Venue,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_instruments(self.inner_mut(), venue, client_id, params);
         Ok(())
     }
@@ -1143,25 +1193,30 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_instrument(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_instrument(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
 
     #[pyo3(name = "subscribe_book_deltas")]
     #[pyo3(signature = (instrument_id, book_type, depth=None, client_id=None, managed=false, params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn py_subscribe_book_deltas(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         book_type: BookType,
         depth: Option<usize>,
         client_id: Option<ClientId>,
         managed: bool,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         let depth = depth.and_then(NonZeroUsize::new);
         DataActor::subscribe_book_deltas(
             self.inner_mut(),
@@ -1177,18 +1232,21 @@ impl PyDataActor {
 
     #[pyo3(name = "subscribe_book_at_interval")]
     #[pyo3(signature = (instrument_id, book_type, interval_ms, depth=None, client_id=None, params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn py_subscribe_book_at_interval(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         book_type: BookType,
         interval_ms: usize,
         depth: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         let depth = depth.and_then(NonZeroUsize::new);
         let interval_ms = NonZeroUsize::new(interval_ms)
-            .ok_or_else(|| PyErr::new::<PyValueError, _>("interval_ms must be > 0"))?;
+            .ok_or_else(|| to_pyvalue_err("interval_ms must be > 0"))?;
 
         DataActor::subscribe_book_at_interval(
             self.inner_mut(),
@@ -1206,10 +1264,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_quotes(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_quotes(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1218,10 +1278,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_trades(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_trades(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1230,10 +1292,12 @@ impl PyDataActor {
     #[pyo3(signature = (bar_type, client_id=None, params=None))]
     fn py_subscribe_bars(
         &mut self,
+        py: Python<'_>,
         bar_type: BarType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_bars(self.inner_mut(), bar_type, client_id, params);
         Ok(())
     }
@@ -1242,10 +1306,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_mark_prices(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_mark_prices(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1254,11 +1320,27 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_index_prices(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_index_prices(self.inner_mut(), instrument_id, client_id, params);
+        Ok(())
+    }
+
+    #[pyo3(name = "subscribe_funding_rates")]
+    #[pyo3(signature = (instrument_id, client_id=None, params=None))]
+    fn py_subscribe_funding_rates(
+        &mut self,
+        py: Python<'_>,
+        instrument_id: InstrumentId,
+        client_id: Option<ClientId>,
+        params: Option<Py<PyDict>>,
+    ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
+        DataActor::subscribe_funding_rates(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
 
@@ -1266,10 +1348,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_instrument_status(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_instrument_status(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1278,26 +1362,26 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_instrument_close(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_instrument_close(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
 
     #[pyo3(name = "subscribe_order_fills")]
     #[pyo3(signature = (instrument_id))]
-    fn py_subscribe_order_fills(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+    fn py_subscribe_order_fills(&mut self, instrument_id: InstrumentId) {
         DataActor::subscribe_order_fills(self.inner_mut(), instrument_id);
-        Ok(())
     }
 
     #[pyo3(name = "subscribe_order_cancels")]
     #[pyo3(signature = (instrument_id))]
-    fn py_subscribe_order_cancels(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+    fn py_subscribe_order_cancels(&mut self, instrument_id: InstrumentId) {
         DataActor::subscribe_order_cancels(self.inner_mut(), instrument_id);
-        Ok(())
     }
 
     #[cfg(feature = "defi")]
@@ -1305,10 +1389,12 @@ impl PyDataActor {
     #[pyo3(signature = (chain, client_id=None, params=None))]
     fn py_subscribe_blocks(
         &mut self,
+        py: Python<'_>,
         chain: Blockchain,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_blocks(self.inner_mut(), chain, client_id, params);
         Ok(())
     }
@@ -1318,10 +1404,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_pool(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_pool(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1331,10 +1419,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_pool_swaps(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_pool_swaps(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1344,10 +1434,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_pool_liquidity_updates(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_pool_liquidity_updates(
             self.inner_mut(),
             instrument_id,
@@ -1362,10 +1454,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_pool_fee_collects(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_pool_fee_collects(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1375,25 +1469,30 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_subscribe_pool_flash_events(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::subscribe_pool_flash_events(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
 
     #[pyo3(name = "request_data")]
     #[pyo3(signature = (data_type, client_id, start=None, end=None, limit=None, params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn py_request_data(
         &mut self,
+        py: Python<'_>,
         data_type: DataType,
         client_id: ClientId,
         start: Option<u64>,
         end: Option<u64>,
         limit: Option<usize>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1415,12 +1514,14 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, start=None, end=None, client_id=None, params=None))]
     fn py_request_instrument(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         start: Option<u64>,
         end: Option<u64>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
 
@@ -1440,12 +1541,14 @@ impl PyDataActor {
     #[pyo3(signature = (venue=None, start=None, end=None, client_id=None, params=None))]
     fn py_request_instruments(
         &mut self,
+        py: Python<'_>,
         venue: Option<Venue>,
         start: Option<u64>,
         end: Option<u64>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
 
@@ -1459,11 +1562,13 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, depth=None, client_id=None, params=None))]
     fn py_request_book_snapshot(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         depth: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let depth = depth.and_then(NonZeroUsize::new);
 
         let request_id = DataActor::request_book_snapshot(
@@ -1479,15 +1584,18 @@ impl PyDataActor {
 
     #[pyo3(name = "request_quotes")]
     #[pyo3(signature = (instrument_id, start=None, end=None, limit=None, client_id=None, params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn py_request_quotes(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         start: Option<u64>,
         end: Option<u64>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1507,15 +1615,18 @@ impl PyDataActor {
 
     #[pyo3(name = "request_trades")]
     #[pyo3(signature = (instrument_id, start=None, end=None, limit=None, client_id=None, params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn py_request_trades(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         start: Option<u64>,
         end: Option<u64>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1535,15 +1646,18 @@ impl PyDataActor {
 
     #[pyo3(name = "request_bars")]
     #[pyo3(signature = (bar_type, start=None, end=None, limit=None, client_id=None, params=None))]
+    #[allow(clippy::too_many_arguments)]
     fn py_request_bars(
         &mut self,
+        py: Python<'_>,
         bar_type: BarType,
         start: Option<u64>,
         end: Option<u64>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params = dict_to_params(py, params)?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1565,10 +1679,12 @@ impl PyDataActor {
     #[pyo3(signature = (data_type, client_id=None, params=None))]
     fn py_unsubscribe_data(
         &mut self,
+        py: Python<'_>,
         data_type: DataType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_data(self.inner_mut(), data_type, client_id, params);
         Ok(())
     }
@@ -1577,10 +1693,12 @@ impl PyDataActor {
     #[pyo3(signature = (venue, client_id=None, params=None))]
     fn py_unsubscribe_instruments(
         &mut self,
+        py: Python<'_>,
         venue: Venue,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_instruments(self.inner_mut(), venue, client_id, params);
         Ok(())
     }
@@ -1589,10 +1707,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_instrument(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_instrument(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1601,10 +1721,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_book_deltas(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_book_deltas(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1613,13 +1735,15 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, interval_ms, client_id=None, params=None))]
     fn py_unsubscribe_book_at_interval(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         interval_ms: usize,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         let interval_ms = NonZeroUsize::new(interval_ms)
-            .ok_or_else(|| PyErr::new::<PyValueError, _>("interval_ms must be > 0"))?;
+            .ok_or_else(|| to_pyvalue_err("interval_ms must be > 0"))?;
 
         DataActor::unsubscribe_book_at_interval(
             self.inner_mut(),
@@ -1635,10 +1759,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_quotes(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_quotes(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1647,10 +1773,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_trades(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_trades(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1659,10 +1787,12 @@ impl PyDataActor {
     #[pyo3(signature = (bar_type, client_id=None, params=None))]
     fn py_unsubscribe_bars(
         &mut self,
+        py: Python<'_>,
         bar_type: BarType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_bars(self.inner_mut(), bar_type, client_id, params);
         Ok(())
     }
@@ -1671,10 +1801,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_mark_prices(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_mark_prices(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1683,10 +1815,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_index_prices(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_index_prices(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1695,10 +1829,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_instrument_status(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_instrument_status(
             self.inner_mut(),
             instrument_id,
@@ -1712,26 +1848,26 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_instrument_close(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_instrument_close(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
 
     #[pyo3(name = "unsubscribe_order_fills")]
     #[pyo3(signature = (instrument_id))]
-    fn py_unsubscribe_order_fills(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+    fn py_unsubscribe_order_fills(&mut self, instrument_id: InstrumentId) {
         DataActor::unsubscribe_order_fills(self.inner_mut(), instrument_id);
-        Ok(())
     }
 
     #[pyo3(name = "unsubscribe_order_cancels")]
     #[pyo3(signature = (instrument_id))]
-    fn py_unsubscribe_order_cancels(&mut self, instrument_id: InstrumentId) -> PyResult<()> {
+    fn py_unsubscribe_order_cancels(&mut self, instrument_id: InstrumentId) {
         DataActor::unsubscribe_order_cancels(self.inner_mut(), instrument_id);
-        Ok(())
     }
 
     #[cfg(feature = "defi")]
@@ -1739,10 +1875,12 @@ impl PyDataActor {
     #[pyo3(signature = (chain, client_id=None, params=None))]
     fn py_unsubscribe_blocks(
         &mut self,
+        py: Python<'_>,
         chain: Blockchain,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_blocks(self.inner_mut(), chain, client_id, params);
         Ok(())
     }
@@ -1752,10 +1890,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_pool(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_pool(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1765,10 +1905,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_pool_swaps(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_pool_swaps(self.inner_mut(), instrument_id, client_id, params);
         Ok(())
     }
@@ -1778,10 +1920,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_pool_liquidity_updates(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_pool_liquidity_updates(
             self.inner_mut(),
             instrument_id,
@@ -1796,10 +1940,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_pool_fee_collects(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_pool_fee_collects(
             self.inner_mut(),
             instrument_id,
@@ -1814,10 +1960,12 @@ impl PyDataActor {
     #[pyo3(signature = (instrument_id, client_id=None, params=None))]
     fn py_unsubscribe_pool_flash_events(
         &mut self,
+        py: Python<'_>,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params = dict_to_params(py, params)?;
         DataActor::unsubscribe_pool_flash_events(
             self.inner_mut(),
             instrument_id,
@@ -1829,54 +1977,44 @@ impl PyDataActor {
 
     #[allow(unused_variables)]
     #[pyo3(name = "on_historical_data")]
-    fn py_on_historical_data(&mut self, data: Py<PyAny>) -> PyResult<()> {
+    fn py_on_historical_data(&mut self, data: Py<PyAny>) {
         // Default implementation - can be overridden in Python subclasses
-        Ok(())
     }
 
     #[allow(unused_variables)]
     #[pyo3(name = "on_historical_quotes")]
-    fn py_on_historical_quotes(&mut self, quotes: Vec<QuoteTick>) -> PyResult<()> {
+    fn py_on_historical_quotes(&mut self, quotes: Vec<QuoteTick>) {
         // Default implementation - can be overridden in Python subclasses
-        Ok(())
     }
 
     #[allow(unused_variables)]
     #[pyo3(name = "on_historical_trades")]
-    fn py_on_historical_trades(&mut self, trades: Vec<TradeTick>) -> PyResult<()> {
+    fn py_on_historical_trades(&mut self, trades: Vec<TradeTick>) {
         // Default implementation - can be overridden in Python subclasses
-        Ok(())
     }
 
     #[allow(unused_variables)]
     #[pyo3(name = "on_historical_bars")]
-    fn py_on_historical_bars(&mut self, bars: Vec<Bar>) -> PyResult<()> {
+    fn py_on_historical_bars(&mut self, bars: Vec<Bar>) {
         // Default implementation - can be overridden in Python subclasses
-        Ok(())
     }
 
     #[allow(unused_variables)]
     #[pyo3(name = "on_historical_mark_prices")]
-    fn py_on_historical_mark_prices(&mut self, mark_prices: Vec<MarkPriceUpdate>) -> PyResult<()> {
+    fn py_on_historical_mark_prices(&mut self, mark_prices: Vec<MarkPriceUpdate>) {
         // Default implementation - can be overridden in Python subclasses
-        Ok(())
     }
 
     #[allow(unused_variables)]
     #[pyo3(name = "on_historical_index_prices")]
-    fn py_on_historical_index_prices(
-        &mut self,
-        index_prices: Vec<IndexPriceUpdate>,
-    ) -> PyResult<()> {
+    fn py_on_historical_index_prices(&mut self, index_prices: Vec<IndexPriceUpdate>) {
         // Default implementation - can be overridden in Python subclasses
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        any::Any,
         cell::RefCell,
         collections::HashMap,
         ops::{Deref, DerefMut},
@@ -1895,11 +2033,14 @@ mod tests {
     };
     use nautilus_model::{
         data::{
-            Bar, BarType, DataType, IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate,
-            OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick, close::InstrumentClose,
+            Bar, BarType, CustomData, DataType, IndexPriceUpdate, InstrumentStatus,
+            MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick,
+            close::InstrumentClose,
+            greeks::OptionGreekValues,
+            option_chain::{OptionChainSlice, OptionGreeks},
         },
         enums::{AggressorSide, BookType, InstrumentCloseType, MarketStatusAction},
-        identifiers::{ClientId, TradeId, TraderId, Venue},
+        identifiers::{ClientId, OptionSeriesId, TradeId, TraderId, Venue},
         instruments::{CurrencyPair, InstrumentAny, stubs::audusd_sim},
         orderbook::OrderBook,
         types::{Price, Quantity},
@@ -1947,7 +2088,7 @@ mod tests {
 
     #[fixture]
     fn data_type() -> DataType {
-        DataType::new("TestData", None)
+        DataType::new("TestData", None, None)
     }
 
     #[fixture]
@@ -2055,26 +2196,29 @@ mod tests {
     ) {
         let mut actor = create_registered_actor(clock, cache, trader_id);
 
-        assert!(
-            actor
-                .py_subscribe_data(data_type.clone(), Some(client_id), None)
-                .is_ok()
-        );
-        assert!(
-            actor
-                .py_subscribe_quotes(audusd_sim.id, Some(client_id), None)
-                .is_ok()
-        );
-        assert!(
-            actor
-                .py_unsubscribe_data(data_type, Some(client_id), None)
-                .is_ok()
-        );
-        assert!(
-            actor
-                .py_unsubscribe_quotes(audusd_sim.id, Some(client_id), None)
-                .is_ok()
-        );
+        pyo3::Python::initialize();
+        pyo3::Python::attach(|py| {
+            assert!(
+                actor
+                    .py_subscribe_data(py, data_type.clone(), Some(client_id), None)
+                    .is_ok()
+            );
+            assert!(
+                actor
+                    .py_subscribe_quotes(py, audusd_sim.id, Some(client_id), None)
+                    .is_ok()
+            );
+            assert!(
+                actor
+                    .py_unsubscribe_data(py, data_type, Some(client_id), None)
+                    .is_ok()
+            );
+            assert!(
+                actor
+                    .py_unsubscribe_quotes(py, audusd_sim.id, Some(client_id), None)
+                    .is_ok()
+            );
+        });
     }
 
     #[rstest]
@@ -2085,12 +2229,8 @@ mod tests {
     ) {
         let actor = create_registered_actor(clock, cache, trader_id);
 
-        assert!(
-            actor
-                .py_shutdown_system(Some("Test shutdown".to_string()))
-                .is_ok()
-        );
-        assert!(actor.py_shutdown_system(None).is_ok());
+        actor.py_shutdown_system(Some("Test shutdown".to_string()));
+        actor.py_shutdown_system(None);
     }
 
     #[rstest]
@@ -2103,26 +2243,29 @@ mod tests {
         pyo3::Python::initialize();
         let mut actor = create_registered_actor(clock, cache, trader_id);
 
-        let result = actor.py_subscribe_book_at_interval(
-            audusd_sim.id,
-            BookType::L2_MBP,
-            0,
-            None,
-            None,
-            None,
-        );
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "ValueError: interval_ms must be > 0"
-        );
+        pyo3::Python::attach(|py| {
+            let result = actor.py_subscribe_book_at_interval(
+                py,
+                audusd_sim.id,
+                BookType::L2_MBP,
+                0,
+                None,
+                None,
+                None,
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "ValueError: interval_ms must be > 0"
+            );
 
-        let result = actor.py_unsubscribe_book_at_interval(audusd_sim.id, 0, None, None);
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "ValueError: interval_ms must be > 0"
-        );
+            let result = actor.py_unsubscribe_book_at_interval(py, audusd_sim.id, 0, None, None);
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "ValueError: interval_ms must be > 0"
+            );
+        });
     }
 
     #[rstest]
@@ -2192,7 +2335,7 @@ mod tests {
             self.inner.inner_mut().on_time_event(event)
         }
 
-        fn on_data(&mut self, data: &dyn Any) -> anyhow::Result<()> {
+        fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
             self.track_call("on_data");
             self.inner.inner_mut().on_data(data)
         }
@@ -2250,6 +2393,16 @@ mod tests {
         fn on_instrument_close(&mut self, update: &InstrumentClose) -> anyhow::Result<()> {
             self.track_call("on_instrument_close");
             self.inner.inner_mut().on_instrument_close(update)
+        }
+
+        fn on_option_greeks(&mut self, greeks: &OptionGreeks) -> anyhow::Result<()> {
+            self.track_call("on_option_greeks");
+            self.inner.inner_mut().on_option_greeks(greeks)
+        }
+
+        fn on_option_chain(&mut self, slice: &OptionChainSlice) -> anyhow::Result<()> {
+            self.track_call("on_option_chain");
+            self.inner.inner_mut().on_option_chain(slice)
         }
 
         #[cfg(feature = "defi")]
@@ -2310,7 +2463,8 @@ mod tests {
         test_actor.reset_tracker();
         test_actor.register(trader_id, clock, cache).unwrap();
 
-        assert!(test_actor.on_data(&()).is_ok());
+        let custom_data = crate::actor::tests::make_test_custom_data("test");
+        assert!(test_actor.on_data(&custom_data).is_ok());
         assert_eq!(test_actor.get_call_count("on_data"), 1);
     }
 
@@ -2550,6 +2704,65 @@ mod tests {
         assert!(rust_actor.inner_mut().on_instrument_close(&close).is_ok());
     }
 
+    #[rstest]
+    fn test_python_on_option_greeks_handler(
+        clock: Rc<RefCell<TestClock>>,
+        cache: Rc<RefCell<Cache>>,
+        trader_id: TraderId,
+        audusd_sim: CurrencyPair,
+    ) {
+        pyo3::Python::initialize();
+        let mut rust_actor = PyDataActor::new(None);
+        rust_actor.register(trader_id, clock, cache).unwrap();
+
+        let greeks = OptionGreeks {
+            instrument_id: audusd_sim.id,
+            greeks: OptionGreekValues {
+                delta: 0.55,
+                gamma: 0.03,
+                vega: 0.12,
+                theta: -0.05,
+                rho: 0.01,
+            },
+            mark_iv: Some(0.25),
+            bid_iv: None,
+            ask_iv: None,
+            underlying_price: None,
+            open_interest: None,
+            ts_event: UnixNanos::default(),
+            ts_init: UnixNanos::default(),
+        };
+
+        assert!(rust_actor.inner_mut().on_option_greeks(&greeks).is_ok());
+    }
+
+    #[rstest]
+    fn test_python_on_option_chain_handler(
+        clock: Rc<RefCell<TestClock>>,
+        cache: Rc<RefCell<Cache>>,
+        trader_id: TraderId,
+    ) {
+        pyo3::Python::initialize();
+        let mut rust_actor = PyDataActor::new(None);
+        rust_actor.register(trader_id, clock, cache).unwrap();
+
+        let slice = OptionChainSlice {
+            series_id: OptionSeriesId::new(
+                Venue::from("SIM"),
+                Ustr::from("AUD"),
+                Ustr::from("USD"),
+                UnixNanos::from(1_711_036_800_000_000_000),
+            ),
+            atm_strike: None,
+            calls: Default::default(),
+            puts: Default::default(),
+            ts_event: UnixNanos::default(),
+            ts_init: UnixNanos::default(),
+        };
+
+        assert!(rust_actor.inner_mut().on_option_chain(&slice).is_ok());
+    }
+
     #[cfg(feature = "defi")]
     #[rstest]
     fn test_python_on_block_handler(
@@ -2769,6 +2982,12 @@ class TrackingActor:
 
     def on_instrument_close(self, close):
         self._record("on_instrument_close", close)
+
+    def on_option_greeks(self, greeks):
+        self._record("on_option_greeks", greeks)
+
+    def on_option_chain(self, chain):
+        self._record("on_option_chain", chain)
 
     def on_historical_data(self, data):
         self._record("on_historical_data", data)
@@ -3315,6 +3534,81 @@ class TrackingActor:
                 py,
                 "on_instrument_close"
             ));
+        });
+    }
+
+    #[rstest]
+    fn test_python_dispatch_on_option_greeks(
+        clock: Rc<RefCell<TestClock>>,
+        cache: Rc<RefCell<Cache>>,
+        trader_id: TraderId,
+        audusd_sim: CurrencyPair,
+    ) {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let py_actor = create_tracking_python_actor(py).unwrap();
+
+            let mut rust_actor = PyDataActor::new(None);
+            rust_actor.set_python_instance(py_actor.clone_ref(py));
+            rust_actor.register(trader_id, clock, cache).unwrap();
+
+            let greeks = OptionGreeks {
+                instrument_id: audusd_sim.id,
+                greeks: OptionGreekValues {
+                    delta: 0.55,
+                    gamma: 0.03,
+                    vega: 0.12,
+                    theta: -0.05,
+                    rho: 0.01,
+                },
+                mark_iv: Some(0.25),
+                bid_iv: None,
+                ask_iv: None,
+                underlying_price: None,
+                open_interest: None,
+                ts_event: UnixNanos::default(),
+                ts_init: UnixNanos::default(),
+            };
+
+            let result = rust_actor.inner_mut().on_option_greeks(&greeks);
+
+            assert!(result.is_ok());
+            assert!(python_method_was_called(&py_actor, py, "on_option_greeks"));
+        });
+    }
+
+    #[rstest]
+    fn test_python_dispatch_on_option_chain(
+        clock: Rc<RefCell<TestClock>>,
+        cache: Rc<RefCell<Cache>>,
+        trader_id: TraderId,
+    ) {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let py_actor = create_tracking_python_actor(py).unwrap();
+
+            let mut rust_actor = PyDataActor::new(None);
+            rust_actor.set_python_instance(py_actor.clone_ref(py));
+            rust_actor.register(trader_id, clock, cache).unwrap();
+
+            let slice = OptionChainSlice {
+                series_id: OptionSeriesId::new(
+                    Venue::from("SIM"),
+                    Ustr::from("AUD"),
+                    Ustr::from("USD"),
+                    UnixNanos::from(1_711_036_800_000_000_000),
+                ),
+                atm_strike: None,
+                calls: Default::default(),
+                puts: Default::default(),
+                ts_event: UnixNanos::default(),
+                ts_init: UnixNanos::default(),
+            };
+
+            let result = rust_actor.inner_mut().on_option_chain(&slice);
+
+            assert!(result.is_ok());
+            assert!(python_method_was_called(&py_actor, py, "on_option_chain"));
         });
     }
 

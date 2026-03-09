@@ -16,7 +16,10 @@
 //! Python bindings for the Binance Futures HTTP client.
 
 use chrono::{TimeZone, Utc};
-use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyvalue_err};
+use nautilus_core::{
+    python::{IntoPyObjectNautilusExt, to_pyvalue_err},
+    time::get_atomic_clock_realtime,
+};
 use nautilus_model::{
     data::BarType,
     enums::{OrderSide, OrderType, TimeInForce},
@@ -66,6 +69,7 @@ impl BinanceFuturesHttpClient {
         Self::new(
             product_type,
             environment,
+            get_atomic_clock_realtime(),
             api_key,
             api_secret,
             base_url,
@@ -212,19 +216,17 @@ impl BinanceFuturesHttpClient {
 
         let start_dt = start
             .map(|ts| {
-                Utc.timestamp_millis_opt(ts).single().ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(format!(
-                        "Invalid start timestamp: {ts}"
-                    ))
-                })
+                Utc.timestamp_millis_opt(ts)
+                    .single()
+                    .ok_or_else(|| to_pyvalue_err(format!("Invalid start timestamp: {ts}")))
             })
             .transpose()?;
 
         let end_dt = end
             .map(|ts| {
-                Utc.timestamp_millis_opt(ts).single().ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(format!("Invalid end timestamp: {ts}"))
-                })
+                Utc.timestamp_millis_opt(ts)
+                    .single()
+                    .ok_or_else(|| to_pyvalue_err(format!("Invalid end timestamp: {ts}")))
             })
             .transpose()?;
 
@@ -347,7 +349,7 @@ impl BinanceFuturesHttpClient {
     }
 
     #[pyo3(name = "submit_order")]
-    #[pyo3(signature = (account_id, instrument_id, client_order_id, order_side, order_type, quantity, time_in_force, price=None, trigger_price=None, reduce_only=false, position_side=None))]
+    #[pyo3(signature = (account_id, instrument_id, client_order_id, order_side, order_type, quantity, time_in_force, price=None, trigger_price=None, reduce_only=false, post_only=false, position_side=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_submit_order<'py>(
         &self,
@@ -362,6 +364,7 @@ impl BinanceFuturesHttpClient {
         price: Option<Price>,
         trigger_price: Option<Price>,
         reduce_only: bool,
+        post_only: bool,
         position_side: Option<BinancePositionSide>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
@@ -379,6 +382,7 @@ impl BinanceFuturesHttpClient {
                     price,
                     trigger_price,
                     reduce_only,
+                    post_only,
                     position_side,
                 )
                 .await

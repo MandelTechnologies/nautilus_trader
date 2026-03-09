@@ -19,6 +19,7 @@ pub mod any;
 pub mod base;
 pub mod cash;
 pub mod margin;
+pub mod margin_model;
 
 #[cfg(any(test, feature = "stubs"))]
 pub mod stubs;
@@ -77,7 +78,7 @@ pub trait Account: 'static + Send {
     /// Returns an error if calculating locked balance fails.
     fn calculate_balance_locked(
         &mut self,
-        instrument: InstrumentAny,
+        instrument: &InstrumentAny,
         side: OrderSide,
         quantity: Quantity,
         price: Price,
@@ -91,8 +92,8 @@ pub trait Account: 'static + Send {
     /// Returns an error if calculating PnLs fails.
     fn calculate_pnls(
         &self,
-        instrument: InstrumentAny,
-        fill: OrderFilled,
+        instrument: &InstrumentAny,
+        fill: &OrderFilled,
         position: Option<Position>,
     ) -> anyhow::Result<Vec<Money>>;
 
@@ -103,7 +104,7 @@ pub trait Account: 'static + Send {
     /// Returns an error if calculating commission fails.
     fn calculate_commission(
         &self,
-        instrument: InstrumentAny,
+        instrument: &InstrumentAny,
         last_qty: Quantity,
         last_px: Price,
         liquidity_side: LiquiditySide,

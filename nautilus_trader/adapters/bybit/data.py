@@ -28,16 +28,24 @@ from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.data.messages import RequestBars
+from nautilus_trader.data.messages import RequestForwardPrices
+from nautilus_trader.data.messages import RequestFundingRates
 from nautilus_trader.data.messages import RequestOrderBookSnapshot
 from nautilus_trader.data.messages import RequestQuoteTicks
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
 from nautilus_trader.data.messages import SubscribeFundingRates
+from nautilus_trader.data.messages import SubscribeIndexPrices
+from nautilus_trader.data.messages import SubscribeMarkPrices
+from nautilus_trader.data.messages import SubscribeOptionGreeks
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
 from nautilus_trader.data.messages import UnsubscribeBars
 from nautilus_trader.data.messages import UnsubscribeFundingRates
+from nautilus_trader.data.messages import UnsubscribeIndexPrices
+from nautilus_trader.data.messages import UnsubscribeMarkPrices
+from nautilus_trader.data.messages import UnsubscribeOptionGreeks
 from nautilus_trader.data.messages import UnsubscribeOrderBook
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeTradeTicks
@@ -47,6 +55,9 @@ from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import FundingRateUpdate
+from nautilus_trader.model.data import IndexPriceUpdate
+from nautilus_trader.model.data import MarkPriceUpdate
+from nautilus_trader.model.data import OptionGreeks
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
@@ -175,7 +186,7 @@ class BybitDataClient(LiveMarketDataClient):
 
         # Connect all websocket clients
         for product_type, ws_client in self._ws_clients.items():
-            await ws_client.connect(callback=self._handle_msg)
+            await ws_client.connect(loop_=self._loop, callback=self._handle_msg)
             await ws_client.wait_until_active(timeout_secs=10.0)
             self._log.info(f"Connected to {product_type.name} websocket", LogColor.BLUE)
 
@@ -243,12 +254,6 @@ class BybitDataClient(LiveMarketDataClient):
             )
 
         return ws_client
-
-    def _bar_spec_to_bybit_interval(self, bar_spec) -> str:
-        return nautilus_pyo3.bybit_bar_spec_to_interval(
-            bar_spec.aggregation,
-            bar_spec.step,
-        )
 
     async def _update_instruments(self, interval_mins: int) -> None:
         while True:
@@ -340,12 +345,54 @@ class BybitDataClient(LiveMarketDataClient):
         await ws_client.subscribe_trades(pyo3_instrument_id)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
             command.bar_type.instrument_id.value,
         )
-        interval = self._bar_spec_to_bybit_interval(command.bar_type.spec)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        await ws_client.subscribe_klines(pyo3_instrument_id, interval)
+        await ws_client.subscribe_bars(pyo3_bar_type)
+
+    async def _subscribe_mark_prices(self, command: SubscribeMarkPrices) -> None:
+        # Mark prices come through ticker subscriptions for perpetual/option instruments
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        if product_type == nautilus_pyo3.BybitProductType.SPOT:
+            self._log.warning(
+                f"Cannot subscribe to mark prices for SPOT instrument {command.instrument_id}",
+            )
+            return
+
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+
+        # Reference counting: only subscribe if first user of ticker channel
+        if pyo3_instrument_id not in self._ticker_subscriptions:
+            self._ticker_subscriptions[pyo3_instrument_id] = set()
+            await ws_client.subscribe_ticker(pyo3_instrument_id)
+        self._ticker_subscriptions[pyo3_instrument_id].add("mark_prices")
+
+    async def _subscribe_index_prices(self, command: SubscribeIndexPrices) -> None:
+        # Index prices come through ticker subscriptions for perpetual/option instruments
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        if product_type == nautilus_pyo3.BybitProductType.SPOT:
+            self._log.warning(
+                f"Cannot subscribe to index prices for SPOT instrument {command.instrument_id}",
+            )
+            return
+
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+
+        # Reference counting: only subscribe if first user of ticker channel
+        if pyo3_instrument_id not in self._ticker_subscriptions:
+            self._ticker_subscriptions[pyo3_instrument_id] = set()
+            await ws_client.subscribe_ticker(pyo3_instrument_id)
+        self._ticker_subscriptions[pyo3_instrument_id].add("index_prices")
 
     async def _subscribe_funding_rates(self, command: SubscribeFundingRates) -> None:
         # Bybit doesn't have a separate funding rate subscription
@@ -368,6 +415,43 @@ class BybitDataClient(LiveMarketDataClient):
             self._ticker_subscriptions[pyo3_instrument_id] = set()
             await ws_client.subscribe_ticker(pyo3_instrument_id)
         self._ticker_subscriptions[pyo3_instrument_id].add("funding")
+
+    async def _subscribe_option_greeks(self, command: SubscribeOptionGreeks) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        if product_type != nautilus_pyo3.BybitProductType.OPTION:
+            self._log.warning(
+                f"Cannot subscribe to option greeks for non-OPTION instrument {command.instrument_id}",
+            )
+            return
+
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+
+        # Register in DashSet so the Rust handler emits OptionGreeks
+        ws_client.add_option_greeks_sub(pyo3_instrument_id)  # type: ignore[attr-defined]
+
+        # Follow the same ticker refcounting pattern as other subscribers
+        if pyo3_instrument_id not in self._ticker_subscriptions:
+            self._ticker_subscriptions[pyo3_instrument_id] = set()
+            await ws_client.subscribe_ticker(pyo3_instrument_id)
+        self._ticker_subscriptions[pyo3_instrument_id].add("option_greeks")
+
+    async def _unsubscribe_option_greeks(self, command: UnsubscribeOptionGreeks) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+
+        # Always remove from DashSet to stop greeks emission
+        ws_client.remove_option_greeks_sub(pyo3_instrument_id)  # type: ignore[attr-defined]
+
+        # Follow the same ticker refcounting pattern as other subscribers
+        if pyo3_instrument_id in self._ticker_subscriptions:
+            self._ticker_subscriptions[pyo3_instrument_id].discard("option_greeks")
+            if not self._ticker_subscriptions[pyo3_instrument_id]:
+                await ws_client.unsubscribe_ticker(pyo3_instrument_id)
+                del self._ticker_subscriptions[pyo3_instrument_id]
 
     async def _unsubscribe_order_book_deltas(self, command: UnsubscribeOrderBook) -> None:
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
@@ -406,12 +490,48 @@ class BybitDataClient(LiveMarketDataClient):
         await ws_client.unsubscribe_trades(pyo3_instrument_id)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
             command.bar_type.instrument_id.value,
         )
-        interval = self._bar_spec_to_bybit_interval(command.bar_type.spec)
         ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
-        await ws_client.unsubscribe_klines(pyo3_instrument_id, interval)
+        await ws_client.unsubscribe_bars(pyo3_bar_type)
+
+    async def _unsubscribe_mark_prices(self, command: UnsubscribeMarkPrices) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        if product_type == nautilus_pyo3.BybitProductType.SPOT:
+            return
+
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+
+        # Reference counting: only unsubscribe if last user of ticker channel
+        if pyo3_instrument_id in self._ticker_subscriptions:
+            self._ticker_subscriptions[pyo3_instrument_id].discard("mark_prices")
+            if not self._ticker_subscriptions[pyo3_instrument_id]:
+                await ws_client.unsubscribe_ticker(pyo3_instrument_id)
+                del self._ticker_subscriptions[pyo3_instrument_id]
+
+    async def _unsubscribe_index_prices(self, command: UnsubscribeIndexPrices) -> None:
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        if product_type == nautilus_pyo3.BybitProductType.SPOT:
+            return
+
+        ws_client = self._get_ws_client_for_instrument(pyo3_instrument_id)
+
+        # Reference counting: only unsubscribe if last user of ticker channel
+        if pyo3_instrument_id in self._ticker_subscriptions:
+            self._ticker_subscriptions[pyo3_instrument_id].discard("index_prices")
+            if not self._ticker_subscriptions[pyo3_instrument_id]:
+                await ws_client.unsubscribe_ticker(pyo3_instrument_id)
+                del self._ticker_subscriptions[pyo3_instrument_id]
 
     async def _unsubscribe_funding_rates(self, command: UnsubscribeFundingRates) -> None:
         # Bybit doesn't have a separate funding rate subscription
@@ -493,6 +613,37 @@ class BybitDataClient(LiveMarketDataClient):
         self._handle_trade_ticks(
             request.instrument_id,
             filtered_trades,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    async def _request_funding_rates(self, request: RequestFundingRates) -> None:
+        if request.limit == 0:
+            limit = None
+        else:
+            limit = request.limit
+
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+            request.instrument_id.value,
+        )
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        pyo3_funding_rates = await self._http_client.request_funding_rates(
+            product_type=product_type,
+            instrument_id=pyo3_instrument_id,
+            start=ensure_pydatetime_utc(request.start),
+            end=ensure_pydatetime_utc(request.end),
+            limit=limit,
+        )
+        funding_rates = FundingRateUpdate.from_pyo3_list(pyo3_funding_rates)
+
+        self._handle_funding_rates(
+            request.instrument_id,
+            funding_rates,
             request.id,
             request.start,
             request.end,
@@ -595,6 +746,28 @@ class BybitDataClient(LiveMarketDataClient):
             request.params,
         )
 
+    async def _request_forward_prices(self, request: RequestForwardPrices) -> None:
+        sample_id = request.sample_instrument_id
+        pyo3_inst_id = None
+        if sample_id is not None:
+            pyo3_inst_id = nautilus_pyo3.InstrumentId.from_str(str(sample_id))
+
+        try:
+            forward_prices = await self._http_client.request_forward_prices(  # type: ignore[attr-defined]
+                base_coin=request.underlying,
+                instrument_id=pyo3_inst_id,
+            )
+        except Exception as e:
+            self._log.error(f"Failed to request forward prices for {request.underlying}: {e}")
+            # Send empty response so engine can fall back
+            self._handle_forward_prices([], request.id, request.params or {})
+            return
+
+        self._log.info(
+            f"Received {len(forward_prices)} forward prices for {request.underlying}",
+        )
+        self._handle_forward_prices(forward_prices, request.id, request.params or {})
+
     def _handle_msg(self, msg: Any) -> None:
         try:
             # Handle pycapsule data from Rust (market data)
@@ -608,6 +781,21 @@ class BybitDataClient(LiveMarketDataClient):
 
             if isinstance(msg, nautilus_pyo3.FundingRateUpdate):
                 data = FundingRateUpdate.from_pyo3(msg)
+                self._handle_data(data)
+                return
+
+            if isinstance(msg, nautilus_pyo3.MarkPriceUpdate):
+                data = MarkPriceUpdate.from_pyo3(msg)
+                self._handle_data(data)
+                return
+
+            if isinstance(msg, nautilus_pyo3.IndexPriceUpdate):
+                data = IndexPriceUpdate.from_pyo3(msg)
+                self._handle_data(data)
+                return
+
+            if isinstance(msg, nautilus_pyo3.OptionGreeks):
+                data = OptionGreeks.from_pyo3(msg)
                 self._handle_data(data)
                 return
 

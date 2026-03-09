@@ -15,6 +15,7 @@
 
 //! Python bindings for the Ax adapter.
 
+pub mod config;
 pub mod http;
 pub mod websocket;
 
@@ -26,7 +27,7 @@ use pyo3::{prelude::*, types::PyType};
 use crate::{
     common::enums::{AxEnvironment, AxMarketDataLevel},
     http::client::AxHttpClient,
-    websocket::data::AxMdWebSocketClient,
+    python::websocket::{PyAxMdWebSocketClient, PyAxOrdersWebSocketClient},
 };
 
 #[pymethods]
@@ -62,18 +63,6 @@ impl AxEnvironment {
         let data_str: &str = data.extract()?;
         let tokenized = data_str.to_uppercase();
         Self::from_str(&tokenized).map_err(to_pyvalue_err)
-    }
-
-    #[classattr]
-    #[pyo3(name = "SANDBOX")]
-    const fn py_sandbox() -> Self {
-        Self::Sandbox
-    }
-
-    #[classattr]
-    #[pyo3(name = "PRODUCTION")]
-    const fn py_production() -> Self {
-        Self::Production
     }
 }
 
@@ -111,24 +100,6 @@ impl AxMarketDataLevel {
         let tokenized = data_str.to_uppercase();
         Self::from_str(&tokenized).map_err(to_pyvalue_err)
     }
-
-    #[classattr]
-    #[pyo3(name = "LEVEL_1")]
-    const fn py_level1() -> Self {
-        Self::Level1
-    }
-
-    #[classattr]
-    #[pyo3(name = "LEVEL_2")]
-    const fn py_level2() -> Self {
-        Self::Level2
-    }
-
-    #[classattr]
-    #[pyo3(name = "LEVEL_3")]
-    const fn py_level3() -> Self {
-        Self::Level3
-    }
 }
 
 /// Loaded as `nautilus_pyo3.architect`.
@@ -140,8 +111,11 @@ impl AxMarketDataLevel {
 pub fn architect(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<AxEnvironment>()?;
     m.add_class::<AxMarketDataLevel>()?;
+    m.add_class::<crate::config::AxDataClientConfig>()?;
+    m.add_class::<crate::config::AxExecClientConfig>()?;
     m.add_class::<AxHttpClient>()?;
-    m.add_class::<AxMdWebSocketClient>()?;
+    m.add_class::<PyAxMdWebSocketClient>()?;
+    m.add_class::<PyAxOrdersWebSocketClient>()?;
 
     Ok(())
 }

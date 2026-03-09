@@ -26,6 +26,10 @@ use crate::{
 /// Represents an event where a position has changed.
 #[repr(C)]
 #[derive(Clone, PartialEq, Debug)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
+)]
 pub struct PositionChanged {
     /// The trader ID associated with the event.
     pub trader_id: TraderId,
@@ -149,7 +153,7 @@ mod tests {
             realized_return: 0.0,
             realized_pnl: None,
             unrealized_pnl: Money::new(75.0, Currency::USD()),
-            event_id: Default::default(),
+            event_id: UUID4::default(),
             ts_opened: UnixNanos::from(1_000_000_000),
             ts_event: UnixNanos::from(1_500_000_000),
             ts_init: UnixNanos::from(2_500_000_000),
@@ -171,7 +175,7 @@ mod tests {
             Price::from("0.8050"),
             Currency::USD(),
             LiquiditySide::Taker,
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_500_000_000),
             UnixNanos::from(2_500_000_000),
             false,
@@ -234,7 +238,7 @@ mod tests {
             Price::from("0.8000"),
             Currency::USD(),
             LiquiditySide::Taker,
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_000_000_000),
             UnixNanos::from(2_000_000_000),
             false,
@@ -244,7 +248,7 @@ mod tests {
 
         let position = Position::new(&InstrumentAny::CurrencyPair(instrument), initial_fill);
         let change_fill = create_test_order_filled();
-        let event_id = Default::default();
+        let event_id = UUID4::default();
         let ts_init = UnixNanos::from(3_000_000_000);
 
         let position_changed = PositionChanged::create(&position, &change_fill, event_id, ts_init);
@@ -301,7 +305,7 @@ mod tests {
     fn test_position_changed_partial_eq() {
         let mut position_changed1 = create_test_position_changed();
         let mut position_changed2 = create_test_position_changed();
-        let event_id = Default::default();
+        let event_id = UUID4::default();
         position_changed1.event_id = event_id;
         position_changed2.event_id = event_id;
 

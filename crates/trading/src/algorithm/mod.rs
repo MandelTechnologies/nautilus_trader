@@ -126,7 +126,8 @@ pub trait ExecutionAlgorithm: DataActor {
             }
             TradingCommand::SubmitOrderList(cmd) => {
                 self.subscribe_to_strategy_events(cmd.strategy_id);
-                self.on_order_list(cmd.order_list)
+                let orders = self.core_mut().get_orders_for_list(&cmd.order_list)?;
+                self.on_order_list(cmd.order_list, orders)
             }
             TradingCommand::CancelOrder(cmd) => self.handle_cancel_order(cmd),
             _ => {
@@ -153,8 +154,12 @@ pub trait ExecutionAlgorithm: DataActor {
     /// # Errors
     ///
     /// Returns an error if order list handling fails.
-    fn on_order_list(&mut self, order_list: OrderList) -> anyhow::Result<()> {
-        for order in order_list.orders {
+    fn on_order_list(
+        &mut self,
+        _order_list: OrderList,
+        orders: Vec<OrderAny>,
+    ) -> anyhow::Result<()> {
+        for order in orders {
             self.on_order(order)?;
         }
         Ok(())
@@ -669,7 +674,7 @@ pub trait ExecutionAlgorithm: DataActor {
             log::error!(
                 "Cannot create command ModifyOrder: \
                 quantity, price and trigger were either None \
-                or the same as existing values."
+                or the same as existing values"
             );
             return Ok(());
         }
@@ -1418,22 +1423,22 @@ mod tests {
     fn test_algorithm_default_handlers_do_not_panic() {
         let mut algo = create_test_algorithm();
 
-        algo.on_order_initialized(Default::default());
-        algo.on_order_denied(Default::default());
-        algo.on_order_emulated(Default::default());
-        algo.on_order_released(Default::default());
-        algo.on_order_submitted(Default::default());
-        algo.on_order_rejected(Default::default());
-        algo.on_order_accepted(Default::default());
-        algo.on_algo_order_canceled(Default::default());
-        algo.on_order_expired(Default::default());
-        algo.on_order_triggered(Default::default());
-        algo.on_order_pending_update(Default::default());
-        algo.on_order_pending_cancel(Default::default());
-        algo.on_order_modify_rejected(Default::default());
-        algo.on_order_cancel_rejected(Default::default());
-        algo.on_order_updated(Default::default());
-        algo.on_algo_order_filled(Default::default());
+        algo.on_order_initialized(OrderInitialized::default());
+        algo.on_order_denied(OrderDenied::default());
+        algo.on_order_emulated(OrderEmulated::default());
+        algo.on_order_released(OrderReleased::default());
+        algo.on_order_submitted(OrderSubmitted::default());
+        algo.on_order_rejected(OrderRejected::default());
+        algo.on_order_accepted(OrderAccepted::default());
+        algo.on_algo_order_canceled(OrderCanceled::default());
+        algo.on_order_expired(OrderExpired::default());
+        algo.on_order_triggered(OrderTriggered::default());
+        algo.on_order_pending_update(OrderPendingUpdate::default());
+        algo.on_order_pending_cancel(OrderPendingCancel::default());
+        algo.on_order_modify_rejected(OrderModifyRejected::default());
+        algo.on_order_cancel_rejected(OrderCancelRejected::default());
+        algo.on_order_updated(OrderUpdated::default());
+        algo.on_algo_order_filled(OrderFilled::default());
     }
 
     #[rstest]

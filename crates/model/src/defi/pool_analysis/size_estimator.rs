@@ -51,12 +51,12 @@ impl Default for EstimationConfig {
 
 /// Detailed result of a size-for-impact search.
 ///
-/// Contains comprehensive diagnostics about the binary search process including
+/// Contains diagnostics about the binary search process including
 /// convergence information, iterations taken, bounds used, and final accuracy.
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct SizeForImpactResult {
     /// Target slippage requested in basis points.
@@ -222,6 +222,7 @@ fn binary_search_for_size(
     if impact_bps == 0 {
         anyhow::bail!("Impact must be greater than zero");
     }
+
     if impact_bps > 10000 {
         anyhow::bail!("Impact cannot exceed 100% (10000 bps)");
     }
@@ -275,6 +276,7 @@ fn binary_search_for_size(
             // This indicates we're approaching the upper bound
             let range = high - low;
             let threshold = range / U256::from(5); // 20% of range
+
             if config.enable_adaptive_bounds
                 && high - mid <= threshold
                 && expansions < config.max_bound_expansions
@@ -345,7 +347,7 @@ pub fn size_for_impact_bps(
 
 /// Finds the maximum trade size with detailed search diagnostics.
 ///
-/// This is the detailed version of [`size_for_impact_bps`] that returns comprehensive
+/// This is the detailed version of [`size_for_impact_bps`] that returns detailed
 /// information about the search process including convergence metrics, iterations,
 /// bounds used, and timing information.
 ///

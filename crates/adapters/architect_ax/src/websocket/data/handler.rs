@@ -24,25 +24,18 @@ use std::{
 };
 
 use ahash::AHashMap;
-use nautilus_core::{nanos::UnixNanos, time::get_atomic_clock_realtime};
-use nautilus_model::{
-    data::Data,
-    instruments::{Instrument, InstrumentAny},
-};
 use nautilus_network::websocket::{SubscriptionState, WebSocketClient};
 use tokio_tungstenite::tungstenite::Message;
 use ustr::Ustr;
 
-use super::parse::{
-    parse_book_l1_quote, parse_book_l2_deltas, parse_book_l3_deltas, parse_candle_bar,
-    parse_trade_tick,
-};
 use crate::{
-    common::enums::{AxCandleWidth, AxMarketDataLevel},
-    websocket::messages::{
-        AxMdBookL1, AxMdBookL2, AxMdBookL3, AxMdCandle, AxMdHeartbeat, AxMdSubscribe,
-        AxMdSubscribeCandles, AxMdTrade, AxMdUnsubscribe, AxMdUnsubscribeCandles, AxWsError,
-        NautilusDataWsMessage,
+    common::enums::{AxCandleWidth, AxMarketDataLevel, AxMdRequestType},
+    websocket::{
+        messages::{
+            AxDataWsMessage, AxMdMessage, AxMdSubscribe, AxMdSubscribeCandles, AxMdUnsubscribe,
+            AxMdUnsubscribeCandles,
+        },
+        parse::parse_md_message,
     },
 };
 
@@ -60,7 +53,7 @@ pub enum HandlerCommand {
         /// Request ID for correlation.
         request_id: i64,
         /// Instrument symbol.
-        symbol: String,
+        symbol: Ustr,
         /// Market data level.
         level: AxMarketDataLevel,
     },
@@ -69,14 +62,14 @@ pub enum HandlerCommand {
         /// Request ID for correlation.
         request_id: i64,
         /// Instrument symbol.
-        symbol: String,
+        symbol: Ustr,
     },
     /// Subscribe to candle data for a symbol.
     SubscribeCandles {
         /// Request ID for correlation.
         request_id: i64,
         /// Instrument symbol.
-        symbol: String,
+        symbol: Ustr,
         /// Candle width/interval.
         width: AxCandleWidth,
     },
@@ -85,33 +78,26 @@ pub enum HandlerCommand {
         /// Request ID for correlation.
         request_id: i64,
         /// Instrument symbol.
-        symbol: String,
+        symbol: Ustr,
         /// Candle width/interval.
         width: AxCandleWidth,
     },
-    /// Initialize the instrument cache with instruments.
-    InitializeInstruments(Vec<InstrumentAny>),
-    /// Update a single instrument in the cache.
-    UpdateInstrument(Box<InstrumentAny>),
 }
 
 /// Market data feed handler that processes WebSocket messages.
 ///
 /// Runs in a dedicated Tokio task and owns the WebSocket client exclusively.
+/// Emits raw venue types for downstream consumers to parse.
 pub(crate) struct FeedHandler {
     signal: Arc<AtomicBool>,
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-    #[allow(dead_code)]
-    out_tx: tokio::sync::mpsc::UnboundedSender<NautilusDataWsMessage>,
     subscriptions: SubscriptionState,
-    instruments: AHashMap<Ustr, InstrumentAny>,
-    message_queue: VecDeque<NautilusDataWsMessage>,
+    message_queue: VecDeque<AxDataWsMessage>,
     replay_request_id: i64,
     needs_subscription_replay: bool,
-    book_sequences: AHashMap<Ustr, u64>,
-    candle_cache: AHashMap<(Ustr, AxCandleWidth), AxMdCandle>,
+    pending_subscribe_requests: AHashMap<i64, String>,
 }
 
 impl FeedHandler {
@@ -121,7 +107,6 @@ impl FeedHandler {
         signal: Arc<AtomicBool>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
         raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-        out_tx: tokio::sync::mpsc::UnboundedSender<NautilusDataWsMessage>,
         subscriptions: SubscriptionState,
     ) -> Self {
         Self {
@@ -129,14 +114,11 @@ impl FeedHandler {
             client: None,
             cmd_rx,
             raw_rx,
-            out_tx,
             subscriptions,
-            instruments: AHashMap::new(),
             message_queue: VecDeque::new(),
             replay_request_id: -1,
             needs_subscription_replay: false,
-            book_sequences: AHashMap::new(),
-            candle_cache: AHashMap::new(),
+            pending_subscribe_requests: AHashMap::new(),
         }
     }
 
@@ -146,9 +128,6 @@ impl FeedHandler {
     }
 
     async fn replay_subscriptions(&mut self) {
-        // Clear stale candle data (book sequences persist to maintain monotonicity)
-        self.candle_cache.clear();
-
         let topics = self.subscriptions.all_topics();
         if topics.is_empty() {
             log::debug!("No subscriptions to replay after reconnect");
@@ -168,7 +147,8 @@ impl FeedHandler {
                         log::debug!(
                             "Replaying candle subscription: symbol={symbol}, width={width:?}"
                         );
-                        self.send_subscribe_candles(request_id, symbol, width).await;
+                        self.send_subscribe_candles(request_id, Ustr::from(symbol), width)
+                            .await;
                     } else {
                         log::warn!("Failed to parse candle width from topic: {topic}");
                     }
@@ -181,7 +161,8 @@ impl FeedHandler {
                     log::debug!(
                         "Replaying market data subscription: symbol={symbol}, level={level:?}"
                     );
-                    self.send_subscribe(request_id, symbol, level).await;
+                    self.send_subscribe(request_id, Ustr::from(symbol), level)
+                        .await;
                 } else {
                     log::warn!("Failed to parse market data level from topic: {topic}");
                 }
@@ -215,20 +196,10 @@ impl FeedHandler {
         }
     }
 
-    fn generate_ts_init(&self) -> UnixNanos {
-        get_atomic_clock_realtime().get_time_ns()
-    }
-
-    fn next_book_sequence(&mut self, symbol: Ustr) -> u64 {
-        let seq = self.book_sequences.entry(symbol).or_insert(0);
-        *seq += 1;
-        *seq
-    }
-
     /// Returns the next message from the handler.
     ///
     /// This method blocks until a message is available or the handler is stopped.
-    pub async fn next(&mut self) -> Option<NautilusDataWsMessage> {
+    pub async fn next(&mut self) -> Option<AxDataWsMessage> {
         loop {
             if self.needs_subscription_replay && self.message_queue.is_empty() {
                 self.needs_subscription_replay = false;
@@ -249,7 +220,6 @@ impl FeedHandler {
                         log::debug!("Stop signal received during idle period");
                         return None;
                     }
-                    continue;
                 }
 
                 msg = self.raw_rx.recv() => {
@@ -263,6 +233,7 @@ impl FeedHandler {
 
                     if let Message::Ping(data) = &msg {
                         log::trace!("Received ping frame with {} bytes", data.len());
+
                         if let Some(client) = &self.client
                             && let Err(e) = client.send_pong(data.to_vec()).await
                         {
@@ -271,8 +242,8 @@ impl FeedHandler {
                         continue;
                     }
 
-                    if let Some(messages) = self.parse_raw_message(msg) {
-                        self.message_queue.extend(messages);
+                    if let Some(message) = self.parse_raw_message(msg) {
+                        self.message_queue.push_back(message);
                     }
 
                     if self.signal.load(Ordering::Acquire) {
@@ -292,8 +263,7 @@ impl FeedHandler {
             }
             HandlerCommand::Disconnect => {
                 log::debug!("Disconnect command received");
-                self.book_sequences.clear();
-                self.candle_cache.clear();
+
                 if let Some(client) = self.client.take() {
                     client.disconnect().await;
                 }
@@ -310,13 +280,15 @@ impl FeedHandler {
                 log::debug!(
                     "Subscribe command received: request_id={request_id}, symbol={symbol}, level={level:?}"
                 );
-                self.send_subscribe(request_id, &symbol, level).await;
+                let topic = format!("{symbol}:{level:?}");
+                self.pending_subscribe_requests.insert(request_id, topic);
+                self.send_subscribe(request_id, symbol, level).await;
             }
             HandlerCommand::Unsubscribe { request_id, symbol } => {
                 log::debug!(
                     "Unsubscribe command received: request_id={request_id}, symbol={symbol}"
                 );
-                self.send_unsubscribe(request_id, &symbol).await;
+                self.send_unsubscribe(request_id, symbol).await;
             }
             HandlerCommand::SubscribeCandles {
                 request_id,
@@ -326,8 +298,9 @@ impl FeedHandler {
                 log::debug!(
                     "SubscribeCandles command received: request_id={request_id}, symbol={symbol}, width={width:?}"
                 );
-                self.send_subscribe_candles(request_id, &symbol, width)
-                    .await;
+                let topic = format!("candles:{symbol}:{width:?}");
+                self.pending_subscribe_requests.insert(request_id, topic);
+                self.send_subscribe_candles(request_id, symbol, width).await;
             }
             HandlerCommand::UnsubscribeCandles {
                 request_id,
@@ -337,39 +310,33 @@ impl FeedHandler {
                 log::debug!(
                     "UnsubscribeCandles command received: request_id={request_id}, symbol={symbol}, width={width:?}"
                 );
-                self.candle_cache.remove(&(Ustr::from(&symbol), width));
-                self.send_unsubscribe_candles(request_id, &symbol, width)
+                self.message_queue
+                    .push_back(AxDataWsMessage::CandleUnsubscribed { symbol, width });
+                self.send_unsubscribe_candles(request_id, symbol, width)
                     .await;
-            }
-            HandlerCommand::InitializeInstruments(instruments) => {
-                for inst in instruments {
-                    self.instruments.insert(inst.symbol().inner(), inst);
-                }
-            }
-            HandlerCommand::UpdateInstrument(inst) => {
-                self.instruments.insert(inst.symbol().inner(), *inst);
             }
         }
     }
 
-    async fn send_subscribe(&self, request_id: i64, symbol: &str, level: AxMarketDataLevel) {
+    async fn send_subscribe(&mut self, request_id: i64, symbol: Ustr, level: AxMarketDataLevel) {
         let msg = AxMdSubscribe {
-            request_id,
-            msg_type: "subscribe".to_string(),
-            symbol: symbol.to_string(),
+            rid: request_id,
+            msg_type: AxMdRequestType::Subscribe,
+            symbol,
             level,
         };
 
         if let Err(e) = self.send_json(&msg).await {
+            self.pending_subscribe_requests.remove(&request_id);
             log::error!("Failed to send subscribe message: {e}");
         }
     }
 
-    async fn send_unsubscribe(&self, request_id: i64, symbol: &str) {
+    async fn send_unsubscribe(&self, request_id: i64, symbol: Ustr) {
         let msg = AxMdUnsubscribe {
-            request_id,
-            msg_type: "unsubscribe".to_string(),
-            symbol: symbol.to_string(),
+            rid: request_id,
+            msg_type: AxMdRequestType::Unsubscribe,
+            symbol,
         };
 
         if let Err(e) = self.send_json(&msg).await {
@@ -377,24 +344,30 @@ impl FeedHandler {
         }
     }
 
-    async fn send_subscribe_candles(&self, request_id: i64, symbol: &str, width: AxCandleWidth) {
+    async fn send_subscribe_candles(
+        &mut self,
+        request_id: i64,
+        symbol: Ustr,
+        width: AxCandleWidth,
+    ) {
         let msg = AxMdSubscribeCandles {
-            request_id,
-            msg_type: "subscribe_candles".to_string(),
-            symbol: symbol.to_string(),
+            rid: request_id,
+            msg_type: AxMdRequestType::SubscribeCandles,
+            symbol,
             width,
         };
 
         if let Err(e) = self.send_json(&msg).await {
+            self.pending_subscribe_requests.remove(&request_id);
             log::error!("Failed to send subscribe_candles message: {e}");
         }
     }
 
-    async fn send_unsubscribe_candles(&self, request_id: i64, symbol: &str, width: AxCandleWidth) {
+    async fn send_unsubscribe_candles(&self, request_id: i64, symbol: Ustr, width: AxCandleWidth) {
         let msg = AxMdUnsubscribeCandles {
-            request_id,
-            msg_type: "unsubscribe_candles".to_string(),
-            symbol: symbol.to_string(),
+            rid: request_id,
+            msg_type: AxMdRequestType::UnsubscribeCandles,
+            symbol,
             width,
         };
 
@@ -417,26 +390,24 @@ impl FeedHandler {
             .map_err(|e| e.to_string())
     }
 
-    fn parse_raw_message(&mut self, msg: Message) -> Option<Vec<NautilusDataWsMessage>> {
+    fn parse_raw_message(&mut self, msg: Message) -> Option<AxDataWsMessage> {
         match msg {
             Message::Text(text) => {
                 if text == nautilus_network::RECONNECTED {
                     log::info!("Received WebSocket reconnected signal");
                     self.needs_subscription_replay = true;
-                    return Some(vec![NautilusDataWsMessage::Reconnected]);
+                    return Some(AxDataWsMessage::Reconnected);
                 }
 
                 log::trace!("Raw websocket message: {text}");
 
-                let value: serde_json::Value = match serde_json::from_str(&text) {
-                    Ok(v) => v,
+                match parse_md_message(&text) {
+                    Ok(message) => self.handle_message(message),
                     Err(e) => {
                         log::error!("Failed to parse WebSocket message: {e}: {text}");
-                        return None;
+                        None
                     }
-                };
-
-                self.classify_and_parse_message(value)
+                }
             }
             Message::Binary(data) => {
                 log::debug!("Received binary message with {} bytes", data.len());
@@ -450,206 +421,48 @@ impl FeedHandler {
         }
     }
 
-    fn classify_and_parse_message(
-        &mut self,
-        value: serde_json::Value,
-    ) -> Option<Vec<NautilusDataWsMessage>> {
-        let obj = value.as_object()?;
+    fn handle_message(&mut self, message: AxMdMessage) -> Option<AxDataWsMessage> {
+        match &message {
+            AxMdMessage::Error(error) => {
+                let is_benign = error.message.contains("already subscribed")
+                    || error.message.contains("not subscribed");
 
-        // Check message type field "t"
-        let msg_type = obj.get("t").and_then(|v| v.as_str())?;
-
-        match msg_type {
-            "h" => match serde_json::from_value::<AxMdHeartbeat>(value) {
-                Ok(heartbeat) => {
-                    log::trace!("Received heartbeat ts={}", heartbeat.ts);
-                    Some(vec![NautilusDataWsMessage::Heartbeat])
-                }
-                Err(e) => {
-                    log::error!("Failed to parse heartbeat: {e}");
-                    None
-                }
-            },
-            "s" | "t" => {
-                // Both "s" (with direction) and "t" are trade messages
-                match serde_json::from_value::<AxMdTrade>(value) {
-                    Ok(trade) => {
-                        log::debug!("Received trade: {} {} @ {}", trade.s, trade.q, trade.p);
-
-                        let Some(instrument) = self.instruments.get(&trade.s) else {
-                            log::error!(
-                                "No instrument cached for symbol '{}' - cannot parse trade",
-                                trade.s
-                            );
-                            return None;
-                        };
-
-                        let ts_init = self.generate_ts_init();
-                        match parse_trade_tick(&trade, instrument, ts_init) {
-                            Ok(tick) => {
-                                Some(vec![NautilusDataWsMessage::Data(vec![Data::Trade(tick)])])
-                            }
-                            Err(e) => {
-                                log::error!("Failed to parse trade to TradeTick: {e}");
-                                None
-                            }
-                        }
+                if is_benign {
+                    if let Some(rid) = error.request_id {
+                        self.pending_subscribe_requests.remove(&rid);
                     }
-                    Err(e) => {
-                        log::error!("Failed to parse trade: {e}");
-                        None
+                    log::warn!("Subscription state: {}", error.message);
+                } else {
+                    if let Some(rid) = error.request_id
+                        && let Some(topic) = self.pending_subscribe_requests.remove(&rid)
+                    {
+                        log::warn!(
+                            "Rolling back subscription for topic '{topic}' \
+                             due to error: {}",
+                            error.message
+                        );
+                        self.subscriptions.mark_unsubscribe(&topic);
                     }
+                    log::error!("Received error from exchange: {}", error.message);
                 }
             }
-            "c" => match serde_json::from_value::<AxMdCandle>(value) {
-                Ok(candle) => {
-                    log::debug!(
-                        "Received candle: {} {} O={} C={}",
-                        candle.symbol,
-                        candle.width,
-                        candle.open,
-                        candle.close
-                    );
+            AxMdMessage::SubscriptionResponse(response) => {
+                self.pending_subscribe_requests.remove(&response.rid);
 
-                    let cache_key = (candle.symbol, candle.width);
-
-                    // Only emit when timestamp changes (previous candle closed)
-                    let closed_candle = if let Some(cached) = self.candle_cache.get(&cache_key) {
-                        if cached.ts == candle.ts {
-                            None
-                        } else {
-                            Some(cached.clone())
-                        }
-                    } else {
-                        None
-                    };
-
-                    self.candle_cache.insert(cache_key, candle);
-
-                    let closed = closed_candle?;
-
-                    let Some(instrument) = self.instruments.get(&closed.symbol) else {
-                        log::error!(
-                            "No instrument cached for symbol '{}' - cannot parse candle",
-                            closed.symbol
-                        );
-                        return None;
-                    };
-
-                    let ts_init = self.generate_ts_init();
-                    match parse_candle_bar(&closed, instrument, ts_init) {
-                        Ok(bar) => Some(vec![NautilusDataWsMessage::Bar(bar)]),
-                        Err(e) => {
-                            log::error!("Failed to parse candle to Bar: {e}");
-                            None
-                        }
-                    }
+                if let Some(symbol) = &response.result.subscribed {
+                    log::debug!("Subscription confirmed for symbol: {symbol}");
+                } else if let Some(candle) = &response.result.subscribed_candle {
+                    log::debug!("Candle subscription confirmed: {candle}");
+                } else if let Some(symbol) = &response.result.unsubscribed {
+                    log::debug!("Unsubscription confirmed for symbol: {symbol}");
+                } else if let Some(candle) = &response.result.unsubscribed_candle {
+                    log::debug!("Candle unsubscription confirmed: {candle}");
                 }
-                Err(e) => {
-                    log::error!("Failed to parse candle: {e}");
-                    None
-                }
-            },
-            "1" => match serde_json::from_value::<AxMdBookL1>(value) {
-                Ok(book) => {
-                    log::debug!("Received book L1: {}", book.s);
-
-                    let Some(instrument) = self.instruments.get(&book.s) else {
-                        log::error!(
-                            "No instrument cached for symbol '{}' - cannot parse L1 book",
-                            book.s
-                        );
-                        return None;
-                    };
-
-                    let ts_init = self.generate_ts_init();
-                    match parse_book_l1_quote(&book, instrument, ts_init) {
-                        Ok(quote) => {
-                            Some(vec![NautilusDataWsMessage::Data(vec![Data::Quote(quote)])])
-                        }
-                        Err(e) => {
-                            log::error!("Failed to parse L1 to QuoteTick: {e}");
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to parse book L1: {e}");
-                    None
-                }
-            },
-            "2" => match serde_json::from_value::<AxMdBookL2>(value) {
-                Ok(book) => {
-                    log::debug!(
-                        "Received book L2: {} ({} bids, {} asks)",
-                        book.s,
-                        book.b.len(),
-                        book.a.len()
-                    );
-
-                    let symbol = book.s;
-                    let sequence = self.next_book_sequence(symbol);
-
-                    let Some(instrument) = self.instruments.get(&symbol) else {
-                        log::error!(
-                            "No instrument cached for symbol '{symbol}' - cannot parse L2 book"
-                        );
-                        return None;
-                    };
-
-                    let ts_init = self.generate_ts_init();
-                    match parse_book_l2_deltas(&book, instrument, sequence, ts_init) {
-                        Ok(deltas) => Some(vec![NautilusDataWsMessage::Deltas(deltas)]),
-                        Err(e) => {
-                            log::error!("Failed to parse L2 to OrderBookDeltas: {e}");
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to parse book L2: {e}");
-                    None
-                }
-            },
-            "3" => match serde_json::from_value::<AxMdBookL3>(value) {
-                Ok(book) => {
-                    log::debug!(
-                        "Received book L3: {} ({} bids, {} asks)",
-                        book.s,
-                        book.b.len(),
-                        book.a.len()
-                    );
-
-                    let symbol = book.s;
-                    let sequence = self.next_book_sequence(symbol);
-
-                    let Some(instrument) = self.instruments.get(&symbol) else {
-                        log::error!(
-                            "No instrument cached for symbol '{symbol}' - cannot parse L3 book"
-                        );
-                        return None;
-                    };
-
-                    let ts_init = self.generate_ts_init();
-                    match parse_book_l3_deltas(&book, instrument, sequence, ts_init) {
-                        Ok(deltas) => Some(vec![NautilusDataWsMessage::Deltas(deltas)]),
-                        Err(e) => {
-                            log::error!("Failed to parse L3 to OrderBookDeltas: {e}");
-                            None
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to parse book L3: {e}");
-                    None
-                }
-            },
-            _ => {
-                log::warn!("Unknown message type: {msg_type}");
-                Some(vec![NautilusDataWsMessage::Error(AxWsError::new(format!(
-                    "Unknown message type: {msg_type}"
-                )))])
+                return None;
             }
+            _ => {}
         }
+
+        Some(AxDataWsMessage::MdMessage(message))
     }
 }

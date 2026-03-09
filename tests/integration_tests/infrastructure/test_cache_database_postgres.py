@@ -61,7 +61,7 @@ _TEST_TIMEOUT = 5.0
 _AUDUSD_SIM = TestInstrumentProvider.default_fx_ccy("AUD/USD")
 
 # Requirements:
-# - A Postgres service listening on the default port 5432
+# - A Postgres service listening on the default port 5432 (e.g. `makeinit-services`)
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux",
@@ -298,8 +298,9 @@ class TestCachePostgresAdapter:
 
         # We have to manually sleep and not use eventually
         await eventually(
-            lambda: self.database.load_instrument(_AUDUSD_SIM.id).min_price
-            == Price.from_str("111"),
+            lambda: (
+                self.database.load_instrument(_AUDUSD_SIM.id).min_price == Price.from_str("111")
+            ),
             timeout=_TEST_TIMEOUT,
         )
 

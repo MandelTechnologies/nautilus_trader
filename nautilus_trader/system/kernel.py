@@ -259,6 +259,9 @@ class NautilusKernel:
                     "when not safe to bypass logging in a LIVE context",
                 )
 
+        if logging.use_tracing and not nautilus_pyo3.tracing_is_initialized():
+            nautilus_pyo3.init_tracing()
+
         self._log: Logger = Logger(name=name)
         self._log.info("Building system kernel")
 
@@ -455,7 +458,8 @@ class NautilusKernel:
                 config=config.exec_engine,
             )
 
-        if config.exec_engine and config.exec_engine.load_cache:
+        flush_on_start = config.cache is not None and config.cache.flush_on_start
+        if config.exec_engine and config.exec_engine.load_cache and not flush_on_start:
             self.exec_engine.load_cache()
 
         self._emulator = OrderEmulator(

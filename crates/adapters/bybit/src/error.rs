@@ -15,7 +15,7 @@
 
 //! Unified error handling for the Bybit adapter.
 //!
-//! This module provides a comprehensive error taxonomy that distinguishes between
+//! This module provides an error taxonomy that distinguishes between
 //! retryable, non-retryable, and fatal errors, with proper context preservation
 //! for debugging and operational monitoring.
 
@@ -241,6 +241,7 @@ impl BybitError {
                     .duration_since(std::time::UNIX_EPOCH)
                     .ok()?
                     .as_millis() as u64;
+
                 if timestamp_ms > now_ms {
                     Some(Duration::from_millis(timestamp_ms - now_ms))
                 } else {

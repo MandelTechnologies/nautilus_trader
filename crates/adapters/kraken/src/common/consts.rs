@@ -24,7 +24,7 @@ pub const KRAKEN: &str = "KRAKEN";
 pub static KRAKEN_VENUE: LazyLock<Venue> = LazyLock::new(|| Venue::new(Ustr::from(KRAKEN)));
 
 // API Partner integration identifier
-pub const NAUTILUS_KRAKEN_BROKER_ID: &str = "AA36 N84G VVFC BKUQ";
+pub const NAUTILUS_KRAKEN_BROKER_ID: &str = "AA98 N84G GOPN GL6Y";
 
 // WebSocket-specific constants
 pub const KRAKEN_PONG: &str = "pong";
@@ -42,3 +42,8 @@ pub const KRAKEN_FUTURES_WS_URL: &str = "wss://futures.kraken.com/ws/v1";
 // Demo URLs
 pub const KRAKEN_FUTURES_DEMO_HTTP_URL: &str = "https://demo-futures.kraken.com";
 pub const KRAKEN_FUTURES_DEMO_WS_URL: &str = "wss://demo-futures.kraken.com/ws/v1";
+
+// Post-only rejection reason strings
+pub const KRAKEN_FUTURES_POST_ONLY_REJECT: &str = "post_order_failed_because_it_would_filled";
+pub const KRAKEN_SPOT_POST_ONLY_REJECT: &str = "Post only order";
+pub const KRAKEN_SPOT_POST_ONLY_ERROR: &str = "EOrder:Post only order";

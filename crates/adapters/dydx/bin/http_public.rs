@@ -43,8 +43,10 @@ use nautilus_dydx::{
     common::{consts::DYDX_TESTNET_HTTP_URL, enums::DydxCandleResolution},
     http::client::DydxHttpClient,
 };
-use nautilus_model::instruments::{Instrument, InstrumentAny};
-use ustr::Ustr;
+use nautilus_model::{
+    identifiers::{InstrumentId, Symbol, Venue},
+    instruments::{Instrument, InstrumentAny},
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -84,6 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         instruments.len(),
         elapsed.as_secs_f64()
     );
+
     if show_summary {
         print_instrument_summary(&instruments);
         return Ok(());
@@ -94,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for inst in instruments.iter().take(5) {
             log::info!("   - {} ({})", inst.id().symbol, inst.instrument_class());
         }
+
         if instruments.len() > 5 {
             log::info!("   ... and {} more", instruments.len() - 5);
         }
@@ -101,11 +105,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     client.cache_instruments(instruments.clone());
     log::info!("Cached {} instruments", instruments.len());
-    log::info!("Cached {} instruments", instruments.len());
 
-    let query_symbol = Ustr::from(symbol);
+    // Construct InstrumentId for lookup (symbol is in format "BTC-USD", need "BTC-USD-PERP")
+    let perp_symbol = format!("{symbol}-PERP");
+    let instrument_id = InstrumentId::new(Symbol::new(&perp_symbol), Venue::new("DYDX"));
     let start = std::time::Instant::now();
-    let instrument = client.get_instrument(&query_symbol);
+    let instrument = client.get_instrument(&instrument_id);
     let elapsed = start.elapsed();
 
     match instrument {
@@ -120,14 +125,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::info!("   Size precision: {}", inst.size_precision());
         }
         None => {
-            log::warn!("FAILED: Instrument {query_symbol} not found in cache");
+            log::warn!("FAILED: Instrument {instrument_id} not found in cache");
         }
     }
 
     let limit = Some(100);
 
     let start = std::time::Instant::now();
-    let trades = client.request_trades(symbol, limit).await?;
+    let trades = client.request_trades(symbol, limit, None).await?;
     let elapsed = start.elapsed();
 
     log::info!(
@@ -285,6 +290,7 @@ fn print_instrument_summary(instruments: &[InstrumentAny]) {
     for (base, count) in bases.iter().take(20) {
         log::info!("  {base:10} : {count:4} instruments");
     }
+
     if bases.len() > 20 {
         log::info!("  ... and {} more base assets", bases.len() - 20);
     }
@@ -300,6 +306,7 @@ fn print_instrument_summary(instruments: &[InstrumentAny]) {
             inst.size_precision()
         );
     }
+
     if instruments.len() > 5 {
         log::info!("  ... and {} more", instruments.len() - 5);
     }

@@ -86,7 +86,7 @@ fn test_builder_rejects_backtest_environment() {
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("Backtest"),
-        "Expected Backtest error, got: {err}"
+        "Expected Backtest error, was: {err}"
     );
 }
 

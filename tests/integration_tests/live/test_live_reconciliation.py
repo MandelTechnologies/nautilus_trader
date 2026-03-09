@@ -922,7 +922,7 @@ async def test_targeted_query_limiting_with_retry_accumulation(
     # Check that the remaining 7 orders have retry count incremented
     for order in orders:
         if order.status == OrderStatus.ACCEPTED:
-            # These hit the limit, got retries incremented but not queried
+            # These hit the limit (retries incremented but not queried)
             assert exec_engine._recon_check_retries.get(order.client_order_id, 0) == 6
 
     # Cycle 7: 3 more get queried (total 6 resolved), remaining 4 at retry 7
@@ -1120,9 +1120,11 @@ async def test_position_discrepancy_queries_missing_fills(
 
     # Wait for position to be created
     await eventually(
-        lambda: len(cache.positions_open(instrument_id=AUDUSD_SIM.id)) == 1
-        and cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
-        == Quantity.from_int(50_000),
+        lambda: (
+            len(cache.positions_open(instrument_id=AUDUSD_SIM.id)) == 1
+            and cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
+            == Quantity.from_int(50_000)
+        ),
         timeout=1.0,
     )
 
@@ -1189,8 +1191,10 @@ async def test_position_discrepancy_queries_missing_fills(
 
     # Act - Wait for position check to detect and reconcile the discrepancy
     await eventually(
-        lambda: cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
-        == Quantity.from_int(80_000),
+        lambda: (
+            cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
+            == Quantity.from_int(80_000)
+        ),
         timeout=5.0,  # Increased timeout
     )
 
@@ -1460,9 +1464,11 @@ async def test_position_reconciliation_respects_threshold(
 
     # Wait for position to be created
     await eventually(
-        lambda: len(cache.positions_open(instrument_id=AUDUSD_SIM.id)) == 1
-        and cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
-        == Quantity.from_int(40_000),
+        lambda: (
+            len(cache.positions_open(instrument_id=AUDUSD_SIM.id)) == 1
+            and cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
+            == Quantity.from_int(40_000)
+        ),
         timeout=1.0,
     )
 
@@ -1537,8 +1543,10 @@ async def test_position_reconciliation_respects_threshold(
 
     # Act - Now reconciliation should proceed after threshold expires
     await eventually(
-        lambda: cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
-        == Quantity.from_int(60_000),
+        lambda: (
+            cache.positions_open(instrument_id=AUDUSD_SIM.id)[0].quantity
+            == Quantity.from_int(60_000)
+        ),
         timeout=3.0,
     )
 

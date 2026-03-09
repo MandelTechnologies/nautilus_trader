@@ -16,7 +16,7 @@
 //! Python bindings for the Kraken Futures WebSocket client.
 
 use nautilus_common::live::get_runtime;
-use nautilus_core::python::to_pyruntime_err;
+use nautilus_core::python::{call_python_threadsafe, to_pyruntime_err};
 use nautilus_model::{
     data::{Data, OrderBookDeltas_API},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
@@ -43,7 +43,7 @@ impl KrakenFuturesWebSocketClient {
         heartbeat_secs: Option<u64>,
         api_key: Option<String>,
         api_secret: Option<String>,
-    ) -> PyResult<Self> {
+    ) -> Self {
         let env = environment.unwrap_or(KrakenEnvironment::Mainnet);
         let demo = env == KrakenEnvironment::Demo;
         let url = base_url.unwrap_or_else(|| {
@@ -51,7 +51,7 @@ impl KrakenFuturesWebSocketClient {
         });
         let credential = KrakenCredential::resolve_futures(api_key, api_secret, demo);
 
-        Ok(Self::with_credentials(url, heartbeat_secs, credential))
+        Self::with_credentials(url, heartbeat_secs, credential)
     }
 
     #[getter]
@@ -126,9 +126,12 @@ impl KrakenFuturesWebSocketClient {
     fn py_connect<'py>(
         &mut self,
         py: Python<'py>,
+        loop_: Py<PyAny>,
         instruments: Vec<Py<PyAny>>,
         callback: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let call_soon: Py<PyAny> = loop_.getattr(py, "call_soon_threadsafe")?;
+
         let mut instruments_any = Vec::new();
         for inst in instruments {
             let inst_any = pyobject_to_instrument_any(py, inst)?;
@@ -150,43 +153,43 @@ impl KrakenFuturesWebSocketClient {
                         Python::attach(|py| match msg {
                             KrakenFuturesWsMessage::MarkPrice(update) => {
                                 let py_obj = data_to_pycapsule(py, Data::from(update));
-                                if let Err(e) = callback.call1(py, (py_obj,)) {
-                                    log::error!("Error calling Python callback: {e}");
-                                }
+                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
                             }
                             KrakenFuturesWsMessage::IndexPrice(update) => {
                                 let py_obj = data_to_pycapsule(py, Data::from(update));
-                                if let Err(e) = callback.call1(py, (py_obj,)) {
-                                    log::error!("Error calling Python callback: {e}");
+                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
+                            }
+                            KrakenFuturesWsMessage::FundingRate(update) => {
+                                match update.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert FundingRateUpdate to Python: {e}"
+                                        );
+                                    }
                                 }
                             }
                             KrakenFuturesWsMessage::Quote(quote) => {
                                 let py_obj = data_to_pycapsule(py, Data::from(quote));
-                                if let Err(e) = callback.call1(py, (py_obj,)) {
-                                    log::error!("Error calling Python callback: {e}");
-                                }
+                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
                             }
                             KrakenFuturesWsMessage::Trade(trade) => {
                                 let py_obj = data_to_pycapsule(py, Data::from(trade));
-                                if let Err(e) = callback.call1(py, (py_obj,)) {
-                                    log::error!("Error calling Python callback: {e}");
-                                }
+                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
                             }
                             KrakenFuturesWsMessage::BookDeltas(deltas) => {
                                 let py_obj = data_to_pycapsule(
                                     py,
                                     Data::Deltas(OrderBookDeltas_API::new(deltas)),
                                 );
-                                if let Err(e) = callback.call1(py, (py_obj,)) {
-                                    log::error!("Error calling Python callback: {e}");
-                                }
+                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
                             }
                             KrakenFuturesWsMessage::OrderAccepted(event) => {
                                 match event.into_py_any(py) {
                                     Ok(py_obj) => {
-                                        if let Err(e) = callback.call1(py, (py_obj,)) {
-                                            log::error!("Error calling Python callback: {e}");
-                                        }
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
                                     Err(e) => {
                                         log::error!(
@@ -195,12 +198,22 @@ impl KrakenFuturesWebSocketClient {
                                     }
                                 }
                             }
+                            KrakenFuturesWsMessage::OrderRejected(event) => {
+                                match event.into_py_any(py) {
+                                    Ok(py_obj) => {
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
+                                    }
+                                    Err(e) => {
+                                        log::error!(
+                                            "Failed to convert OrderRejected to Python: {e}"
+                                        );
+                                    }
+                                }
+                            }
                             KrakenFuturesWsMessage::OrderCanceled(event) => {
                                 match event.into_py_any(py) {
                                     Ok(py_obj) => {
-                                        if let Err(e) = callback.call1(py, (py_obj,)) {
-                                            log::error!("Error calling Python callback: {e}");
-                                        }
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
                                     Err(e) => {
                                         log::error!(
@@ -212,9 +225,7 @@ impl KrakenFuturesWebSocketClient {
                             KrakenFuturesWsMessage::OrderExpired(event) => {
                                 match event.into_py_any(py) {
                                     Ok(py_obj) => {
-                                        if let Err(e) = callback.call1(py, (py_obj,)) {
-                                            log::error!("Error calling Python callback: {e}");
-                                        }
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
                                     Err(e) => {
                                         log::error!(
@@ -226,9 +237,7 @@ impl KrakenFuturesWebSocketClient {
                             KrakenFuturesWsMessage::OrderUpdated(event) => {
                                 match event.into_py_any(py) {
                                     Ok(py_obj) => {
-                                        if let Err(e) = callback.call1(py, (py_obj,)) {
-                                            log::error!("Error calling Python callback: {e}");
-                                        }
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
                                     Err(e) => {
                                         log::error!(
@@ -240,9 +249,7 @@ impl KrakenFuturesWebSocketClient {
                             KrakenFuturesWsMessage::OrderStatusReport(report) => {
                                 match (*report).into_py_any(py) {
                                     Ok(py_obj) => {
-                                        if let Err(e) = callback.call1(py, (py_obj,)) {
-                                            log::error!("Error calling Python callback: {e}");
-                                        }
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
                                     Err(e) => {
                                         log::error!(
@@ -254,9 +261,7 @@ impl KrakenFuturesWebSocketClient {
                             KrakenFuturesWsMessage::FillReport(report) => {
                                 match (*report).into_py_any(py) {
                                     Ok(py_obj) => {
-                                        if let Err(e) = callback.call1(py, (py_obj,)) {
-                                            log::error!("Error calling Python callback: {e}");
-                                        }
+                                        call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                     }
                                     Err(e) => {
                                         log::error!("Failed to convert FillReport to Python: {e}");
@@ -382,6 +387,23 @@ impl KrakenFuturesWebSocketClient {
         })
     }
 
+    #[pyo3(name = "subscribe_funding_rate")]
+    fn py_subscribe_funding_rate<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_funding_rate(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
     #[pyo3(name = "unsubscribe_book")]
     fn py_unsubscribe_book<'py>(
         &self,
@@ -461,6 +483,23 @@ impl KrakenFuturesWebSocketClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
                 .unsubscribe_index_price(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "unsubscribe_funding_rate")]
+    fn py_unsubscribe_funding_rate<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_funding_rate(instrument_id)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())

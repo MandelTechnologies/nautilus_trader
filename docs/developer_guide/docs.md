@@ -62,7 +62,7 @@ We follow modern documentation conventions that prioritize readability and acces
 - Use title case for the main page heading (# Level 1 only).
 - Use sentence case for all subheadings (## Level 2 and below).
 - Always capitalize proper nouns regardless of heading level (product names, technologies, companies, acronyms).
-- Ensure proper heading hierarchy (don't skip levels).
+- Use proper heading hierarchy (don't skip levels).
 
 This convention aligns with industry standards used by major technology companies including Google Developer Documentation, Microsoft Docs, and Anthropic's documentation.
 It improves readability, reduces cognitive load, and is more accessible for international users and screen readers.
@@ -90,7 +90,7 @@ It improves readability, reduces cognitive load, and is more accessible for inte
 
 - Use descriptive link text (avoid "click here" or "this link").
 - Reference external documentation when appropriate.
-- Ensure all internal links are relative and accurate.
+- Keep all internal links relative and accurate.
 
 ## Technical terminology
 
@@ -109,13 +109,13 @@ It improves readability, reduces cognitive load, and is more accessible for inte
 
 Use admonition blocks to highlight important information:
 
-| Admonition | Purpose |
-|------------|---------|
-| `:::note` | Supplementary context that clarifies but isn't essential. |
-| `:::info` | Important information the reader should be aware of. |
-| `:::tip` | Helpful suggestions or best practices. |
-| `:::warning` | Potential pitfalls or important caveats. |
-| `:::danger` | Critical issues that could cause data loss or system failure. |
+| Admonition   | Purpose                                                       |
+|--------------|---------------------------------------------------------------|
+| `:::note`    | Supplementary context that clarifies but isn't essential.     |
+| `:::info`    | Important information the reader should be aware of.          |
+| `:::tip`     | Helpful suggestions or best practices.                        |
+| `:::warning` | Potential pitfalls or important caveats.                      |
+| `:::danger`  | Critical issues that could cause data loss or system failure. |
 
 Avoid overusing admonitions; too many diminish their impact.
 

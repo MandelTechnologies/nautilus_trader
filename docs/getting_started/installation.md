@@ -48,7 +48,6 @@ Install optional dependencies as 'extras' for specific integrations:
 
 - `betfair`: Betfair adapter (integration) dependencies.
 - `docker`: Needed for Docker when using the IB gateway (with the Interactive Brokers adapter).
-- `dydx`: dYdX adapter (integration) dependencies.
 - `ib`: Interactive Brokers adapter (integration) dependencies.
 - `polymarket`: Polymarket adapter (integration) dependencies.
 - `visualization`: Plotly-based interactive tearsheets and charts.
@@ -145,7 +144,7 @@ curl -s https://packages.nautechsystems.io/simple/nautilus-trader/index.html | g
 All release artifacts (wheels and source distributions) published to PyPI, GitHub Releases,
 and the Nautech Systems package index include cryptographic attestations that prove their authenticity and build provenance.
 
-These attestations are generated automatically during the CI/CD pipeline using [SLSA](https://slsa.dev/) build provenance, and can be verified to ensure:
+These attestations are generated automatically during the CI/CD pipeline using [SLSA](https://slsa.dev/) build provenance, and can be verified to confirm:
 
 - The artifact was built by the official NautilusTrader GitHub Actions workflow.
 - The artifact corresponds to a specific commit SHA in the repository.

@@ -30,7 +30,6 @@ use nautilus_core::{
 };
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Serialize};
-use ustr::Ustr;
 
 use crate::{
     enums::{InstrumentClass, OrderSide, OrderSideSpecified, PositionAdjustmentType, PositionSide},
@@ -51,7 +50,7 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct Position {
     pub events: Vec<OrderFilled>,
@@ -333,9 +332,9 @@ impl Position {
                 self.id,
                 self.account_id,
                 PositionAdjustmentType::Commission,
-                Some(commission.as_decimal()),
+                Some(-commission.as_decimal()),
                 None,
-                Some(Ustr::from(fill.client_order_id.as_ref())),
+                Some(fill.client_order_id.inner()),
                 UUID4::new(),
                 fill.ts_event,
                 fill.ts_init,
@@ -343,20 +342,15 @@ impl Position {
             self.apply_adjustment(adjustment);
         }
 
-        // SAFETY: size_precision is valid from instrument
+        // size_precision is valid from instrument
         self.quantity = Quantity::new(self.signed_qty.abs(), self.size_precision);
         if self.quantity > self.peak_qty {
             self.peak_qty = self.quantity;
         }
 
-        if self.signed_qty > 0.0 {
-            self.entry = OrderSide::Buy;
-            self.side = PositionSide::Long;
-        } else if self.signed_qty < 0.0 {
-            self.entry = OrderSide::Sell;
-            self.side = PositionSide::Short;
-        } else {
+        if self.quantity.is_zero() {
             self.side = PositionSide::Flat;
+            self.signed_qty = 0.0; // Normalize
             self.closing_order_id = Some(fill.client_order_id);
             self.ts_closed = Some(fill.ts_event);
             self.duration_ns = if let Some(ts_closed) = self.ts_closed {
@@ -364,6 +358,12 @@ impl Position {
             } else {
                 0
             };
+        } else if self.signed_qty > 0.0 {
+            self.entry = OrderSide::Buy;
+            self.side = PositionSide::Long;
+        } else {
+            self.entry = OrderSide::Sell;
+            self.side = PositionSide::Short;
         }
 
         self.ts_last = fill.ts_event;
@@ -411,8 +411,14 @@ impl Position {
             self.settlement_currency,
         ));
 
+        let was_short = self.signed_qty < 0.0;
         self.signed_qty += last_qty;
         self.buy_qty = self.buy_qty + last_qty_object;
+
+        // Position reversed from short to long
+        if was_short && self.signed_qty > 0.0 {
+            self.avg_px_open = last_px;
+        }
     }
 
     fn handle_sell_order_fill(&mut self, fill: &OrderFilled) {
@@ -457,8 +463,14 @@ impl Position {
             self.settlement_currency,
         ));
 
+        let was_long = self.signed_qty > 0.0;
         self.signed_qty -= last_qty;
         self.sell_qty = self.sell_qty + last_qty_object;
+
+        // Position reversed from long to short
+        if was_long && self.signed_qty < 0.0 {
+            self.avg_px_open = last_px;
+        }
     }
 
     /// Applies a position adjustment event.
@@ -495,19 +507,23 @@ impl Position {
             });
         }
 
-        // Update position state based on new signed quantity
-        if self.signed_qty > 0.0 {
+        // Update position state based on quantity (source of truth for zero check)
+        // This handles floating-point precision edge cases
+        if self.quantity.is_zero() {
+            self.side = PositionSide::Flat;
+            self.signed_qty = 0.0; // Normalize
+        } else if self.signed_qty > 0.0 {
             self.side = PositionSide::Long;
+
             if self.entry == OrderSide::NoOrderSide {
                 self.entry = OrderSide::Buy;
             }
-        } else if self.signed_qty < 0.0 {
+        } else {
             self.side = PositionSide::Short;
+
             if self.entry == OrderSide::NoOrderSide {
                 self.entry = OrderSide::Sell;
             }
-        } else {
-            self.side = PositionSide::Flat;
         }
 
         self.adjustments.push(adjustment);
@@ -630,6 +646,7 @@ impl Position {
                 "Cannot calculate inverse points: open price is zero or too small ({avg_px_open})"
             );
         }
+
         if avg_px_close.abs() < EPSILON {
             anyhow::bail!(
                 "Cannot calculate inverse points: close price is zero or too small ({avg_px_close})"
@@ -795,10 +812,16 @@ impl Position {
     ///
     /// # Panics
     ///
-    /// Panics if `self.base_currency` is `None`.
+    /// Panics if `self.base_currency` is `None`, or if `last` is not a positive price for
+    /// inverse instruments.
     #[must_use]
     pub fn notional_value(&self, last: Price) -> Money {
         if self.is_inverse {
+            check_predicate_true(
+                last.is_positive(),
+                "last price must be positive for inverse instrument",
+            )
+            .expect(FAILED);
             Money::new(
                 self.quantity.as_f64() * self.multiplier.as_f64() * (1.0 / last.as_f64()),
                 self.base_currency.unwrap(),
@@ -879,7 +902,7 @@ impl Hash for Position {
 
 impl Display for Position {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let quantity_str = if self.quantity == Quantity::zero(self.price_precision) {
+        let quantity_str = if self.quantity == Quantity::zero(self.size_precision) {
             String::new()
         } else {
             self.quantity.to_formatted_string() + " "
@@ -2896,7 +2919,7 @@ mod tests {
             .quantity(Quantity::from("1.0"))
             .build();
 
-        // Buy 1.0 BTC with 0.001 BTC commission (stored as negative)
+        // Buy 1.0 BTC with 0.001 BTC commission
         let fill = TestOrderEventStubs::filled(
             &order,
             &btc_usdt,
@@ -2905,7 +2928,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -2956,7 +2979,7 @@ mod tests {
             .quantity(Quantity::from("1.0"))
             .build();
 
-        // Sell 1.0 BTC with 0.001 BTC commission (stored as negative)
+        // Sell 1.0 BTC with 0.001 BTC commission
         let fill = TestOrderEventStubs::filled(
             &order,
             &btc_usdt,
@@ -2965,7 +2988,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3027,7 +3050,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-50.0, Currency::USD())),
+            Some(Money::new(50.0, Currency::USD())),
             None,
             None,
         );
@@ -3070,7 +3093,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3093,7 +3116,7 @@ mod tests {
             Some(Price::from("51000.0")),
             Some(Quantity::from("0.999")),
             None,
-            Some(Money::new(-50.0, Currency::USD())), // Quote currency commission - no adjustment
+            Some(Money::new(50.0, Currency::USD())), // Quote currency commission - no adjustment
             None,
             None,
         );
@@ -3121,7 +3144,7 @@ mod tests {
             Some(Price::from("52000.0")),
             Some(Quantity::from("2.0")),
             None,
-            Some(Money::new(-0.002, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.002, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3162,7 +3185,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3206,7 +3229,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3230,7 +3253,7 @@ mod tests {
             Some(Price::from("51000.0")),
             Some(Quantity::from("2.0")),
             None,
-            Some(Money::new(-0.002, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.002, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3281,7 +3304,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3323,7 +3346,7 @@ mod tests {
             Some(Price::from("51000.0")),
             Some(Quantity::from("2.0")),
             None,
-            Some(Money::new(-0.002, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.002, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3382,7 +3405,7 @@ mod tests {
             Some(Price::from("50000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, btc_usdt.base_currency().unwrap())),
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
             None,
             None,
         );
@@ -3432,7 +3455,7 @@ mod tests {
             Some(Price::from("3000.0")),
             Some(Quantity::from("1.0")),
             None,
-            Some(Money::new(-0.001, eth_perp.base_currency().unwrap())),
+            Some(Money::new(0.001, eth_perp.base_currency().unwrap())),
             None,
             None,
         );
@@ -3517,5 +3540,417 @@ mod tests {
 
         assert_eq!(position.side, PositionSide::Flat);
         assert_eq!(position.signed_decimal_qty(), Decimal::ZERO);
+    }
+
+    #[rstest]
+    fn test_position_flat_with_floating_point_precision_edge_case() {
+        // This test verifies that when signed_qty has accumulated floating-point
+        // errors (tiny non-zero value) but quantity rounds to zero, the position
+        // correctly becomes FLAT with signed_qty normalized to 0.0
+        let btc_usdt = currency_pair_btcusdt();
+        let btc_usdt = InstrumentAny::CurrencyPair(btc_usdt);
+
+        let order1 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(btc_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.123456789"))
+            .build();
+        let fill1 = TestOrderEventStubs::filled(
+            &order1,
+            &btc_usdt,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("50000.00")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut position = Position::new(&btc_usdt, fill1.into());
+
+        assert_eq!(position.side, PositionSide::Long);
+        assert!(position.quantity.is_positive());
+
+        let order2 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(btc_usdt.id())
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.123456789"))
+            .build();
+        let fill2 = TestOrderEventStubs::filled(
+            &order2,
+            &btc_usdt,
+            Some(TradeId::new("2")),
+            None,
+            Some(Price::from("50000.00")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        position.apply(&fill2.into());
+
+        assert_eq!(
+            position.side,
+            PositionSide::Flat,
+            "Position should be FLAT, not {:?}",
+            position.side
+        );
+        assert!(
+            position.quantity.is_zero(),
+            "Quantity should be zero, was {}",
+            position.quantity
+        );
+        assert_eq!(
+            position.signed_qty, 0.0,
+            "signed_qty should be normalized to 0.0, was {}",
+            position.signed_qty
+        );
+        assert!(position.is_closed());
+    }
+
+    #[rstest]
+    fn test_position_adjustment_floating_point_precision_edge_case() {
+        // Test that apply_adjustment handles precision edge cases correctly
+        let btc_usdt = currency_pair_btcusdt();
+        let btc_usdt = InstrumentAny::CurrencyPair(btc_usdt);
+
+        let order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(btc_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("1.0"))
+            .build();
+        let fill = TestOrderEventStubs::filled(
+            &order,
+            &btc_usdt,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("50000.00")),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut position = Position::new(&btc_usdt, fill.into());
+
+        let adjustment = PositionAdjusted::new(
+            position.trader_id,
+            position.strategy_id,
+            position.instrument_id,
+            position.id,
+            position.account_id,
+            PositionAdjustmentType::Commission,
+            Some(Decimal::from_str("-1.0").unwrap()),
+            None,
+            None,
+            uuid4(),
+            UnixNanos::default(),
+            UnixNanos::default(),
+        );
+        position.apply_adjustment(adjustment);
+
+        assert_eq!(
+            position.side,
+            PositionSide::Flat,
+            "Position should be FLAT after zeroing adjustment"
+        );
+        assert!(
+            position.quantity.is_zero(),
+            "Quantity should be zero after adjustment"
+        );
+        assert_eq!(
+            position.signed_qty, 0.0,
+            "signed_qty should be normalized to 0.0"
+        );
+    }
+
+    #[rstest]
+    fn test_position_spot_buy_partial_fills_with_base_commission() {
+        // Reproduce GitHub issue #3546: partial fills with base currency commission
+        // should reduce position quantity, not increase it
+        let eth_usdt = currency_pair_ethusdt();
+        let eth_usdt = InstrumentAny::CurrencyPair(eth_usdt);
+
+        let order1 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.00350"))
+            .build();
+
+        let fill1 = TestOrderEventStubs::filled(
+            &order1,
+            &eth_usdt,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("2042.69")),
+            Some(Quantity::from("0.00350")),
+            None,
+            Some(Money::new(0.00001, eth_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        let mut position = Position::new(&eth_usdt, fill1.into());
+
+        assert_eq!(position.quantity, Quantity::from("0.00349"));
+        assert!((position.signed_qty - 0.00349).abs() < 1e-9);
+        assert_eq!(position.side, PositionSide::Long);
+        assert_eq!(position.adjustments.len(), 1);
+        assert_eq!(
+            position.adjustments[0].quantity_change,
+            Some(rust_decimal_macros::dec!(-0.00001))
+        );
+
+        let order2 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.00350"))
+            .build();
+
+        let fill2 = TestOrderEventStubs::filled(
+            &order2,
+            &eth_usdt,
+            Some(TradeId::new("2")),
+            None,
+            Some(Price::from("2042.69")),
+            Some(Quantity::from("0.00350")),
+            None,
+            Some(Money::new(0.00001, eth_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        position.apply(&fill2.into());
+
+        assert_eq!(position.quantity, Quantity::from("0.00698"));
+        assert!((position.signed_qty - 0.00698).abs() < 1e-9);
+        assert_eq!(position.adjustments.len(), 2);
+
+        let order3 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.00300"))
+            .build();
+
+        let fill3 = TestOrderEventStubs::filled(
+            &order3,
+            &eth_usdt,
+            Some(TradeId::new("3")),
+            None,
+            Some(Price::from("2042.69")),
+            Some(Quantity::from("0.00300")),
+            None,
+            Some(Money::new(0.00001, eth_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        position.apply(&fill3.into());
+
+        // Total filled: 0.01000, total commission: 0.00003
+        // Position should be 0.01000 - 0.00003 = 0.00997
+        assert_eq!(position.quantity, Quantity::from("0.00997"));
+        assert!((position.signed_qty - 0.00997).abs() < 1e-9);
+        assert_eq!(position.side, PositionSide::Long);
+        assert_eq!(position.adjustments.len(), 3);
+
+        // buy_qty tracks order fill amounts, not commission-adjusted
+        assert_eq!(position.buy_qty, Quantity::from("0.01000"));
+    }
+
+    #[rstest]
+    fn test_position_spot_sell_partial_fills_with_base_commission() {
+        let btc_usdt = currency_pair_btcusdt();
+        let btc_usdt = InstrumentAny::CurrencyPair(btc_usdt);
+
+        let order1 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(btc_usdt.id())
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.5"))
+            .build();
+
+        let fill1 = TestOrderEventStubs::filled(
+            &order1,
+            &btc_usdt,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("50000.0")),
+            Some(Quantity::from("0.5")),
+            None,
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        let mut position = Position::new(&btc_usdt, fill1.into());
+
+        // Short: sold 0.5 + paid 0.001 commission = -0.501 exposure
+        assert!((position.signed_qty - (-0.501)).abs() < 1e-9);
+        assert_eq!(position.side, PositionSide::Short);
+        assert_eq!(position.adjustments.len(), 1);
+
+        let order2 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(btc_usdt.id())
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.5"))
+            .build();
+
+        let fill2 = TestOrderEventStubs::filled(
+            &order2,
+            &btc_usdt,
+            Some(TradeId::new("2")),
+            None,
+            Some(Price::from("50000.0")),
+            Some(Quantity::from("0.5")),
+            None,
+            Some(Money::new(0.001, btc_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        position.apply(&fill2.into());
+
+        // Total short: 1.0 sold + 0.002 commission = -1.002
+        assert!((position.signed_qty - (-1.002)).abs() < 1e-9);
+        assert!((position.quantity.as_f64() - 1.002).abs() < 1e-9);
+        assert_eq!(position.adjustments.len(), 2);
+        assert_eq!(position.sell_qty, Quantity::from("1.0"));
+    }
+
+    #[rstest]
+    fn test_position_spot_round_trip_close_flat_with_quote_commission() {
+        let eth_usdt = currency_pair_ethusdt();
+        let eth_usdt = InstrumentAny::CurrencyPair(eth_usdt);
+
+        let buy_order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("1.00000"))
+            .build();
+
+        let buy_fill = TestOrderEventStubs::filled(
+            &buy_order,
+            &eth_usdt,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("2000.00")),
+            Some(Quantity::from("1.00000")),
+            None,
+            Some(Money::new(0.001, eth_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        let mut position = Position::new(&eth_usdt, buy_fill.into());
+
+        // Position = 1.0 - 0.001 = 0.999
+        assert_eq!(position.quantity, Quantity::from("0.99900"));
+        assert_eq!(position.side, PositionSide::Long);
+
+        let sell_order = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Sell)
+            .quantity(Quantity::from("0.99900"))
+            .build();
+
+        let sell_fill = TestOrderEventStubs::filled(
+            &sell_order,
+            &eth_usdt,
+            Some(TradeId::new("2")),
+            None,
+            Some(Price::from("2100.00")),
+            Some(Quantity::from("0.99900")),
+            None,
+            Some(Money::new(2.0, Currency::USDT())),
+            None,
+            None,
+        );
+
+        position.apply(&sell_fill.into());
+
+        assert_eq!(position.side, PositionSide::Flat);
+        assert_eq!(position.signed_qty, 0.0);
+        assert!(position.is_closed());
+        // Only 1 adjustment from the buy (quote commission doesn't create adjustment)
+        assert_eq!(position.adjustments.len(), 1);
+
+        // PnL: 0.999 ETH * $100 price move = $99.90, minus $2 commission
+        let realized = position.realized_pnl.unwrap().as_f64();
+        assert!(
+            (realized - 97.9).abs() < 0.01,
+            "Realized PnL should be ~97.90 USDT, was {realized}"
+        );
+    }
+
+    #[rstest]
+    fn test_position_spot_commission_accumulation_multiple_partial_fills() {
+        let eth_usdt = currency_pair_ethusdt();
+        let eth_usdt = InstrumentAny::CurrencyPair(eth_usdt);
+
+        let order1 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.50000"))
+            .build();
+
+        let fill1 = TestOrderEventStubs::filled(
+            &order1,
+            &eth_usdt,
+            Some(TradeId::new("1")),
+            None,
+            Some(Price::from("2000.00")),
+            Some(Quantity::from("0.50000")),
+            None,
+            Some(Money::new(0.0005, eth_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        let mut position = Position::new(&eth_usdt, fill1.into());
+
+        let order2 = OrderTestBuilder::new(OrderType::Market)
+            .instrument_id(eth_usdt.id())
+            .side(OrderSide::Buy)
+            .quantity(Quantity::from("0.50000"))
+            .build();
+
+        let fill2 = TestOrderEventStubs::filled(
+            &order2,
+            &eth_usdt,
+            Some(TradeId::new("2")),
+            None,
+            Some(Price::from("2010.00")),
+            Some(Quantity::from("0.50000")),
+            None,
+            Some(Money::new(0.0005, eth_usdt.base_currency().unwrap())),
+            None,
+            None,
+        );
+
+        position.apply(&fill2.into());
+
+        // Total: 1.0 filled, 0.001 total commission
+        assert_eq!(position.quantity, Quantity::from("0.99900"));
+        assert_eq!(position.buy_qty, Quantity::from("1.00000"));
+
+        assert_eq!(position.adjustments.len(), 2);
+        for adj in &position.adjustments {
+            assert_eq!(adj.adjustment_type, PositionAdjustmentType::Commission);
+            assert_eq!(
+                adj.quantity_change,
+                Some(rust_decimal_macros::dec!(-0.0005))
+            );
+        }
+
+        let commissions = position.commissions();
+        assert_eq!(commissions.len(), 1);
+        let eth_commission = commissions[0];
+        assert!(
+            (eth_commission.as_f64() - 0.001).abs() < 1e-9,
+            "Total ETH commission should be 0.001, was {}",
+            eth_commission.as_f64()
+        );
     }
 }

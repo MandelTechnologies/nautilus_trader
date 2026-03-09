@@ -15,12 +15,16 @@
 
 //! Type stubs to facilitate testing.
 
-use nautilus_core::UnixNanos;
+use std::sync::Arc;
+
+use nautilus_core::{Params, UnixNanos};
 use rstest::fixture;
+use serde::{Deserialize, Serialize};
 
 use super::{
-    Bar, BarSpecification, BarType, DEPTH10_LEN, InstrumentStatus, OrderBookDelta, OrderBookDeltas,
-    OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
+    Bar, BarSpecification, BarType, CustomData, CustomDataTrait, DEPTH10_LEN, DataType, HasTsInit,
+    InstrumentStatus, OrderBookDelta, OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+    close::InstrumentClose, register_custom_data_json,
 };
 use crate::{
     data::order::BookOrder,
@@ -379,6 +383,7 @@ pub struct OrderBookDeltaTestBuilder {
     book_order: Option<BookOrder>,
     flags: Option<u8>,
     sequence: Option<u64>,
+    ts_event: Option<UnixNanos>,
 }
 
 impl OrderBookDeltaTestBuilder {
@@ -389,6 +394,7 @@ impl OrderBookDeltaTestBuilder {
             book_order: None,
             flags: None,
             sequence: None,
+            ts_event: None,
         }
     }
 
@@ -433,6 +439,11 @@ impl OrderBookDeltaTestBuilder {
         self.sequence.unwrap_or(1)
     }
 
+    pub fn ts_event(&mut self, ts_event: UnixNanos) -> &mut Self {
+        self.ts_event = Some(ts_event);
+        self
+    }
+
     pub fn build(&self) -> OrderBookDelta {
         OrderBookDelta::new(
             self.instrument_id,
@@ -440,8 +451,80 @@ impl OrderBookDeltaTestBuilder {
             self.get_book_order(),
             self.get_flags(),
             self.get_sequence(),
-            UnixNanos::from(1),
+            self.ts_event.unwrap_or(UnixNanos::from(1)),
             UnixNanos::from(2),
         )
     }
+}
+
+/// Stub custom data type for integration tests (e.g. Redis cache).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StubCustomData {
+    pub ts_init: UnixNanos,
+    pub value: i64,
+}
+
+impl HasTsInit for StubCustomData {
+    fn ts_init(&self) -> UnixNanos {
+        self.ts_init
+    }
+}
+
+impl CustomDataTrait for StubCustomData {
+    fn type_name(&self) -> &'static str {
+        "StubCustomData"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn ts_event(&self) -> UnixNanos {
+        self.ts_init
+    }
+    fn to_json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+    fn clone_arc(&self) -> Arc<dyn CustomDataTrait> {
+        Arc::new(self.clone())
+    }
+    fn eq_arc(&self, other: &dyn CustomDataTrait) -> bool {
+        if let Some(o) = other.as_any().downcast_ref::<Self>() {
+            self == o
+        } else {
+            false
+        }
+    }
+
+    #[cfg(feature = "python")]
+    fn to_pyobject(&self, _py: pyo3::Python<'_>) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
+        unimplemented!()
+    }
+
+    fn type_name_static() -> &'static str {
+        "StubCustomData"
+    }
+    fn from_json(value: serde_json::Value) -> anyhow::Result<Arc<dyn CustomDataTrait>> {
+        let parsed: Self = serde_json::from_value(value)?;
+        Ok(Arc::new(parsed))
+    }
+}
+
+/// Registers `StubCustomData` for JSON roundtrip; call once before tests that persist custom data.
+pub fn ensure_stub_custom_data_registered() {
+    let _ = register_custom_data_json::<StubCustomData>();
+}
+
+/// Builds a `CustomData` stub for tests (e.g. Redis add/load).
+pub fn stub_custom_data(
+    ts_init: u64,
+    value: i64,
+    metadata: Option<Params>,
+    identifier: Option<String>,
+) -> CustomData {
+    ensure_stub_custom_data_registered();
+    let inner = StubCustomData {
+        ts_init: UnixNanos::from(ts_init),
+        value,
+    };
+    let data_type = DataType::new("StubCustomData", metadata, identifier);
+    CustomData::new(Arc::new(inner), data_type)
 }

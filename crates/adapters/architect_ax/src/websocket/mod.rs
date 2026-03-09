@@ -31,13 +31,12 @@ pub mod data;
 pub mod error;
 pub mod messages;
 pub mod orders;
+pub mod parse;
 
 pub use data::{
     AxMdWebSocketClient, AxWsClientError, AxWsResult, HandlerCommand as DataHandlerCommand,
 };
-pub use messages::{
-    AxOrdersWsMessage, AxWsError, NautilusDataWsMessage, NautilusExecWsMessage, OrderMetadata,
-};
+pub use messages::{AxDataWsMessage, AxOrdersWsMessage, AxWsError, AxWsOrderEvent, OrderMetadata};
 pub use orders::{
     AxOrdersWebSocketClient, AxOrdersWsClientError, AxOrdersWsResult,
     HandlerCommand as OrdersHandlerCommand,

@@ -141,7 +141,7 @@ If both `demo` and `testnet` are set to `True`, demo takes priority.
 
 Bybit offers a flexible combination of trigger types, enabling a broader range of Nautilus orders.
 All the order types listed below can be used as *either* entries or exits, except for trailing stops
-(which utilize a position-related API).
+(which use a position-related API).
 
 ### Order types
 
@@ -561,6 +561,7 @@ The product types for each client must be specified in the configurations.
 | `use_http_batch_api`             | `False` | Use Bybit's HTTP batch trading API (deprecated). |
 | `use_spot_position_reports`      | `False` | Report Spot wallet balances as positions when `True`. |
 | `auto_repay_spot_borrows`        | `True`  | Automatically repay Spot margin borrows after BUY orders fully fill (Spot only). |
+| `repay_queue_interval_secs`      | `1.0`   | Interval (seconds) between processing repayment queues for spot borrows. |
 | `ignore_uncached_instrument_executions` | `False` | Ignore execution messages for instruments not yet cached. |
 | `max_retries`                    | `None` | Maximum retry attempts for order submission/cancel/modify calls. |
 | `retry_delay_initial_ms`         | `None` | Initial delay (milliseconds) between retries. |
@@ -588,7 +589,7 @@ config = TradingNodeConfig(
             "api_key": "YOUR_BYBIT_API_KEY",
             "api_secret": "YOUR_BYBIT_API_SECRET",
             "base_url_http": None,  # Override with custom endpoint
-            "product_types": [BybitProductType.LINEAR]
+            "product_types": [BybitProductType.LINEAR],
             "testnet": False,
         },
     },
@@ -597,7 +598,7 @@ config = TradingNodeConfig(
             "api_key": "YOUR_BYBIT_API_KEY",
             "api_secret": "YOUR_BYBIT_API_SECRET",
             "base_url_http": None,  # Override with custom endpoint
-            "product_types": [BybitProductType.LINEAR]
+            "product_types": [BybitProductType.LINEAR],
             "testnet": False,
         },
     },

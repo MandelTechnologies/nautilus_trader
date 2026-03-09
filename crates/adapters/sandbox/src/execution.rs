@@ -23,29 +23,30 @@ use nautilus_common::{
     cache::Cache,
     clients::ExecutionClient,
     clock::Clock,
+    factories::OrderEventFactory,
     messages::execution::{
         BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
         GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
         ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
     },
-    msgbus::{self, MStr, Pattern, TypedHandler},
+    msgbus::{self, MStr, MessagingSwitchboard, Pattern, TypedHandler},
 };
 use nautilus_core::{UnixNanos, WeakCell};
 use nautilus_execution::{
-    client::base::ExecutionClientCore,
+    client::core::ExecutionClientCore,
     matching_engine::adapter::OrderEngineAdapter,
     models::{
         fee::{FeeModelAny, MakerTakerFeeModel},
-        fill::FillModel,
+        fill::FillModelAny,
     },
 };
 use nautilus_model::{
     accounts::AccountAny,
     data::{Bar, OrderBookDeltas, QuoteTick, TradeTick},
     enums::OmsType,
-    identifiers::{AccountId, ClientId, InstrumentId, Venue},
+    identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, Venue},
     instruments::{Instrument, InstrumentAny},
-    orders::Order,
+    orders::{Order, OrderAny},
     reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance, Money},
 };
@@ -56,18 +57,18 @@ use crate::config::SandboxExecutionClientConfig;
 ///
 /// This is wrapped in `Rc<RefCell<>>` so message handlers can hold weak references.
 struct SandboxInner {
+    /// Dynamic clock for matching engines.
+    clock: Rc<RefCell<dyn Clock>>,
+    /// Reference to the cache.
+    cache: Rc<RefCell<Cache>>,
+    /// The sandbox configuration.
+    config: SandboxExecutionClientConfig,
     /// Matching engines per instrument.
     matching_engines: AHashMap<InstrumentId, OrderEngineAdapter>,
     /// Next raw ID assigned to a matching engine.
     next_engine_raw_id: u32,
     /// Current account balances.
     balances: AHashMap<String, Money>,
-    /// Reference to the clock.
-    clock: Rc<RefCell<dyn Clock>>,
-    /// Reference to the cache.
-    cache: Rc<RefCell<Cache>>,
-    /// The sandbox configuration.
-    config: SandboxExecutionClientConfig,
 }
 
 impl SandboxInner {
@@ -77,7 +78,7 @@ impl SandboxInner {
 
         if !self.matching_engines.contains_key(&instrument_id) {
             let engine_config = self.config.to_matching_engine_config();
-            let fill_model = FillModel::default();
+            let fill_model = FillModelAny::default();
             let fee_model = FeeModelAny::MakerTaker(MakerTakerFeeModel);
             let raw_id = self.next_engine_raw_id;
             self.next_engine_raw_id = self.next_engine_raw_id.wrapping_add(1);
@@ -107,6 +108,7 @@ impl SandboxInner {
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
         if let Some(instrument) = instrument {
             self.ensure_matching_engine(&instrument);
+
             if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
                 engine.get_engine_mut().process_quote_tick(quote);
             }
@@ -124,6 +126,7 @@ impl SandboxInner {
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
         if let Some(instrument) = instrument {
             self.ensure_matching_engine(&instrument);
+
             if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
                 engine.get_engine_mut().process_trade_tick(trade);
             }
@@ -141,8 +144,24 @@ impl SandboxInner {
         let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
         if let Some(instrument) = instrument {
             self.ensure_matching_engine(&instrument);
+
             if let Some(engine) = self.matching_engines.get_mut(&instrument_id) {
                 engine.get_engine_mut().process_bar(bar);
+            }
+        }
+    }
+
+    fn process_order_book_deltas(&mut self, deltas: &OrderBookDeltas) {
+        let instrument_id = deltas.instrument_id;
+
+        let instrument = self.cache.borrow().instrument(&instrument_id).cloned();
+        if let Some(instrument) = instrument {
+            self.ensure_matching_engine(&instrument);
+
+            if let Some(engine) = self.matching_engines.get_mut(&instrument_id)
+                && let Err(e) = engine.get_engine_mut().process_order_book_deltas(deltas)
+            {
+                log::error!("Error processing order book deltas: {e}");
             }
         }
     }
@@ -150,6 +169,8 @@ impl SandboxInner {
 
 /// Registered message handlers for later deregistration.
 struct RegisteredHandlers {
+    deltas_pattern: MStr<Pattern>,
+    deltas_handler: TypedHandler<OrderBookDeltas>,
     quote_pattern: MStr<Pattern>,
     quote_handler: TypedHandler<QuoteTick>,
     trade_pattern: MStr<Pattern>,
@@ -166,16 +187,14 @@ struct RegisteredHandlers {
 pub struct SandboxExecutionClient {
     /// The core execution client functionality.
     core: RefCell<ExecutionClientCore>,
+    /// Factory for generating order events.
+    factory: OrderEventFactory,
     /// The sandbox configuration.
     config: SandboxExecutionClientConfig,
     /// Inner state wrapped for handler access.
     inner: Rc<RefCell<SandboxInner>>,
     /// Registered message handlers for cleanup.
     handlers: RefCell<Option<RegisteredHandlers>>,
-    /// Whether the client is started.
-    started: RefCell<bool>,
-    /// Whether the client is connected.
-    connected: RefCell<bool>,
     /// Reference to the clock.
     clock: Rc<RefCell<dyn Clock>>,
     /// Reference to the cache.
@@ -187,7 +206,7 @@ impl Debug for SandboxExecutionClient {
         f.debug_struct(stringify!(SandboxExecutionClient))
             .field("venue", &self.config.venue)
             .field("account_id", &self.core.borrow().account_id)
-            .field("connected", &*self.connected.borrow())
+            .field("connected", &self.core.borrow().is_connected())
             .field(
                 "matching_engines",
                 &self.inner.borrow().matching_engines.len(),
@@ -211,21 +230,27 @@ impl SandboxExecutionClient {
         }
 
         let inner = Rc::new(RefCell::new(SandboxInner {
-            matching_engines: AHashMap::new(),
-            next_engine_raw_id: 0,
-            balances,
             clock: clock.clone(),
             cache: cache.clone(),
             config: config.clone(),
+            matching_engines: AHashMap::new(),
+            next_engine_raw_id: 0,
+            balances,
         }));
+
+        let factory = OrderEventFactory::new(
+            core.trader_id,
+            core.account_id,
+            core.account_type,
+            core.base_currency,
+        );
 
         Self {
             core: RefCell::new(core),
+            factory,
             config,
             inner,
             handlers: RefCell::new(None),
-            started: RefCell::new(false),
-            connected: RefCell::new(false),
             clock,
             cache,
         }
@@ -245,8 +270,8 @@ impl SandboxExecutionClient {
 
     /// Registers message handlers for market data subscriptions.
     ///
-    /// This subscribes to quotes, trades, and bars for the configured venue,
-    /// routing all received data to the matching engines.
+    /// This subscribes to order book deltas, quotes, trades, and bars for the
+    /// configured venue, routing all received data to the matching engines.
     fn register_message_handlers(&self) {
         if self.handlers.borrow().is_some() {
             log::warn!("Sandbox message handlers already registered");
@@ -255,6 +280,18 @@ impl SandboxExecutionClient {
 
         let inner_weak = WeakCell::from(Rc::downgrade(&self.inner));
         let venue = self.config.venue;
+
+        // Order book deltas handler
+        let deltas_handler = {
+            let inner = inner_weak.clone();
+            TypedHandler::from(move |deltas: &OrderBookDeltas| {
+                if deltas.instrument_id.venue == venue
+                    && let Some(inner_rc) = inner.upgrade()
+                {
+                    inner_rc.borrow_mut().process_order_book_deltas(deltas);
+                }
+            })
+        };
 
         // Quote tick handler
         let quote_handler = {
@@ -292,17 +329,21 @@ impl SandboxExecutionClient {
             })
         };
 
-        // Subscribe patterns (bar topic is data.bars.{bar_type} so use wildcard)
+        // Subscribe patterns
+        let deltas_pattern: MStr<Pattern> = format!("data.book.deltas.{venue}.*").into();
         let quote_pattern: MStr<Pattern> = format!("data.quotes.{venue}.*").into();
         let trade_pattern: MStr<Pattern> = format!("data.trades.{venue}.*").into();
         let bar_pattern: MStr<Pattern> = "data.bars.*".into();
 
+        msgbus::subscribe_book_deltas(deltas_pattern, deltas_handler.clone(), Some(10));
         msgbus::subscribe_quotes(quote_pattern, quote_handler.clone(), Some(10));
         msgbus::subscribe_trades(trade_pattern, trade_handler.clone(), Some(10));
         msgbus::subscribe_bars(bar_pattern, bar_handler.clone(), Some(10));
 
         // Store handlers for later deregistration
         *self.handlers.borrow_mut() = Some(RegisteredHandlers {
+            deltas_pattern,
+            deltas_handler,
             quote_pattern,
             quote_handler,
             trade_pattern,
@@ -320,6 +361,7 @@ impl SandboxExecutionClient {
     /// Deregisters message handlers to stop receiving market data.
     fn deregister_message_handlers(&self) {
         if let Some(handlers) = self.handlers.borrow_mut().take() {
+            msgbus::unsubscribe_book_deltas(handlers.deltas_pattern, &handlers.deltas_handler);
             msgbus::unsubscribe_quotes(handlers.quote_pattern, &handlers.quote_handler);
             msgbus::unsubscribe_trades(handlers.trade_pattern, &handlers.trade_handler);
             msgbus::unsubscribe_bars(handlers.bar_pattern, &handlers.bar_handler);
@@ -470,12 +512,20 @@ impl SandboxExecutionClient {
             .map(|money| AccountBalance::new(*money, Money::new(0.0, money.currency), *money))
             .collect()
     }
+
+    fn get_order(&self, client_order_id: &ClientOrderId) -> anyhow::Result<OrderAny> {
+        self.cache
+            .borrow()
+            .order(client_order_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Order not found in cache for {client_order_id}"))
+    }
 }
 
 #[async_trait(?Send)]
 impl ExecutionClient for SandboxExecutionClient {
     fn is_connected(&self) -> bool {
-        *self.connected.borrow()
+        self.core.borrow().is_connected()
     }
 
     fn client_id(&self) -> ClientId {
@@ -495,7 +545,8 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn get_account(&self) -> Option<AccountAny> {
-        self.core.borrow().get_account()
+        let account_id = self.core.borrow().account_id;
+        self.cache.borrow().account(&account_id).cloned()
     }
 
     fn generate_account_state(
@@ -505,20 +556,24 @@ impl ExecutionClient for SandboxExecutionClient {
         reported: bool,
         ts_event: UnixNanos,
     ) -> anyhow::Result<()> {
-        self.core
-            .borrow()
-            .generate_account_state(balances, margins, reported, ts_event)
+        let ts_init = self.clock.borrow().timestamp_ns();
+        let state = self
+            .factory
+            .generate_account_state(balances, margins, reported, ts_event, ts_init);
+        let endpoint = MessagingSwitchboard::portfolio_update_account();
+        msgbus::send_account_state(endpoint, &state);
+        Ok(())
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        if *self.started.borrow() {
+        if self.core.borrow().is_started() {
             return Ok(());
         }
 
         // Register message handlers to receive market data
         self.register_message_handlers();
 
-        *self.started.borrow_mut() = true;
+        self.core.borrow().set_started();
         let core = self.core.borrow();
         log::info!(
             "Sandbox execution client started: venue={}, account_id={}, oms_type={:?}, account_type={:?}",
@@ -531,15 +586,15 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn stop(&mut self) -> anyhow::Result<()> {
-        if !*self.started.borrow() {
+        if self.core.borrow().is_stopped() {
             return Ok(());
         }
 
         // Deregister message handlers to stop receiving data
         self.deregister_message_handlers();
 
-        *self.started.borrow_mut() = false;
-        *self.connected.borrow_mut() = false;
+        self.core.borrow().set_stopped();
+        self.core.borrow().set_disconnected();
         log::info!(
             "Sandbox execution client stopped: venue={}",
             self.config.venue
@@ -548,7 +603,7 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
-        if *self.connected.borrow() {
+        if self.core.borrow().is_connected() {
             return Ok(());
         }
 
@@ -556,8 +611,7 @@ impl ExecutionClient for SandboxExecutionClient {
         let ts_event = self.clock.borrow().timestamp_ns();
         self.generate_account_state(balances, vec![], false, ts_event)?;
 
-        *self.connected.borrow_mut() = true;
-        self.core.borrow_mut().set_connected(true);
+        self.core.borrow().set_connected();
         log::info!(
             "Sandbox execution client connected: venue={}",
             self.config.venue
@@ -566,12 +620,11 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     async fn disconnect(&mut self) -> anyhow::Result<()> {
-        if !*self.connected.borrow() {
+        if self.core.borrow().is_disconnected() {
             return Ok(());
         }
 
-        *self.connected.borrow_mut() = false;
-        self.core.borrow_mut().set_connected(false);
+        self.core.borrow().set_disconnected();
         log::info!(
             "Sandbox execution client disconnected: venue={}",
             self.config.venue
@@ -580,20 +633,17 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn submit_order(&self, cmd: &SubmitOrder) -> anyhow::Result<()> {
-        let core = self.core.borrow();
-        let mut order = core.get_order(&cmd.client_order_id)?;
+        let mut order = self.get_order(&cmd.client_order_id)?;
 
         if order.is_closed() {
             log::warn!("Cannot submit closed order {}", order.client_order_id());
             return Ok(());
         }
 
-        core.generate_order_submitted(
-            order.strategy_id(),
-            order.instrument_id(),
-            order.client_order_id(),
-            cmd.ts_init,
-        );
+        let ts_init = self.clock.borrow().timestamp_ns();
+        let event = self.factory.generate_order_submitted(&order, ts_init);
+        let endpoint = MessagingSwitchboard::exec_engine_process();
+        msgbus::send_order_event(endpoint, event);
 
         let instrument_id = order.instrument_id();
         let instrument = self
@@ -603,17 +653,17 @@ impl ExecutionClient for SandboxExecutionClient {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("Instrument not found: {instrument_id}"))?;
 
-        drop(core); // Release borrow before mutable borrow
-
         let mut inner = self.inner.borrow_mut();
         inner.ensure_matching_engine(&instrument);
 
         // Update matching engine with latest market data from cache
         let cache = self.cache.borrow();
+
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             if let Some(quote) = cache.quote(&instrument_id) {
                 engine.get_engine_mut().process_quote_tick(quote);
             }
+
             if self.config.trade_execution
                 && let Some(trade) = cache.trade(&instrument_id)
             {
@@ -623,6 +673,7 @@ impl ExecutionClient for SandboxExecutionClient {
         drop(cache);
 
         let account_id = self.core.borrow().account_id;
+
         if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
             engine
                 .get_engine_mut()
@@ -633,26 +684,26 @@ impl ExecutionClient for SandboxExecutionClient {
     }
 
     fn submit_order_list(&self, cmd: &SubmitOrderList) -> anyhow::Result<()> {
-        let core = self.core.borrow();
+        let ts_init = self.clock.borrow().timestamp_ns();
+        let endpoint = MessagingSwitchboard::exec_engine_process();
 
-        for order in &cmd.order_list.orders {
+        let orders: Vec<OrderAny> = self
+            .cache
+            .borrow()
+            .orders_for_ids(&cmd.order_list.client_order_ids, cmd);
+
+        for order in &orders {
             if order.is_closed() {
                 log::warn!("Cannot submit closed order {}", order.client_order_id());
                 continue;
             }
 
-            core.generate_order_submitted(
-                order.strategy_id(),
-                order.instrument_id(),
-                order.client_order_id(),
-                cmd.ts_init,
-            );
+            let event = self.factory.generate_order_submitted(order, ts_init);
+            msgbus::send_order_event(endpoint, event);
         }
 
-        drop(core); // Release borrow before mutable operations
-
         let account_id = self.core.borrow().account_id;
-        for order in &cmd.order_list.orders {
+        for order in &orders {
             if order.is_closed() {
                 continue;
             }
@@ -666,10 +717,12 @@ impl ExecutionClient for SandboxExecutionClient {
 
                 // Update with latest market data
                 let cache = self.cache.borrow();
+
                 if let Some(engine) = inner.matching_engines.get_mut(&instrument_id) {
                     if let Some(quote) = cache.quote(&instrument_id) {
                         engine.get_engine_mut().process_quote_tick(quote);
                     }
+
                     if self.config.trade_execution
                         && let Some(trade) = cache.trade(&instrument_id)
                     {

@@ -286,7 +286,7 @@ fn test_process_mint_with_fail_if_pool_not_initialized() {
 fn test_if_pool_process_fails_if_tick_lower_is_greater_than_tick_upper(mut profiler: PoolProfiler) {
     let mint_event = create_mint_event(lp_address(), 2, 1, 1);
     let result = profiler.process(&DexPoolData::LiquidityUpdate(mint_event));
-    assert!(result.is_err_and(|error| error.to_string() == "Invalid tick range: 2 >= 1"));
+    assert!(result.is_err_and(|e| e.to_string() == "Invalid tick range: 2 >= 1"));
 }
 
 #[rstest]
@@ -1989,7 +1989,7 @@ struct ExpectedSwapResult {
     execution_price: String,
 }
 
-fn quote_swap(pool_profiler: &mut PoolProfiler, test: SwapTestCase) -> anyhow::Result<SwapQuote> {
+fn quote_swap(pool_profiler: &PoolProfiler, test: SwapTestCase) -> anyhow::Result<SwapQuote> {
     match test {
         SwapTestCase::SwapExact0For1 {
             amount0,
@@ -2190,7 +2190,7 @@ fn test_pool_swaps(pool_test_case: PoolTestCase) {
         );
 
         // Execute swap and test
-        match quote_swap(&mut profiler, swap) {
+        match quote_swap(&profiler, swap) {
             Ok(swap_quote) => {
                 // Apply swap quote to have the correct pool profiler state
                 profiler.apply_swap_quote(&swap_quote);

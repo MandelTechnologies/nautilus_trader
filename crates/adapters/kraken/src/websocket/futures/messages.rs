@@ -16,8 +16,10 @@
 //! Data models for Kraken Futures WebSocket v1 API messages.
 
 use nautilus_model::{
-    data::{IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick},
-    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderUpdated},
+    data::{
+        FundingRateUpdate, IndexPriceUpdate, MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick,
+    },
+    events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
     reports::{FillReport, OrderStatusReport},
 };
 use serde::{Deserialize, Serialize};
@@ -35,7 +37,9 @@ pub enum KrakenFuturesWsMessage {
     Trade(TradeTick),
     MarkPrice(MarkPriceUpdate),
     IndexPrice(IndexPriceUpdate),
+    FundingRate(FundingRateUpdate),
     OrderAccepted(OrderAccepted),
+    OrderRejected(OrderRejected),
     OrderCanceled(OrderCanceled),
     OrderExpired(OrderExpired),
     OrderUpdated(OrderUpdated),
@@ -70,6 +74,7 @@ pub enum KrakenFuturesChannel {
     Quotes,
     Mark,
     Index,
+    Funding,
 }
 
 /// Kraken Futures WebSocket event types.
@@ -109,6 +114,8 @@ pub enum KrakenFuturesMessageType {
     Unsubscribed,
     Challenge,
     Heartbeat,
+    Error,
+    Alert,
     Unknown,
 }
 
@@ -121,6 +128,8 @@ pub fn classify_futures_message(value: &Value) -> KrakenFuturesMessageType {
             "subscribed" => KrakenFuturesMessageType::Subscribed,
             "unsubscribed" => KrakenFuturesMessageType::Unsubscribed,
             "challenge" => KrakenFuturesMessageType::Challenge,
+            "error" => KrakenFuturesMessageType::Error,
+            "alert" => KrakenFuturesMessageType::Alert,
             _ => KrakenFuturesMessageType::Unknown,
         };
     }
@@ -695,6 +704,26 @@ mod tests {
         assert_eq!(
             classify_futures_message(&value),
             KrakenFuturesMessageType::Subscribed
+        );
+    }
+
+    #[rstest]
+    fn test_classify_error_event() {
+        let json = r#"{"event":"error","message":"Unknown product_id"}"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Error
+        );
+    }
+
+    #[rstest]
+    fn test_classify_alert_event() {
+        let json = r#"{"event":"alert","message":"Rate limit exceeded"}"#;
+        let value: Value = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            classify_futures_message(&value),
+            KrakenFuturesMessageType::Alert
         );
     }
 }

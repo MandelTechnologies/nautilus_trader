@@ -29,6 +29,7 @@ from nautilus_trader.core.data import Data
 from nautilus_trader.core.message import Event
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import CustomData
+from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import IndexPriceUpdate
 from nautilus_trader.model.data import InstrumentClose
 from nautilus_trader.model.data import MarkPriceUpdate
@@ -50,6 +51,7 @@ from nautilus_trader.persistence.wranglers_v2 import TradeTickDataWranglerV2
 from nautilus_trader.serialization.arrow.implementations import account_state
 from nautilus_trader.serialization.arrow.implementations import component_commands
 from nautilus_trader.serialization.arrow.implementations import component_events
+from nautilus_trader.serialization.arrow.implementations import funding_rate_update
 from nautilus_trader.serialization.arrow.implementations import instruments
 from nautilus_trader.serialization.arrow.implementations import order_events
 from nautilus_trader.serialization.arrow.implementations import position_events
@@ -68,6 +70,7 @@ NautilusRustDataType = Union[  # noqa: UP007 (mypy does not like pipe operators)
 ]
 
 _ARROW_ENCODERS: dict[type, Callable] = {}
+_ARROW_BATCH_ENCODERS: dict[type, Callable] = {}
 _ARROW_DECODERS: dict[type, Callable] = {}
 _SCHEMAS: dict[type, pa.Schema] = {}
 
@@ -85,6 +88,7 @@ def register_arrow(
     schema: pa.Schema | None,
     encoder: Callable | None = None,
     decoder: Callable | None = None,
+    batch_encoder: Callable | None = None,
 ) -> None:
     """
     Register a new class for serialization to parquet.
@@ -97,20 +101,24 @@ def register_arrow(
         If the schema cannot be correctly inferred from a subset of the data
         (i.e. if certain values may be missing in the first chunk).
     encoder : Callable, optional
-        The callable to encode instances of type `cls_type` to Arrow record batches.
+        The callable to encode a single instance of type `cls_type` to an Arrow record batch.
     decoder : Callable, optional
         The callable to decode rows from Arrow record batches into `cls_type`.
-    table : type, optional
-        An optional table override for `cls`. Used if `cls` is going to be
-        transformed and stored in a table other than its own.
+    batch_encoder : Callable, optional
+        The callable to encode a list of instances to a single Arrow record batch.
+        When provided, `serialize_batch` uses this instead of encoding per item,
+        which preserves metadata consistency across the batch.
 
     """
     PyCondition.type(schema, pa.Schema, "schema")
     PyCondition.type_or_none(encoder, Callable, "encoder")
     PyCondition.type_or_none(decoder, Callable, "decoder")
+    PyCondition.type_or_none(batch_encoder, Callable, "batch_encoder")
 
     if encoder is not None:
         _ARROW_ENCODERS[data_cls] = encoder
+    if batch_encoder is not None:
+        _ARROW_BATCH_ENCODERS[data_cls] = batch_encoder
     if decoder is not None:
         _ARROW_DECODERS[data_cls] = decoder
     if schema is not None:
@@ -256,6 +264,11 @@ class ArrowSerializer:
         """
         if data_cls in RUST_SERIALIZERS or data_cls.__name__ in RUST_STR_SERIALIZERS:
             return ArrowSerializer.rust_defined_to_record_batch(data, data_cls=data_cls)
+
+        batch_delegate = _ARROW_BATCH_ENCODERS.get(data_cls)
+        if batch_delegate is not None:
+            batch = batch_delegate(data)
+            return pa.Table.from_batches([batch], schema=batch.schema)
 
         batches = [ArrowSerializer.serialize(obj, data_cls) for obj in data]
 
@@ -445,3 +458,10 @@ for position_cls in PositionEvent.__subclasses__():
         encoder=position_events.serialize,
         decoder=position_events.deserialize(position_cls),
     )
+
+register_arrow(
+    FundingRateUpdate,
+    schema=NAUTILUS_ARROW_SCHEMA[FundingRateUpdate],
+    encoder=funding_rate_update.serialize,
+    decoder=funding_rate_update.deserialize,
+)

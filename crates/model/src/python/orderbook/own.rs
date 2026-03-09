@@ -19,7 +19,7 @@ use std::{
 };
 
 use indexmap::IndexMap;
-use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyruntime_err};
+use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyruntime_err, to_pyvalue_err};
 use pyo3::{Python, prelude::*, pyclass::CompareOp};
 use rust_decimal::Decimal;
 
@@ -49,8 +49,8 @@ impl OwnBookOrder {
         ts_submitted: u64,
         ts_init: u64,
         venue_order_id: Option<VenueOrderId>,
-    ) -> PyResult<Self> {
-        Ok(Self::new(
+    ) -> Self {
+        Self::new(
             trader_id,
             client_order_id,
             venue_order_id,
@@ -64,7 +64,7 @@ impl OwnBookOrder {
             ts_accepted.into(),
             ts_submitted.into(),
             ts_init.into(),
-        ))
+        )
     }
 
     fn __richcmp__(&self, other: &Self, op: CompareOp, py: Python<'_>) -> Py<PyAny> {
@@ -321,6 +321,12 @@ impl OwnOrderBook {
             accepted_buffer_ns,
             ts_now,
         )
+    }
+
+    #[pyo3(name = "combined_with_opposite")]
+    fn py_combined_with_opposite(&self, opposite: &Self) -> PyResult<Self> {
+        self.combined_with_opposite(opposite)
+            .map_err(to_pyvalue_err)
     }
 
     #[pyo3(name = "audit_open_orders")]

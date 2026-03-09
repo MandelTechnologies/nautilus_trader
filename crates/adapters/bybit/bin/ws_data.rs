@@ -88,6 +88,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             );
                         }
                     }
+                    NautilusWsMessage::MarkPrices(prices) => {
+                        log::info!("mark price updates: count={}", prices.len());
+                        for price in prices {
+                            log::info!(
+                                "mark price: instrument={}, value={}",
+                                price.instrument_id, price.value
+                            );
+                        }
+                    }
+                    NautilusWsMessage::IndexPrices(prices) => {
+                        log::info!("index price updates: count={}", prices.len());
+                        for price in prices {
+                            log::info!(
+                                "index price: instrument={}, value={}",
+                                price.instrument_id, price.value
+                            );
+                        }
+                    }
+                    NautilusWsMessage::OptionGreeks(greeks) => {
+                        log::info!(
+                            "option greeks: instrument={}, delta={:.4}, gamma={:.6}, vega={:.4}, theta={:.4}",
+                            greeks.instrument_id, greeks.delta, greeks.gamma, greeks.vega, greeks.theta
+                        );
+                    }
                     NautilusWsMessage::OrderStatusReports(reports) => {
                         log::info!("order status reports: count={}", reports.len());
                         for report in reports {

@@ -59,6 +59,7 @@ use crate::{
         parse::{
             bar_type_to_spot_interval, normalize_currency_code, parse_bar, parse_fill_report,
             parse_order_status_report, parse_spot_instrument, parse_trade_tick_from_array,
+            truncate_cl_ord_id,
         },
         urls::get_kraken_http_base_url,
     },
@@ -182,8 +183,8 @@ impl KrakenSpotRawHttpClient {
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(rate_limit),
-                Some(Self::default_quota(rate_limit)),
+                Self::rate_limiter_quotas(rate_limit)?,
+                Some(Self::default_quota(rate_limit)?),
                 timeout_secs,
                 proxy_url,
             )
@@ -234,8 +235,8 @@ impl KrakenSpotRawHttpClient {
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(rate_limit),
-                Some(Self::default_quota(rate_limit)),
+                Self::rate_limiter_quotas(rate_limit)?,
+                Some(Self::default_quota(rate_limit)?),
                 timeout_secs,
                 proxy_url,
             )
@@ -280,19 +281,22 @@ impl KrakenSpotRawHttpClient {
         HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())])
     }
 
-    fn default_quota(max_requests_per_second: u32) -> Quota {
-        Quota::per_second(
-            NonZeroU32::new(max_requests_per_second).unwrap_or_else(|| {
-                NonZeroU32::new(KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND).unwrap()
-            }),
-        )
+    fn default_quota(max_requests_per_second: u32) -> anyhow::Result<Quota> {
+        let burst = NonZeroU32::new(max_requests_per_second).unwrap_or(
+            NonZeroU32::new(KRAKEN_SPOT_DEFAULT_RATE_LIMIT_PER_SECOND).expect("non-zero"),
+        );
+        Quota::per_second(burst).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Invalid max_requests_per_second: {max_requests_per_second} exceeds maximum"
+            )
+        })
     }
 
-    fn rate_limiter_quotas(max_requests_per_second: u32) -> Vec<(String, Quota)> {
-        vec![(
+    fn rate_limiter_quotas(max_requests_per_second: u32) -> anyhow::Result<Vec<(String, Quota)>> {
+        Ok(vec![(
             KRAKEN_GLOBAL_RATE_KEY.to_string(),
-            Self::default_quota(max_requests_per_second),
-        )]
+            Self::default_quota(max_requests_per_second)?,
+        )])
     }
 
     fn rate_limit_keys(endpoint: &str) -> Vec<String> {
@@ -518,6 +522,7 @@ impl KrakenSpotRawHttpClient {
         if let Some(interval) = interval {
             endpoint.push_str(&format!("&interval={interval}"));
         }
+
         if let Some(since) = since {
             endpoint.push_str(&format!("&since={since}"));
         }
@@ -603,9 +608,11 @@ impl KrakenSpotRawHttpClient {
         }
 
         let mut params = vec![];
+
         if let Some(trades_flag) = trades {
             params.push(format!("trades={trades_flag}"));
         }
+
         if let Some(userref_val) = userref {
             params.push(format!("userref={userref_val}"));
         }
@@ -644,21 +651,27 @@ impl KrakenSpotRawHttpClient {
         }
 
         let mut params = vec![];
+
         if let Some(trades_flag) = trades {
             params.push(format!("trades={trades_flag}"));
         }
+
         if let Some(userref_val) = userref {
             params.push(format!("userref={userref_val}"));
         }
+
         if let Some(start_val) = start {
             params.push(format!("start={start_val}"));
         }
+
         if let Some(end_val) = end {
             params.push(format!("end={end_val}"));
         }
+
         if let Some(ofs_val) = ofs {
             params.push(format!("ofs={ofs_val}"));
         }
+
         if let Some(closetime_val) = closetime {
             params.push(format!("closetime={closetime_val}"));
         }
@@ -696,18 +709,23 @@ impl KrakenSpotRawHttpClient {
         }
 
         let mut params = vec![];
+
         if let Some(type_val) = trade_type {
             params.push(format!("type={type_val}"));
         }
+
         if let Some(trades_flag) = trades {
             params.push(format!("trades={trades_flag}"));
         }
+
         if let Some(start_val) = start {
             params.push(format!("start={start_val}"));
         }
+
         if let Some(end_val) = end {
             params.push(format!("end={end_val}"));
         }
+
         if let Some(ofs_val) = ofs {
             params.push(format!("ofs={ofs_val}"));
         }
@@ -832,6 +850,7 @@ impl KrakenSpotRawHttpClient {
         if response.status.as_u16() >= 400 {
             let status = response.status.as_u16();
             let body = String::from_utf8_lossy(&response.body).to_string();
+
             if status == 401 || status == 403 {
                 return Err(KrakenHttpError::AuthenticationError(format!(
                     "HTTP error {status}: {body}"
@@ -849,6 +868,10 @@ impl KrakenSpotRawHttpClient {
             serde_json::from_str(&response_text).map_err(|e| {
                 KrakenHttpError::ParseError(format!("Failed to parse response: {e}"))
             })?;
+
+        if !kraken_response.error.is_empty() {
+            return Err(KrakenHttpError::ApiError(kraken_response.error));
+        }
 
         kraken_response
             .result
@@ -949,11 +972,12 @@ impl KrakenSpotRawHttpClient {
 /// into Nautilus domain objects.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken", from_py_object)
 )]
 pub struct KrakenSpotHttpClient {
     pub(crate) inner: Arc<KrakenSpotRawHttpClient>,
     pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    clock: &'static AtomicTime,
     cache_initialized: Arc<AtomicBool>,
     use_spot_position_reports: Arc<AtomicBool>,
     spot_positions_quote_currency: Arc<RwLock<Ustr>>,
@@ -967,6 +991,7 @@ impl Clone for KrakenSpotHttpClient {
             cache_initialized: self.cache_initialized.clone(),
             use_spot_position_reports: self.use_spot_position_reports.clone(),
             spot_positions_quote_currency: self.spot_positions_quote_currency.clone(),
+            clock: self.clock,
         }
     }
 }
@@ -1023,6 +1048,7 @@ impl KrakenSpotHttpClient {
             cache_initialized: Arc::new(AtomicBool::new(false)),
             use_spot_position_reports: Arc::new(AtomicBool::new(false)),
             spot_positions_quote_currency: Arc::new(RwLock::new(Ustr::from("USDT"))),
+            clock: get_atomic_clock_realtime(),
         })
     }
 
@@ -1057,6 +1083,7 @@ impl KrakenSpotHttpClient {
             cache_initialized: Arc::new(AtomicBool::new(false)),
             use_spot_position_reports: Arc::new(AtomicBool::new(false)),
             spot_positions_quote_currency: Arc::new(RwLock::new(Ustr::from("USDT"))),
+            clock: get_atomic_clock_realtime(),
         })
     }
 
@@ -1147,7 +1174,7 @@ impl KrakenSpotHttpClient {
     }
 
     fn generate_ts_init(&self) -> UnixNanos {
-        get_atomic_clock_realtime().get_time_ns()
+        self.clock.get_time_ns()
     }
 
     /// Sets whether to generate position reports from wallet balances for SPOT instruments.
@@ -1723,7 +1750,7 @@ impl KrakenSpotHttpClient {
 
         let mut builder = KrakenSpotAddOrderParamsBuilder::default();
         builder
-            .cl_ord_id(client_order_id.to_string())
+            .cl_ord_id(truncate_cl_ord_id(&client_order_id))
             .broker(NAUTILUS_KRAKEN_BROKER_ID)
             .pair(raw_symbol)
             .side(kraken_side)
@@ -1747,6 +1774,7 @@ impl KrakenSpotHttpClient {
             if let Some(trigger) = trigger_price {
                 builder.price(trigger.to_string());
             }
+
             if let Some(limit) = price {
                 builder.price2(limit.to_string());
             }
@@ -1805,7 +1833,7 @@ impl KrakenSpotHttpClient {
             .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
 
         let txid = venue_order_id.as_ref().map(|id| id.to_string());
-        let cl_ord_id = client_order_id.as_ref().map(|id| id.to_string());
+        let cl_ord_id = client_order_id.as_ref().map(truncate_cl_ord_id);
 
         if txid.is_none() && cl_ord_id.is_none() {
             anyhow::bail!("Either client_order_id or venue_order_id must be provided");
@@ -1823,9 +1851,11 @@ impl KrakenSpotHttpClient {
         if let Some(qty) = quantity {
             builder.order_qty(qty.to_string());
         }
+
         if let Some(p) = price {
             builder.limit_price(p.to_string());
         }
+
         if let Some(tp) = trigger_price {
             builder.trigger_price(tp.to_string());
         }
@@ -1864,7 +1894,7 @@ impl KrakenSpotHttpClient {
             .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
 
         let txid = venue_order_id.as_ref().map(|id| id.to_string());
-        let cl_ord_id = client_order_id.as_ref().map(|id| id.to_string());
+        let cl_ord_id = client_order_id.as_ref().map(truncate_cl_ord_id);
 
         if txid.is_none() && cl_ord_id.is_none() {
             anyhow::bail!("Either client_order_id or venue_order_id must be provided");
@@ -1873,6 +1903,7 @@ impl KrakenSpotHttpClient {
         // Prefer txid (venue identifier) since Kraken always knows it.
         // cl_ord_id may not be known to Kraken for reconciled orders.
         let mut builder = KrakenSpotCancelOrderParamsBuilder::default();
+
         if let Some(ref id) = txid {
             builder.txid(id.clone());
         } else if let Some(ref id) = cl_ord_id {

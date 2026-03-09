@@ -22,7 +22,7 @@ We welcome all feedback on where the codebase departs from PEP-8 for no apparent
 
 ### Type hints
 
-All function and method signatures *must* include comprehensive type annotations:
+All function and method signatures *must* include type annotations:
 
 ```python
 def __init__(self, config: EMACrossConfig) -> None:
@@ -51,7 +51,7 @@ class ThrottledEnqueuer(Generic[T]):
 ### Docstrings
 
 The [NumPy docstring spec](https://numpydoc.readthedocs.io/en/latest/format.html) is used throughout the codebase.
-This needs to be adhered to consistently to ensure the docs build correctly.
+This needs to be followed consistently so the docs build correctly.
 
 **Python** docstrings should be written in the **imperative mood** – e.g. *"Return a cached client."*
 
@@ -85,7 +85,7 @@ def test_sma_with_single_input_returns_expected_value(self):
 
 ### Ruff
 
-[ruff](https://astral.sh/ruff) is utilized to lint the codebase. Ruff rules can be found in the top-level `pyproject.toml`, with ignore justifications typically commented.
+[ruff](https://astral.sh/ruff) is used to lint the codebase. Ruff rules can be found in the top-level `pyproject.toml`, with ignore justifications typically commented.
 
 ## Cython (legacy)
 
@@ -93,6 +93,6 @@ def test_sma_with_single_input_returns_expected_value(self):
 Cython is being phased out in favor of Rust implementations. New code should use Rust. This section documents legacy Cython code only.
 :::
 
-For legacy `.pyx` and `.pxd` files, ensure that all functions and methods returning `void` or a primitive C type (such as `bint`, `int`, `double`) include the `except *` keyword in the signature. This ensures Python exceptions are not ignored.
+For legacy `.pyx` and `.pxd` files, make sure all functions and methods returning `void` or a primitive C type (such as `bint`, `int`, `double`) include the `except *` keyword in the signature. Without it, Python exceptions are silently ignored.
 
 For more information, see the [Cython docs](https://cython.readthedocs.io/en/latest/index.html).

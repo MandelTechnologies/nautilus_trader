@@ -22,8 +22,8 @@ use ahash::{AHashMap, AHashSet};
 use futures::StreamExt;
 use nautilus_core::UnixNanos;
 use nautilus_model::data::{
-    Bar, Data, HasTsInit, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta, OrderBookDepth10,
-    QuoteTick, TradeTick, close::InstrumentClose,
+    Bar, CustomData, Data, HasTsInit, IndexPriceUpdate, MarkPriceUpdate, OrderBookDelta,
+    OrderBookDepth10, QuoteTick, TradeTick, close::InstrumentClose,
 };
 use nautilus_serialization::arrow::{DecodeDataFromRecordBatch, EncodeToRecordBatch};
 use object_store::path::Path as ObjectPath;
@@ -147,13 +147,14 @@ impl ParquetDataCatalog {
     /// let catalog = ParquetDataCatalog::new(/* ... */);
     ///
     /// // Consolidate all files in the catalog
-    /// catalog.consolidate_catalog(None, None, None)?;
+    /// catalog.consolidate_catalog(None, None, None, None)?;
     ///
     /// // Consolidate only files within a specific time range
     /// catalog.consolidate_catalog(
     ///     Some(UnixNanos::from(1609459200000000000)),
     ///     Some(UnixNanos::from(1609545600000000000)),
-    ///     Some(true)
+    ///     Some(true),
+    ///     None
     /// )?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
@@ -162,26 +163,33 @@ impl ParquetDataCatalog {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ensure_contiguous_files: Option<bool>,
+        deduplicate: Option<bool>,
     ) -> anyhow::Result<()> {
         let leaf_directories = self.find_leaf_data_directories()?;
 
         for directory in leaf_directories {
-            self.consolidate_directory(&directory, start, end, ensure_contiguous_files)?;
+            self.consolidate_directory(
+                &directory,
+                start,
+                end,
+                ensure_contiguous_files,
+                deduplicate,
+            )?;
         }
 
         Ok(())
     }
 
-    /// Consolidates data files for a specific data type and instrument.
+    /// Consolidates data files for a specific data type and identifier.
     ///
     /// This method consolidates Parquet files within a specific directory (defined by data type
-    /// and optional instrument ID) by merging multiple files into a single file. This improves
+    /// and optional identifier) by merging multiple files into a single file. This improves
     /// query performance and can reduce storage overhead.
     ///
     /// # Parameters
     ///
     /// - `type_name`: The data type directory name (e.g., "quotes", "trades", "bars").
-    /// - `instrument_id`: Optional instrument ID to target a specific instrument's data.
+    /// - `identifier`: Optional identifier to target a specific instrument's data. Can be an instrument_id (e.g., "EUR/USD.SIM") or a bar_type (e.g., "EUR/USD.SIM-1-MINUTE-LAST-EXTERNAL").
     /// - `start`: Optional start timestamp to limit consolidation to files within this range.
     /// - `end`: Optional end timestamp to limit consolidation to files within this range.
     /// - `ensure_contiguous_files`: Whether to validate that consolidated intervals are contiguous (default: true).
@@ -211,6 +219,7 @@ impl ParquetDataCatalog {
     ///     Some("BTCUSD".to_string()),
     ///     None,
     ///     None,
+    ///     None,
     ///     None
     /// )?;
     ///
@@ -220,20 +229,22 @@ impl ParquetDataCatalog {
     ///     None,
     ///     Some(UnixNanos::from(1609459200000000000)),
     ///     Some(UnixNanos::from(1609545600000000000)),
-    ///     Some(true)
+    ///     Some(true),
+    ///     None
     /// )?;
     /// # Ok::<(), anyhow::Error>(())
     /// ```
     pub fn consolidate_data(
         &self,
         type_name: &str,
-        instrument_id: Option<String>,
+        identifier: Option<String>,
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ensure_contiguous_files: Option<bool>,
+        deduplicate: Option<bool>,
     ) -> anyhow::Result<()> {
-        let directory = self.make_path(type_name, instrument_id)?;
-        self.consolidate_directory(&directory, start, end, ensure_contiguous_files)
+        let directory = self.make_path(type_name, identifier)?;
+        self.consolidate_directory(&directory, start, end, ensure_contiguous_files, deduplicate)
     }
 
     /// Consolidates Parquet files within a specific directory by merging them into a single file.
@@ -274,6 +285,7 @@ impl ParquetDataCatalog {
         start: Option<UnixNanos>,
         end: Option<UnixNanos>,
         ensure_contiguous_files: Option<bool>,
+        deduplicate: Option<bool>,
     ) -> anyhow::Result<()> {
         let parquet_files = self.list_parquet_files(directory)?;
 
@@ -325,6 +337,7 @@ impl ParquetDataCatalog {
                     &ObjectPath::from(path),
                     Some(self.compression),
                     Some(self.max_row_group_size),
+                    deduplicate,
                 )
                 .await
             })?;
@@ -493,9 +506,22 @@ impl ParquetDataCatalog {
                         )?;
                     }
                     _ => {
-                        // Skip unknown data types
-                        log::warn!("Unknown data type for consolidation: {data_cls_name}");
-                        continue;
+                        // Check if it's a custom data type (starts with "custom/")
+                        if data_cls_name.starts_with("custom/") {
+                            // Extract the custom type name (everything after "custom/")
+                            let custom_type_name = data_cls_name.strip_prefix("custom/").unwrap();
+                            self.consolidate_custom_data_by_period(
+                                custom_type_name,
+                                identifier,
+                                period_nanos,
+                                start,
+                                end,
+                                ensure_contiguous_files,
+                            )?;
+                        } else {
+                            // Skip unknown data types
+                            log::warn!("Unknown data type for consolidation: {data_cls_name}");
+                        }
                     }
                 }
             }
@@ -528,9 +554,21 @@ impl ParquetDataCatalog {
         if let Some(data_index) = path_components.iter().position(|part| part == "data")
             && data_index + 1 < path_components.len()
         {
-            let data_cls = path_components[data_index + 1].clone();
+            let second = &path_components[data_index + 1];
 
-            // Check if there's an identifier (instrument ID) after the data class
+            // Custom data: data/custom/TypeName[/identifier segments...]
+            if *second == "custom" && data_index + 2 < path_components.len() {
+                let type_name = path_components[data_index + 2].clone();
+                let data_cls = format!("custom/{type_name}");
+                let identifier = if data_index + 3 < path_components.len() {
+                    Some(path_components[data_index + 3..].join("/"))
+                } else {
+                    None
+                };
+                return Ok((Some(data_cls), identifier));
+            }
+
+            let data_cls = second.clone();
             let identifier = if data_index + 2 < path_components.len() {
                 Some(path_components[data_index + 2].clone())
             } else {
@@ -703,7 +741,21 @@ impl ParquetDataCatalog {
                 )?;
             }
             _ => {
-                anyhow::bail!("Unknown data type for consolidation: {type_name}");
+                // Check if it's a custom data type (starts with "custom/")
+                if type_name.starts_with("custom/") {
+                    // Extract the custom type name (everything after "custom/")
+                    let custom_type_name = type_name.strip_prefix("custom/").unwrap();
+                    self.consolidate_custom_data_by_period(
+                        custom_type_name,
+                        identifier,
+                        period_nanos,
+                        start,
+                        end,
+                        ensure_contiguous_files,
+                    )?;
+                } else {
+                    anyhow::bail!("Unknown data type for consolidation: {type_name}");
+                }
             }
         }
 
@@ -787,12 +839,16 @@ impl ParquetDataCatalog {
             // Query data for this period using query_typed_data
             let instrument_ids = identifier.as_ref().map(|id| vec![id.clone()]);
 
+            // Use optimize_file_loading=false to match Python behavior:
+            // During consolidation, we want to read only the specific files being consolidated,
+            // not the entire directory. This ensures precise file control during consolidation.
             let period_data = self.query_typed_data::<T>(
                 instrument_ids,
                 Some(UnixNanos::from(query_info.query_start)),
                 Some(UnixNanos::from(query_info.query_end)),
                 None,
                 Some(existing_files.clone()),
+                false, // optimize_file_loading=false for precise file control during consolidation
             )?;
 
             if period_data.is_empty() {
@@ -802,7 +858,6 @@ impl ParquetDataCatalog {
                 }
                 continue;
             }
-            file_start_ns = None;
 
             // Determine final file timestamps
             let (final_start_ns, final_end_ns) = if query_info.use_period_boundaries {
@@ -810,7 +865,8 @@ impl ParquetDataCatalog {
                 if file_start_ns.is_none() {
                     file_start_ns = Some(query_info.query_start);
                 }
-                (file_start_ns.unwrap(), query_info.query_end)
+                let start = file_start_ns.unwrap();
+                (start, query_info.query_end)
             } else {
                 // Use actual data timestamps for file naming
                 let first_ts = period_data.first().unwrap().ts_init().as_u64();
@@ -857,6 +913,8 @@ impl ParquetDataCatalog {
                     self.delete_file(&file)?;
                 }
             }
+            // Reset so next period starts a new contiguous segment
+            file_start_ns = None;
         }
 
         // Remove any remaining files that weren't removed in the loop
@@ -866,6 +924,330 @@ impl ParquetDataCatalog {
         if files_were_processed {
             for file in existing_files {
                 self.delete_file(&file)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Consolidates custom data files by splitting them into fixed time periods.
+    ///
+    /// This method provides consolidation for custom data types that don't have compile-time
+    /// type information. It uses dynamic querying and writing methods.
+    ///
+    /// # Parameters
+    ///
+    /// - `type_name`: The custom data type name (without "custom/" prefix).
+    /// - `identifier`: Optional instrument ID to consolidate.
+    /// - `period_nanos`: Optional period size in nanoseconds (default: 1 day).
+    /// - `start`: Optional start timestamp for consolidation range.
+    /// - `end`: Optional end timestamp for consolidation range.
+    /// - `ensure_contiguous_files`: Optional flag to control file naming strategy.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or an error if consolidation fails.
+    fn consolidate_custom_data_by_period(
+        &mut self,
+        type_name: &str,
+        identifier: Option<String>,
+        period_nanos: Option<u64>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+        ensure_contiguous_files: Option<bool>,
+    ) -> anyhow::Result<()> {
+        let period_nanos = period_nanos.unwrap_or(86400000000000); // Default: 1 day
+        let ensure_contiguous_files = ensure_contiguous_files.unwrap_or(true);
+
+        // Get intervals for the custom data type
+        let path_prefix = format!("custom/{type_name}");
+        let intervals = self.get_intervals(&path_prefix, identifier.clone())?;
+
+        if intervals.is_empty() {
+            return Ok(()); // No files to consolidate
+        }
+
+        // Use auxiliary function to prepare all queries for execution
+        let queries_to_execute = self.prepare_consolidation_queries(
+            &path_prefix,
+            identifier.clone(),
+            &intervals,
+            period_nanos,
+            start,
+            end,
+            ensure_contiguous_files,
+        )?;
+
+        if queries_to_execute.is_empty() {
+            return Ok(()); // No queries to execute
+        }
+
+        // Get directory for file operations
+        let directory = self.make_path(&path_prefix, identifier.clone())?;
+        let mut existing_files = self.list_parquet_files(&directory)?;
+        existing_files.sort();
+
+        // Track files to remove and maintain existing_files list
+        let mut files_to_remove = AHashSet::new();
+        let original_files_count = existing_files.len();
+
+        // Phase 2: Execute queries, write, and delete
+        let mut file_start_ns: Option<u64> = None; // Track contiguity across periods
+
+        for query_info in queries_to_execute {
+            // Query custom data for this period using query_custom_data_dynamic
+            let instrument_ids = identifier.as_ref().map(|id| vec![id.clone()]);
+
+            let period_data = self.query_custom_data_dynamic(
+                type_name,
+                instrument_ids,
+                Some(UnixNanos::from(query_info.query_start)),
+                Some(UnixNanos::from(query_info.query_end)),
+                None,
+                Some(existing_files.clone()),
+                false, // optimize_file_loading=false for precise file control during consolidation
+            )?;
+
+            if period_data.is_empty() {
+                // Skip if no data found, but maintain contiguity by using query start
+                if file_start_ns.is_none() {
+                    file_start_ns = Some(query_info.query_start);
+                }
+                continue;
+            }
+
+            // Determine final file timestamps
+            let (final_start_ns, final_end_ns) = if query_info.use_period_boundaries {
+                // Use period boundaries for file naming, maintaining contiguity
+                if file_start_ns.is_none() {
+                    file_start_ns = Some(query_info.query_start);
+                }
+                let start = file_start_ns.unwrap();
+                (start, query_info.query_end)
+            } else {
+                // Use actual data timestamps for file naming
+                let first_ts = period_data.first().unwrap().ts_init().as_u64();
+                let last_ts = period_data.last().unwrap().ts_init().as_u64();
+                (first_ts, last_ts)
+            };
+
+            // Check again if target file exists (in case it was created during this process)
+            let target_filename = format!(
+                "{}/{}",
+                directory,
+                timestamps_to_filename(
+                    UnixNanos::from(final_start_ns),
+                    UnixNanos::from(final_end_ns)
+                )
+            );
+
+            if self.file_exists(&target_filename)? {
+                // Skip if target file already exists
+                continue;
+            }
+
+            // Group custom data by type for writing
+            let mut custom_data_by_type: AHashMap<String, Vec<CustomData>> = AHashMap::new();
+
+            for data in period_data {
+                if let Data::Custom(c) = data {
+                    let type_name_str = c.data.type_name().to_string();
+                    custom_data_by_type
+                        .entry(type_name_str)
+                        .or_default()
+                        .push(c);
+                }
+            }
+
+            // Write consolidated data for each type
+            for (_, items) in custom_data_by_type {
+                let start_ts = UnixNanos::from(final_start_ns);
+                let end_ts = UnixNanos::from(final_end_ns);
+                self.write_custom_data_batch(items, Some(start_ts), Some(end_ts), Some(true))?;
+            }
+
+            // Identify files that are completely covered by this period
+            // Only remove files AFTER successfully writing a new file
+            for file in existing_files.clone() {
+                if let Some(interval) = parse_filename_timestamps(&file)
+                    && interval.1 <= query_info.query_end
+                {
+                    files_to_remove.insert(file.clone());
+                    existing_files.retain(|f| f != &file);
+                }
+            }
+
+            // Remove files as soon as we have some to remove
+            if !files_to_remove.is_empty() {
+                for file in files_to_remove.drain() {
+                    self.delete_file(&file)?;
+                }
+            }
+            // Reset so next period starts a new contiguous segment
+            file_start_ns = None;
+        }
+
+        // Remove any remaining files that weren't removed in the loop
+        let files_were_processed = existing_files.len() < original_files_count;
+        if files_were_processed {
+            for file in existing_files {
+                self.delete_file(&file)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Deletes custom data within a specified time range.
+    ///
+    /// This method provides deletion for custom data types that don't have compile-time
+    /// type information. It uses dynamic querying and writing methods.
+    ///
+    /// # Parameters
+    ///
+    /// - `type_name`: The custom data type name (without "custom/" prefix).
+    /// - `identifier`: Optional instrument ID to delete data for.
+    /// - `start`: Optional start timestamp for the deletion range.
+    /// - `end`: Optional end timestamp for the deletion range.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` on success, or an error if deletion fails.
+    fn delete_custom_data_range(
+        &mut self,
+        type_name: &str,
+        identifier: Option<String>,
+        start: Option<UnixNanos>,
+        end: Option<UnixNanos>,
+    ) -> anyhow::Result<()> {
+        let path_prefix = format!("custom/{type_name}");
+
+        // Get intervals for the custom data type
+        let intervals = self.get_intervals(&path_prefix, identifier.clone())?;
+
+        if intervals.is_empty() {
+            return Ok(()); // No files to process
+        }
+
+        // Prepare all operations for execution
+        let operations_to_execute = self.prepare_delete_operations(
+            &path_prefix,
+            identifier.clone(),
+            &intervals,
+            start,
+            end,
+        )?;
+
+        if operations_to_execute.is_empty() {
+            return Ok(()); // No operations to execute
+        }
+
+        // Execute all operations
+        let mut files_to_remove = AHashSet::<String>::new();
+
+        for operation in operations_to_execute {
+            // Reset the session before each operation
+            self.reset_session();
+            match operation.operation_type.as_str() {
+                "split_before" => {
+                    // Query custom data before the deletion range and write it
+                    let instrument_ids = identifier.as_ref().map(|id| vec![id.clone()]);
+                    let before_data = self.query_custom_data_dynamic(
+                        type_name,
+                        instrument_ids,
+                        Some(UnixNanos::from(operation.query_start)),
+                        Some(UnixNanos::from(operation.query_end)),
+                        None,
+                        Some(operation.files.clone()),
+                        false,
+                    )?;
+
+                    if !before_data.is_empty() {
+                        // Group custom data by type for writing
+                        use ahash::AHashMap;
+                        let mut custom_data_by_type: AHashMap<String, Vec<CustomData>> =
+                            AHashMap::new();
+
+                        for data in before_data {
+                            if let Data::Custom(c) = data {
+                                let type_name_str = c.data.type_name().to_string();
+                                custom_data_by_type
+                                    .entry(type_name_str)
+                                    .or_default()
+                                    .push(c);
+                            }
+                        }
+
+                        // Write data for each type
+                        for (_, items) in custom_data_by_type {
+                            let start_ts = UnixNanos::from(operation.file_start_ns);
+                            let end_ts = UnixNanos::from(operation.file_end_ns);
+                            self.write_custom_data_batch(
+                                items,
+                                Some(start_ts),
+                                Some(end_ts),
+                                Some(true),
+                            )?;
+                        }
+                    }
+                }
+                "split_after" => {
+                    // Query custom data after the deletion range and write it
+                    let instrument_ids = identifier.as_ref().map(|id| vec![id.clone()]);
+                    let after_data = self.query_custom_data_dynamic(
+                        type_name,
+                        instrument_ids,
+                        Some(UnixNanos::from(operation.query_start)),
+                        Some(UnixNanos::from(operation.query_end)),
+                        None,
+                        Some(operation.files.clone()),
+                        false,
+                    )?;
+
+                    if !after_data.is_empty() {
+                        // Group custom data by type for writing
+                        use ahash::AHashMap;
+                        let mut custom_data_by_type: AHashMap<String, Vec<CustomData>> =
+                            AHashMap::new();
+
+                        for data in after_data {
+                            if let Data::Custom(c) = data {
+                                let type_name_str = c.data.type_name().to_string();
+                                custom_data_by_type
+                                    .entry(type_name_str)
+                                    .or_default()
+                                    .push(c);
+                            }
+                        }
+
+                        // Write data for each type
+                        for (_, items) in custom_data_by_type {
+                            let start_ts = UnixNanos::from(operation.file_start_ns);
+                            let end_ts = UnixNanos::from(operation.file_end_ns);
+                            self.write_custom_data_batch(
+                                items,
+                                Some(start_ts),
+                                Some(end_ts),
+                                Some(true),
+                            )?;
+                        }
+                    }
+                }
+                _ => {
+                    // For "remove" operations, just mark files for removal
+                }
+            }
+
+            // Mark files for removal (applies to all operation types)
+            for file in operation.files {
+                files_to_remove.insert(file);
+            }
+        }
+
+        // Remove all files that were processed
+        for file in files_to_remove {
+            if let Err(e) = self.delete_file(&file) {
+                log::warn!("Failed to delete file {file}: {e}");
             }
         }
 
@@ -1187,7 +1569,7 @@ impl ParquetDataCatalog {
         Ok(())
     }
 
-    /// Resets the filenames of Parquet files for a specific data type and instrument ID.
+    /// Resets the filenames of Parquet files for a specific data type and identifier.
     ///
     /// This method renames files in a specific directory based on the actual timestamp
     /// range of their content. This is useful for correcting filenames after data
@@ -1196,7 +1578,7 @@ impl ParquetDataCatalog {
     /// # Parameters
     ///
     /// - `data_cls`: The data type directory name (e.g., "quotes", "trades").
-    /// - `instrument_id`: Optional instrument ID to target a specific instrument's data.
+    /// - `identifier`: Optional identifier to target a specific instrument's data. Can be an instrument_id (e.g., "EUR/USD.SIM") or a bar_type (e.g., "EUR/USD.SIM-1-MINUTE-LAST-EXTERNAL").
     ///
     /// # Returns
     ///
@@ -1227,9 +1609,9 @@ impl ParquetDataCatalog {
     pub fn reset_data_file_names(
         &self,
         data_cls: &str,
-        instrument_id: Option<String>,
+        identifier: Option<String>,
     ) -> anyhow::Result<()> {
-        let directory = self.make_path(data_cls, instrument_id)?;
+        let directory = self.make_path(data_cls, identifier)?;
         self.reset_file_names(&directory)
     }
 
@@ -1381,7 +1763,7 @@ impl ParquetDataCatalog {
         Ok(leaf_dirs)
     }
 
-    /// Deletes data within a specified time range for a specific data type and instrument.
+    /// Deletes data within a specified time range for a specific data type and identifier.
     ///
     /// This method identifies all parquet files that intersect with the specified time range
     /// and handles them appropriately:
@@ -1392,7 +1774,7 @@ impl ParquetDataCatalog {
     /// # Parameters
     ///
     /// - `type_name`: The data type directory name (e.g., "quotes", "trades", "bars").
-    /// - `identifier`: Optional instrument ID to delete data for. If None, deletes data across all instruments.
+    /// - `identifier`: Optional identifier to delete data for. Can be an instrument_id (e.g., "EUR/USD.SIM") or a bar_type (e.g., "EUR/USD.SIM-1-MINUTE-LAST-EXTERNAL"). If None, deletes data across all identifiers.
     /// - `start`: Optional start timestamp for the deletion range. If None, deletes from the beginning.
     /// - `end`: Optional end timestamp for the deletion range. If None, deletes to the end.
     ///
@@ -1457,7 +1839,16 @@ impl ParquetDataCatalog {
             "order_book_depth10" => {
                 self.delete_data_range_generic::<OrderBookDepth10>(identifier, start, end)
             }
-            _ => anyhow::bail!("Unsupported data type: {type_name}"),
+            _ => {
+                // Check if it's a custom data type (starts with "custom/")
+                if type_name.starts_with("custom/") {
+                    // Extract the custom type name (everything after "custom/")
+                    let custom_type_name = type_name.strip_prefix("custom/").unwrap();
+                    self.delete_custom_data_range(custom_type_name, identifier, start, end)
+                } else {
+                    anyhow::bail!("Unsupported data type: {type_name}");
+                }
+            }
         }
     }
 
@@ -1534,7 +1925,7 @@ impl ParquetDataCatalog {
             {
                 // Call the existing delete_data_range method
                 if let Err(e) = self.delete_data_range(&data_type, identifier, start, end) {
-                    eprintln!("Failed to delete data in directory {directory}: {e}");
+                    log::warn!("Failed to delete data in directory {directory}: {e}");
                     // Continue with other directories instead of failing completely
                 }
             }
@@ -1606,6 +1997,7 @@ impl ParquetDataCatalog {
             match operation.operation_type.as_str() {
                 "split_before" => {
                     // Query data before the deletion range and write it
+                    // Use optimize_file_loading=false for precise file control during split operations
                     let instrument_ids = identifier.as_ref().map(|id| vec![id.clone()]);
                     let before_data = self.query_typed_data::<T>(
                         instrument_ids,
@@ -1613,6 +2005,7 @@ impl ParquetDataCatalog {
                         Some(UnixNanos::from(operation.query_end)),
                         None,
                         Some(operation.files.clone()),
+                        false, // optimize_file_loading=false for precise file control
                     )?;
 
                     if !before_data.is_empty() {
@@ -1628,6 +2021,7 @@ impl ParquetDataCatalog {
                 }
                 "split_after" => {
                     // Query data after the deletion range and write it
+                    // Use optimize_file_loading=false for precise file control during split operations
                     let instrument_ids = identifier.as_ref().map(|id| vec![id.clone()]);
                     let after_data = self.query_typed_data::<T>(
                         instrument_ids,
@@ -1635,6 +2029,7 @@ impl ParquetDataCatalog {
                         Some(UnixNanos::from(operation.query_end)),
                         None,
                         Some(operation.files.clone()),
+                        false, // optimize_file_loading=false for precise file control
                     )?;
 
                     if !after_data.is_empty() {
@@ -1662,7 +2057,7 @@ impl ParquetDataCatalog {
         // Remove all files that were processed
         for file in files_to_remove {
             if let Err(e) = self.delete_file(&file) {
-                eprintln!("Failed to delete file {file}: {e}");
+                log::warn!("Failed to delete file {file}: {e}");
             }
         }
 

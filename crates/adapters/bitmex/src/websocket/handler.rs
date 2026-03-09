@@ -20,51 +20,21 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use ahash::AHashMap;
-use dashmap::DashMap;
-use nautilus_common::cache::quote::QuoteCache;
-use nautilus_core::{UnixNanos, time::get_atomic_clock_realtime};
-use nautilus_model::{
-    data::Data,
-    enums::{OrderStatus, OrderType},
-    identifiers::{AccountId, ClientOrderId},
-    instruments::{Instrument, InstrumentAny},
-    types::Price,
-};
 use nautilus_network::{
     RECONNECTED,
     retry::{RetryManager, create_websocket_retry_manager},
     websocket::{AuthTracker, SubscriptionState, WebSocketClient},
 };
 use tokio_tungstenite::tungstenite::Message;
-use ustr::Ustr;
 
 use super::{
-    enums::{BitmexAction, BitmexWsAuthAction, BitmexWsOperation, BitmexWsTopic},
+    enums::{BitmexWsAuthAction, BitmexWsOperation},
     error::BitmexWsError,
-    messages::{
-        BitmexExecutionMsg, BitmexFundingMsg, BitmexHttpRequest, BitmexInstrumentMsg,
-        BitmexOrderBook10Msg, BitmexOrderBookMsg, BitmexPositionMsg, BitmexQuoteMsg,
-        BitmexTableMessage, BitmexTradeBinMsg, BitmexTradeMsg, BitmexWalletMsg, BitmexWsMessage,
-        NautilusWsMessage, OrderData,
-    },
-    parse::{
-        parse_book_msg_vec, parse_book10_msg_vec, parse_execution_msg, parse_funding_msg,
-        parse_instrument_msg, parse_order_msg, parse_order_update_msg, parse_position_msg,
-        parse_trade_bin_msg_vec, parse_trade_msg_vec, parse_wallet_msg,
-    },
-};
-use crate::{
-    common::{enums::BitmexExecType, parse::parse_contracts_quantity},
-    http::parse::{InstrumentParseResult, parse_instrument_any},
+    messages::{BitmexHttpRequest, BitmexRawWsMessage, BitmexWsMessage},
 };
 
 /// Commands sent from the outer client to the inner message handler.
 #[derive(Debug)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "Commands are ephemeral and immediately consumed"
-)]
 pub enum HandlerCommand {
     /// Set the WebSocketClient for the handler to use.
     SetClient(WebSocketClient),
@@ -76,44 +46,30 @@ pub enum HandlerCommand {
     Subscribe { topics: Vec<String> },
     /// Unsubscribe from the given topics.
     Unsubscribe { topics: Vec<String> },
-    /// Initialize the instruments cache with the given instruments.
-    InitializeInstruments(Vec<InstrumentAny>),
-    /// Update a single instrument in the cache.
-    UpdateInstrument(InstrumentAny),
 }
 
 pub(super) struct FeedHandler {
-    account_id: AccountId,
     signal: Arc<AtomicBool>,
     client: Option<WebSocketClient>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
     raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-    out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
+    out_tx: tokio::sync::mpsc::UnboundedSender<BitmexWsMessage>,
     auth_tracker: AuthTracker,
     subscriptions: SubscriptionState,
     retry_manager: RetryManager<BitmexWsError>,
-    instruments_cache: AHashMap<Ustr, InstrumentAny>,
-    order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
-    order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
-    quote_cache: QuoteCache,
 }
 
 impl FeedHandler {
     /// Creates a new [`FeedHandler`] instance.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         signal: Arc<AtomicBool>,
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<HandlerCommand>,
         raw_rx: tokio::sync::mpsc::UnboundedReceiver<Message>,
-        out_tx: tokio::sync::mpsc::UnboundedSender<NautilusWsMessage>,
-        account_id: AccountId,
+        out_tx: tokio::sync::mpsc::UnboundedSender<BitmexWsMessage>,
         auth_tracker: AuthTracker,
         subscriptions: SubscriptionState,
-        order_type_cache: Arc<DashMap<ClientOrderId, OrderType>>,
-        order_symbol_cache: Arc<DashMap<ClientOrderId, Ustr>>,
     ) -> Self {
         Self {
-            account_id,
             signal,
             client: None,
             cmd_rx,
@@ -122,10 +78,6 @@ impl FeedHandler {
             auth_tracker,
             subscriptions,
             retry_manager: create_websocket_retry_manager(),
-            instruments_cache: AHashMap::new(),
-            order_type_cache,
-            order_symbol_cache,
-            quote_cache: QuoteCache::new(),
         }
     }
 
@@ -133,7 +85,7 @@ impl FeedHandler {
         self.signal.load(Ordering::Relaxed)
     }
 
-    pub(super) fn send(&self, msg: NautilusWsMessage) -> Result<(), ()> {
+    pub(super) fn send(&self, msg: BitmexWsMessage) -> Result<(), ()> {
         self.out_tx.send(msg).map_err(|_| ())
     }
 
@@ -161,17 +113,7 @@ impl FeedHandler {
         }
     }
 
-    #[inline]
-    fn get_instrument(
-        cache: &AHashMap<Ustr, InstrumentAny>,
-        symbol: &Ustr,
-    ) -> Option<InstrumentAny> {
-        cache.get(symbol).cloned()
-    }
-
-    pub(super) async fn next(&mut self) -> Option<NautilusWsMessage> {
-        let clock = get_atomic_clock_realtime();
-
+    pub(super) async fn next(&mut self) -> Option<BitmexWsMessage> {
         loop {
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => {
@@ -182,12 +124,14 @@ impl FeedHandler {
                         }
                         HandlerCommand::Disconnect => {
                             log::debug!("Disconnect command received");
+
                             if let Some(client) = self.client.take() {
                                 client.disconnect().await;
                             }
                         }
                         HandlerCommand::Authenticate { payload } => {
                             log::debug!("Authenticate command received");
+
                             if let Err(e) = self.send_with_retry(payload).await {
                                 log::error!("Failed to send authentication after retries: {e}");
                             }
@@ -208,17 +152,7 @@ impl FeedHandler {
                                 }
                             }
                         }
-                        HandlerCommand::InitializeInstruments(instruments) => {
-                            for inst in instruments {
-                                self.instruments_cache.insert(inst.symbol().inner(), inst);
-                            }
-                        }
-                        HandlerCommand::UpdateInstrument(inst) => {
-                            self.instruments_cache.insert(inst.symbol().inner(), inst);
-                        }
                     }
-                    // Continue processing following command
-                    continue;
                 }
 
                 () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
@@ -226,7 +160,6 @@ impl FeedHandler {
                         log::debug!("Stop signal received during idle period");
                         return None;
                     }
-                    continue;
                 }
 
                 msg = self.raw_rx.recv() => {
@@ -241,6 +174,7 @@ impl FeedHandler {
                     // Handle ping frames directly for minimal latency
                     if let Message::Ping(data) = &msg {
                         log::trace!("Received ping frame with {} bytes", data.len());
+
                         if let Some(client) = &self.client
                             && let Err(e) = client.send_pong(data.to_vec()).await
                         {
@@ -259,98 +193,30 @@ impl FeedHandler {
                         return None;
                     }
 
-            match event {
-                BitmexWsMessage::Reconnected => {
-                    self.quote_cache.clear();
-                    return Some(NautilusWsMessage::Reconnected);
-                }
-                BitmexWsMessage::Subscription {
-                    success,
-                    subscribe,
-                    request,
-                    error,
-                } => {
-                    if let Some(msg) = self.handle_subscription_message(
-                        success,
-                        subscribe.as_ref(),
-                        request.as_ref(),
-                        error.as_deref(),
-                    ) {
-                        return Some(msg);
+                    match event {
+                        BitmexRawWsMessage::Reconnected => {
+                            return Some(BitmexWsMessage::Reconnected);
+                        }
+                        BitmexRawWsMessage::Subscription {
+                            success,
+                            subscribe,
+                            request,
+                            error,
+                        } => {
+                            if let Some(msg) = self.handle_subscription_message(
+                                success,
+                                subscribe.as_ref(),
+                                request.as_ref(),
+                                error.as_deref(),
+                            ) {
+                                return Some(msg);
+                            }
+                        }
+                        BitmexRawWsMessage::Table(table_msg) => {
+                            return Some(BitmexWsMessage::Table(table_msg));
+                        }
+                        BitmexRawWsMessage::Welcome { .. } | BitmexRawWsMessage::Error { .. } => {}
                     }
-                    continue;
-                }
-                BitmexWsMessage::Table(table_msg) => {
-                    let ts_init = clock.get_time_ns();
-
-                    let msg = match table_msg {
-                        BitmexTableMessage::OrderBookL2 { action, data } => {
-                            self.handle_orderbook_l2(action, data, ts_init)
-                        }
-                        BitmexTableMessage::OrderBookL2_25 { action, data } => {
-                            self.handle_orderbook_l2(action, data, ts_init)
-                        }
-                        BitmexTableMessage::OrderBook10 { data, .. } => {
-                            self.handle_orderbook_10(data, ts_init)
-                        }
-                        BitmexTableMessage::Quote { data, .. } => {
-                            self.handle_quote(data, ts_init)
-                        }
-                        BitmexTableMessage::Trade { data, .. } => {
-                            self.handle_trade(data, ts_init)
-                        }
-                        BitmexTableMessage::TradeBin1m { action, data } => {
-                            self.handle_trade_bin(action, data, BitmexWsTopic::TradeBin1m, ts_init)
-                        }
-                        BitmexTableMessage::TradeBin5m { action, data } => {
-                            self.handle_trade_bin(action, data, BitmexWsTopic::TradeBin5m, ts_init)
-                        }
-                        BitmexTableMessage::TradeBin1h { action, data } => {
-                            self.handle_trade_bin(action, data, BitmexWsTopic::TradeBin1h, ts_init)
-                        }
-                        BitmexTableMessage::TradeBin1d { action, data } => {
-                            self.handle_trade_bin(action, data, BitmexWsTopic::TradeBin1d, ts_init)
-                        }
-                        // Execution messages
-                        // Note: BitMEX may send duplicate order status updates for the same order
-                        // (e.g., immediate response + stream update). This is expected behavior.
-                        BitmexTableMessage::Order { data, .. } => {
-                            self.handle_order(data)
-                        }
-                        BitmexTableMessage::Execution { data, .. } => {
-                            self.handle_execution(data)
-                        }
-                        BitmexTableMessage::Position { data, .. } => {
-                            self.handle_position(data)
-                        }
-                        BitmexTableMessage::Wallet { data, .. } => {
-                            self.handle_wallet(data, ts_init)
-                        }
-                        BitmexTableMessage::Margin { .. } => {
-                            // Skip margin messages - BitMEX uses account-level cross-margin
-                            // which doesn't map well to Nautilus's per-instrument margin model
-                            None
-                        }
-                        BitmexTableMessage::Instrument { action, data } => {
-                            self.handle_instrument(action, data, ts_init)
-                        }
-                        BitmexTableMessage::Funding { data, .. } => {
-                            self.handle_funding(data, ts_init)
-                        }
-                        _ => {
-                            // Other message types not yet implemented
-                            log::warn!("Unhandled table message type: {table_msg:?}");
-                            None
-                        }
-                    };
-
-                    if let Some(msg) = msg {
-                        return Some(msg);
-                    }
-                    continue;
-                }
-                BitmexWsMessage::Welcome { .. } | BitmexWsMessage::Error { .. } => continue,
-            }
                 }
 
                 // Handle shutdown - either channel closed or stream ended
@@ -362,12 +228,12 @@ impl FeedHandler {
         }
     }
 
-    fn parse_raw_message(msg: Message) -> Option<BitmexWsMessage> {
+    fn parse_raw_message(msg: Message) -> Option<BitmexRawWsMessage> {
         match msg {
             Message::Text(text) => {
                 if text == RECONNECTED {
                     log::info!("Received WebSocket reconnected signal");
-                    return Some(BitmexWsMessage::Reconnected);
+                    return Some(BitmexRawWsMessage::Reconnected);
                 }
 
                 log::trace!("Raw websocket message: {text}");
@@ -379,7 +245,7 @@ impl FeedHandler {
 
                 match serde_json::from_str(&text) {
                     Ok(msg) => match &msg {
-                        BitmexWsMessage::Welcome {
+                        BitmexRawWsMessage::Welcome {
                             version,
                             heartbeat_enabled,
                             limit,
@@ -392,8 +258,8 @@ impl FeedHandler {
                                 limit.remaining,
                             );
                         }
-                        BitmexWsMessage::Subscription { .. } => return Some(msg),
-                        BitmexWsMessage::Error { status, error, .. } => {
+                        BitmexRawWsMessage::Subscription { .. } => return Some(msg),
+                        BitmexRawWsMessage::Error { status, error, .. } => {
                             log::error!(
                                 "Received error from BitMEX: status={status}, error={error}",
                             );
@@ -506,436 +372,13 @@ impl FeedHandler {
         fallback.into_iter().map(|topic| topic.as_str()).collect()
     }
 
-    fn handle_orderbook_l2(
-        &self,
-        action: BitmexAction,
-        data: Vec<BitmexOrderBookMsg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        if data.is_empty() {
-            return None;
-        }
-        let data = parse_book_msg_vec(data, action, &self.instruments_cache, ts_init);
-        Some(NautilusWsMessage::Data(data))
-    }
-
-    fn handle_orderbook_10(
-        &self,
-        data: Vec<BitmexOrderBook10Msg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        if data.is_empty() {
-            return None;
-        }
-        let data = parse_book10_msg_vec(data, &self.instruments_cache, ts_init);
-        Some(NautilusWsMessage::Data(data))
-    }
-
-    fn handle_quote(
-        &mut self,
-        mut data: Vec<BitmexQuoteMsg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        // Index symbols may return empty quote data
-        if data.is_empty() {
-            return None;
-        }
-
-        let msg = data.remove(0);
-        let Some(instrument) = Self::get_instrument(&self.instruments_cache, &msg.symbol) else {
-            log::error!(
-                "Instrument cache miss: quote message dropped for symbol={}",
-                msg.symbol
-            );
-            return None;
-        };
-
-        let instrument_id = instrument.id();
-        let price_precision = instrument.price_precision();
-
-        let bid_price = msg.bid_price.map(|p| Price::new(p, price_precision));
-        let ask_price = msg.ask_price.map(|p| Price::new(p, price_precision));
-        let bid_size = msg
-            .bid_size
-            .map(|s| parse_contracts_quantity(s, &instrument));
-        let ask_size = msg
-            .ask_size
-            .map(|s| parse_contracts_quantity(s, &instrument));
-        let ts_event = UnixNanos::from(msg.timestamp);
-
-        match self.quote_cache.process(
-            instrument_id,
-            bid_price,
-            ask_price,
-            bid_size,
-            ask_size,
-            ts_event,
-            ts_init,
-        ) {
-            Ok(quote) => Some(NautilusWsMessage::Data(vec![Data::Quote(quote)])),
-            Err(e) => {
-                log::warn!("Failed to process quote: {e}");
-                None
-            }
-        }
-    }
-
-    fn handle_trade(
-        &self,
-        data: Vec<BitmexTradeMsg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        if data.is_empty() {
-            return None;
-        }
-        let data = parse_trade_msg_vec(data, &self.instruments_cache, ts_init);
-        Some(NautilusWsMessage::Data(data))
-    }
-
-    fn handle_trade_bin(
-        &self,
-        action: BitmexAction,
-        data: Vec<BitmexTradeBinMsg>,
-        topic: BitmexWsTopic,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        if action == BitmexAction::Partial || data.is_empty() {
-            return None;
-        }
-        let data = parse_trade_bin_msg_vec(data, topic, &self.instruments_cache, ts_init);
-        Some(NautilusWsMessage::Data(data))
-    }
-
-    fn handle_order(&mut self, data: Vec<OrderData>) -> Option<NautilusWsMessage> {
-        // Process all orders in the message
-        let mut reports = Vec::with_capacity(data.len());
-
-        for order_data in data {
-            match order_data {
-                OrderData::Full(order_msg) => {
-                    let Some(instrument) =
-                        Self::get_instrument(&self.instruments_cache, &order_msg.symbol)
-                    else {
-                        log::error!(
-                            "Instrument cache miss: order message dropped for symbol={}, order_id={}",
-                            order_msg.symbol,
-                            order_msg.order_id
-                        );
-                        continue;
-                    };
-
-                    match parse_order_msg(&order_msg, &instrument, &self.order_type_cache) {
-                        Ok(report) => {
-                            // Cache the order type and symbol AFTER successful parse
-                            if let Some(client_order_id) = &order_msg.cl_ord_id {
-                                let client_order_id = ClientOrderId::new(client_order_id);
-
-                                if let Some(ord_type) = &order_msg.ord_type {
-                                    let order_type: OrderType = (*ord_type).into();
-                                    self.order_type_cache.insert(client_order_id, order_type);
-                                }
-
-                                // Cache symbol for execution message routing
-                                self.order_symbol_cache
-                                    .insert(client_order_id, order_msg.symbol);
-                            }
-
-                            if is_terminal_order_status(report.order_status)
-                                && let Some(client_id) = report.client_order_id
-                            {
-                                self.order_type_cache.remove(&client_id);
-                                self.order_symbol_cache.remove(&client_id);
-                            }
-
-                            reports.push(report);
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "Failed to parse full order message - potential data loss: \
-                                error={e}, symbol={}, order_id={}, time_in_force={:?}",
-                                order_msg.symbol,
-                                order_msg.order_id,
-                                order_msg.time_in_force,
-                            );
-                            // TODO: Add metric counter for parse failures
-                            continue;
-                        }
-                    }
-                }
-                OrderData::Update(msg) => {
-                    let Some(instrument) =
-                        Self::get_instrument(&self.instruments_cache, &msg.symbol)
-                    else {
-                        log::error!(
-                            "Instrument cache miss: order update dropped for symbol={}, order_id={}",
-                            msg.symbol,
-                            msg.order_id
-                        );
-                        continue;
-                    };
-
-                    // Populate cache for execution message routing (handles edge case where update arrives before full snapshot)
-                    if let Some(cl_ord_id) = &msg.cl_ord_id {
-                        let client_order_id = ClientOrderId::new(cl_ord_id);
-                        self.order_symbol_cache.insert(client_order_id, msg.symbol);
-                    }
-
-                    if let Some(event) = parse_order_update_msg(&msg, &instrument, self.account_id)
-                    {
-                        return Some(NautilusWsMessage::OrderUpdated(event));
-                    } else {
-                        log::warn!(
-                            "Skipped order update message (insufficient data): \
-                            order_id={}, price={:?}",
-                            msg.order_id,
-                            msg.price,
-                        );
-                    }
-                }
-            }
-        }
-
-        if reports.is_empty() {
-            return None;
-        }
-
-        Some(NautilusWsMessage::OrderStatusReports(reports))
-    }
-
-    fn handle_execution(&mut self, data: Vec<BitmexExecutionMsg>) -> Option<NautilusWsMessage> {
-        let mut fills = Vec::with_capacity(data.len());
-
-        for exec_msg in data {
-            // Try to get symbol, fall back to cache lookup if missing
-            let symbol_opt = if let Some(sym) = &exec_msg.symbol {
-                Some(*sym)
-            } else if let Some(cl_ord_id) = &exec_msg.cl_ord_id {
-                // Try to look up symbol from order_symbol_cache
-                let client_order_id = ClientOrderId::new(cl_ord_id);
-                self.order_symbol_cache
-                    .get(&client_order_id)
-                    .map(|r| *r.value())
-            } else {
-                None
-            };
-
-            let Some(symbol) = symbol_opt else {
-                // Symbol missing - log appropriately based on exec type and whether we had clOrdID
-                if let Some(cl_ord_id) = &exec_msg.cl_ord_id {
-                    if exec_msg.exec_type == Some(BitmexExecType::Trade) {
-                        log::warn!(
-                            "Execution message missing symbol and not found in cache: \
-                            cl_ord_id={cl_ord_id}, exec_id={:?}, ord_rej_reason={:?}, text={:?}",
-                            exec_msg.exec_id,
-                            exec_msg.ord_rej_reason,
-                            exec_msg.text,
-                        );
-                    } else {
-                        log::debug!(
-                            "Execution message missing symbol and not found in cache: \
-                            cl_ord_id={cl_ord_id}, exec_id={:?}, exec_type={:?}, \
-                            ord_rej_reason={:?}, text={:?}",
-                            exec_msg.exec_id,
-                            exec_msg.exec_type,
-                            exec_msg.ord_rej_reason,
-                            exec_msg.text,
-                        );
-                    }
-                } else {
-                    // CancelReject messages without symbol/clOrdID are expected when using
-                    // redundant cancel broadcasting - one cancel succeeds, others arrive late
-                    // and BitMEX responds with CancelReject but doesn't populate the fields
-                    if exec_msg.exec_type == Some(BitmexExecType::CancelReject) {
-                        log::debug!(
-                            "CancelReject message missing symbol/clOrdID (expected with redundant cancels): \
-                            exec_id={:?}, order_id={:?}",
-                            exec_msg.exec_id,
-                            exec_msg.order_id,
-                        );
-                    } else {
-                        log::warn!(
-                            "Execution message missing both symbol and clOrdID, cannot process: \
-                            exec_id={:?}, order_id={:?}, exec_type={:?}, \
-                            ord_rej_reason={:?}, text={:?}",
-                            exec_msg.exec_id,
-                            exec_msg.order_id,
-                            exec_msg.exec_type,
-                            exec_msg.ord_rej_reason,
-                            exec_msg.text,
-                        );
-                    }
-                }
-                continue;
-            };
-
-            let Some(instrument) = Self::get_instrument(&self.instruments_cache, &symbol) else {
-                log::error!(
-                    "Instrument cache miss: execution message dropped for symbol={}, exec_id={:?}, exec_type={:?}, Liquidation/ADL fills may be lost",
-                    symbol,
-                    exec_msg.exec_id,
-                    exec_msg.exec_type
-                );
-                continue;
-            };
-
-            if let Some(fill) = parse_execution_msg(exec_msg, &instrument) {
-                fills.push(fill);
-            }
-        }
-
-        if fills.is_empty() {
-            return None;
-        }
-        Some(NautilusWsMessage::FillReports(fills))
-    }
-
-    fn handle_position(&self, data: Vec<BitmexPositionMsg>) -> Option<NautilusWsMessage> {
-        if let Some(pos_msg) = data.into_iter().next() {
-            let Some(instrument) = Self::get_instrument(&self.instruments_cache, &pos_msg.symbol)
-            else {
-                log::error!(
-                    "Instrument cache miss: position message dropped for symbol={}, account={}",
-                    pos_msg.symbol,
-                    pos_msg.account
-                );
-                return None;
-            };
-            let report = parse_position_msg(pos_msg, &instrument);
-            Some(NautilusWsMessage::PositionStatusReport(report))
-        } else {
-            None
-        }
-    }
-
-    fn handle_wallet(
-        &self,
-        data: Vec<BitmexWalletMsg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        if let Some(wallet_msg) = data.into_iter().next() {
-            let account_state = parse_wallet_msg(wallet_msg, ts_init);
-            Some(NautilusWsMessage::AccountState(account_state))
-        } else {
-            None
-        }
-    }
-
-    fn handle_instrument(
-        &mut self,
-        action: BitmexAction,
-        data: Vec<BitmexInstrumentMsg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        match action {
-            BitmexAction::Partial | BitmexAction::Insert => {
-                let mut instruments = Vec::with_capacity(data.len());
-                let mut temp_cache = AHashMap::new();
-
-                let data_for_prices = data.clone();
-
-                for msg in data {
-                    match msg.try_into() {
-                        Ok(http_inst) => {
-                            match parse_instrument_any(&http_inst, ts_init) {
-                                InstrumentParseResult::Ok(boxed) => {
-                                    let instrument_any = *boxed;
-                                    let symbol = instrument_any.symbol().inner();
-                                    temp_cache.insert(symbol, instrument_any.clone());
-                                    instruments.push(instrument_any);
-                                }
-                                InstrumentParseResult::Unsupported { .. }
-                                | InstrumentParseResult::Inactive { .. } => {
-                                    // Silently skip unsupported or inactive instruments
-                                }
-                                InstrumentParseResult::Failed {
-                                    symbol,
-                                    instrument_type,
-                                    error,
-                                } => {
-                                    log::warn!(
-                                        "Failed to parse instrument {symbol} ({instrument_type:?}): {error}"
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log::debug!("Skipping instrument (missing required fields): {e}");
-                        }
-                    }
-                }
-
-                // Update instruments_cache with new instruments
-                for (symbol, instrument) in &temp_cache {
-                    self.instruments_cache.insert(*symbol, instrument.clone());
-                }
-
-                if !instruments.is_empty()
-                    && let Err(e) = self
-                        .out_tx
-                        .send(NautilusWsMessage::Instruments(instruments))
-                {
-                    log::error!("Error sending instruments: {e}");
-                }
-
-                let mut data_msgs = Vec::with_capacity(data_for_prices.len());
-
-                for msg in data_for_prices {
-                    let parsed = parse_instrument_msg(msg, &temp_cache, ts_init);
-                    data_msgs.extend(parsed);
-                }
-
-                if data_msgs.is_empty() {
-                    return None;
-                }
-                Some(NautilusWsMessage::Data(data_msgs))
-            }
-            BitmexAction::Update => {
-                let mut data_msgs = Vec::with_capacity(data.len());
-
-                for msg in data {
-                    let parsed = parse_instrument_msg(msg, &self.instruments_cache, ts_init);
-                    data_msgs.extend(parsed);
-                }
-
-                if data_msgs.is_empty() {
-                    return None;
-                }
-                Some(NautilusWsMessage::Data(data_msgs))
-            }
-            BitmexAction::Delete => {
-                log::info!(
-                    "Received instrument delete action for {} instrument(s)",
-                    data.len()
-                );
-                None
-            }
-        }
-    }
-
-    fn handle_funding(
-        &self,
-        data: Vec<BitmexFundingMsg>,
-        ts_init: UnixNanos,
-    ) -> Option<NautilusWsMessage> {
-        if data.is_empty() {
-            return None;
-        }
-
-        let funding_updates: Vec<_> = data
-            .into_iter()
-            .map(|msg| parse_funding_msg(msg, ts_init))
-            .collect();
-
-        Some(NautilusWsMessage::FundingRateUpdates(funding_updates))
-    }
-
     fn handle_subscription_message(
         &self,
         success: bool,
         subscribe: Option<&String>,
         request: Option<&BitmexHttpRequest>,
         error: Option<&str>,
-    ) -> Option<NautilusWsMessage> {
+    ) -> Option<BitmexWsMessage> {
         if let Some(req) = request {
             if req
                 .op
@@ -944,7 +387,7 @@ impl FeedHandler {
                 if success {
                     log::info!("WebSocket authenticated");
                     self.auth_tracker.succeed();
-                    return Some(NautilusWsMessage::Authenticated);
+                    return Some(BitmexWsMessage::Authenticated);
                 } else {
                     let reason = error.unwrap_or("Authentication rejected").to_string();
                     log::error!("WebSocket authentication failed: {reason}");
@@ -981,13 +424,6 @@ impl FeedHandler {
 
         None
     }
-}
-
-fn is_terminal_order_status(status: OrderStatus) -> bool {
-    matches!(
-        status,
-        OrderStatus::Canceled | OrderStatus::Expired | OrderStatus::Rejected | OrderStatus::Filled,
-    )
 }
 
 /// Returns `true` when a BitMEX error should be retried.

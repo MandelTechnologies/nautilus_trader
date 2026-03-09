@@ -74,7 +74,7 @@ impl LogWriter for StdoutWriter {
     }
 
     fn enabled(&self, line: &LogLine) -> bool {
-        // Prevent error logs also writing to stdout
+        // Prevent error logs also writing to stdout (they go to stderr)
         line.level > LevelFilter::Error && line.level <= self.level
     }
 }
@@ -158,7 +158,7 @@ impl From<(u64, u32)> for FileRotateConfig {
 
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common", from_py_object)
 )]
 #[derive(Debug, Clone, Default)]
 pub struct FileWriterConfig {

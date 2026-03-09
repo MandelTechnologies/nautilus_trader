@@ -34,6 +34,7 @@ use nautilus_model::{
     data::{
         Bar, Data, FundingRateUpdate, GreeksData, IndexPriceUpdate, MarkPriceUpdate,
         OrderBookDeltas, OrderBookDepth10, QuoteTick, TradeTick,
+        option_chain::{OptionChainSlice, OptionGreeks},
     },
     events::{AccountState, OrderEventAny, PositionEvent},
     orderbook::OrderBook,
@@ -41,12 +42,14 @@ use nautilus_model::{
     position::Position,
 };
 use smallvec::SmallVec;
+use ustr::Ustr;
 
 use super::{
     ACCOUNT_STATE_HANDLERS, ANY_HANDLERS, BAR_HANDLERS, BOOK_HANDLERS, DELTAS_HANDLERS,
     DEPTH10_HANDLERS, FUNDING_RATE_HANDLERS, GREEKS_HANDLERS, HANDLER_BUFFER_CAP,
-    INDEX_PRICE_HANDLERS, MARK_PRICE_HANDLERS, MESSAGE_BUS, ORDER_EVENT_HANDLERS,
-    POSITION_EVENT_HANDLERS, QUOTE_HANDLERS, TRADE_HANDLERS,
+    INDEX_PRICE_HANDLERS, MARK_PRICE_HANDLERS, MESSAGE_BUS, OPTION_CHAIN_HANDLERS,
+    OPTION_GREEKS_HANDLERS, ORDER_EVENT_HANDLERS, POSITION_EVENT_HANDLERS, QUOTE_HANDLERS,
+    TRADE_HANDLERS,
     core::{MessageBus, Subscription},
     get_message_bus,
     matching::is_matching_backtracking,
@@ -378,6 +381,30 @@ pub fn subscribe_greeks(
         .subscribe(pattern, handler, priority.unwrap_or(0));
 }
 
+/// Subscribes a handler to option greeks updates matching a pattern.
+pub fn subscribe_option_greeks(
+    pattern: MStr<Pattern>,
+    handler: TypedHandler<OptionGreeks>,
+    priority: Option<u8>,
+) {
+    get_message_bus()
+        .borrow_mut()
+        .router_option_greeks
+        .subscribe(pattern, handler, priority.unwrap_or(0));
+}
+
+/// Subscribes a handler to option chain slice updates matching a pattern.
+pub fn subscribe_option_chain(
+    pattern: MStr<Pattern>,
+    handler: TypedHandler<OptionChainSlice>,
+    priority: Option<u8>,
+) {
+    get_message_bus()
+        .borrow_mut()
+        .router_option_chain
+        .subscribe(pattern, handler, priority.unwrap_or(0));
+}
+
 /// Subscribes a handler to order events matching a pattern.
 pub fn subscribe_order_events(
     pattern: MStr<Pattern>,
@@ -618,6 +645,22 @@ pub fn unsubscribe_position_events(pattern: MStr<Pattern>, handler: &TypedHandle
         .unsubscribe(pattern, handler);
 }
 
+/// Removes a specific order event handler by pattern and handler ID.
+pub fn remove_order_event_handler(pattern: MStr<Pattern>, handler_id: Ustr) {
+    get_message_bus()
+        .borrow_mut()
+        .router_order_events
+        .remove_handler(pattern, handler_id);
+}
+
+/// Removes a specific position event handler by pattern and handler ID.
+pub fn remove_position_event_handler(pattern: MStr<Pattern>, handler_id: Ustr) {
+    get_message_bus()
+        .borrow_mut()
+        .router_position_events
+        .remove_handler(pattern, handler_id);
+}
+
 /// Unsubscribes a handler from orders.
 pub fn unsubscribe_orders(pattern: MStr<Pattern>, handler: &TypedHandler<OrderAny>) {
     get_message_bus()
@@ -639,6 +682,22 @@ pub fn unsubscribe_greeks(pattern: MStr<Pattern>, handler: &TypedHandler<GreeksD
     get_message_bus()
         .borrow_mut()
         .router_greeks
+        .unsubscribe(pattern, handler);
+}
+
+/// Unsubscribes a handler from option greeks updates.
+pub fn unsubscribe_option_greeks(pattern: MStr<Pattern>, handler: &TypedHandler<OptionGreeks>) {
+    get_message_bus()
+        .borrow_mut()
+        .router_option_greeks
+        .unsubscribe(pattern, handler);
+}
+
+/// Unsubscribes a handler from option chain slice updates.
+pub fn unsubscribe_option_chain(pattern: MStr<Pattern>, handler: &TypedHandler<OptionChainSlice>) {
+    get_message_bus()
+        .borrow_mut()
+        .router_option_chain
         .unsubscribe(pattern, handler);
 }
 
@@ -761,9 +820,18 @@ pub fn subscriber_count_book_snapshots(topic: MStr<Topic>) -> usize {
         .subscriber_count(topic)
 }
 
+/// Returns the exact subscriber count for bars on a topic,
+/// excluding wildcard pattern subscriptions.
+pub fn exact_subscriber_count_bars(topic: MStr<Topic>) -> usize {
+    get_message_bus()
+        .borrow()
+        .router_bars
+        .exact_subscriber_count(topic)
+}
+
 /// Publishes a message to the topic using runtime type dispatch (Any).
 pub fn publish_any(topic: MStr<Topic>, message: &dyn Any) {
-    // SAFETY: Take buffer (re-entrancy safe)
+    // Take buffer (re-entrancy safe)
     let mut handlers = ANY_HANDLERS.with_borrow_mut(std::mem::take);
 
     get_message_bus()
@@ -865,6 +933,24 @@ pub fn publish_greeks(topic: MStr<Topic>, greeks: &GreeksData) {
         &GREEKS_HANDLERS,
         |bus, h| bus.router_greeks.fill_matching_handlers(topic, h),
         greeks,
+    );
+}
+
+/// Publishes option greeks to subscribers on a topic.
+pub fn publish_option_greeks(topic: MStr<Topic>, option_greeks: &OptionGreeks) {
+    publish_typed(
+        &OPTION_GREEKS_HANDLERS,
+        |bus, h| bus.router_option_greeks.fill_matching_handlers(topic, h),
+        option_greeks,
+    );
+}
+
+/// Publishes an option chain slice to subscribers on a topic.
+pub fn publish_option_chain(topic: MStr<Topic>, slice: &OptionChainSlice) {
+    publish_typed(
+        &OPTION_CHAIN_HANDLERS,
+        |bus, h| bus.router_option_chain.fill_matching_handlers(topic, h),
+        slice,
     );
 }
 
@@ -970,7 +1056,7 @@ fn publish_typed<T: 'static>(
     fill_fn: impl FnOnce(&mut MessageBus, &mut SmallVec<[TypedHandler<T>; HANDLER_BUFFER_CAP]>),
     message: &T,
 ) {
-    // SAFETY: Take buffer (re-entrancy safe)
+    // Take buffer (re-entrancy safe)
     let mut handlers = tls.with_borrow_mut(std::mem::take);
 
     // Borrow scope ends before dispatch to support re-entrant publishes
@@ -1024,6 +1110,8 @@ pub fn send_response(correlation_id: &UUID4, message: DataResponse) {
             DataResponse::Book(resp) => handler.0.handle(resp),
             DataResponse::Quotes(resp) => handler.0.handle(resp),
             DataResponse::Trades(resp) => handler.0.handle(resp),
+            DataResponse::FundingRates(resp) => handler.0.handle(resp),
+            DataResponse::ForwardPrices(resp) => handler.0.handle(resp),
             DataResponse::Bars(resp) => handler.0.handle(resp),
         }
     } else {
@@ -1198,11 +1286,17 @@ mod tests {
     use nautilus_core::UUID4;
     use nautilus_model::{
         data::{Bar, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick},
-        identifiers::InstrumentId,
+        enums::OrderSide,
+        events::OrderDenied,
+        identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     };
     use rstest::rstest;
 
     use super::*;
+    use crate::messages::{
+        data::{DataCommand, SubscribeCommand, SubscribeQuotes},
+        execution::{CancelAllOrders, TradingCommand},
+    };
 
     #[rstest]
     fn test_typed_quote_publish_subscribe_integration() {
@@ -1608,5 +1702,237 @@ mod tests {
         send_execution_report(endpoint, report);
 
         assert!(*topic_retrieved.borrow());
+    }
+
+    #[rstest]
+    fn test_order_event_handler_can_send_trading_command() {
+        // Tests that a handler processing an order event can send a trading command
+        // without causing a borrow conflict. This simulates the scenario where a
+        // strategy's on_order_accepted() handler calls cancel_order().
+        let _msgbus = get_message_bus();
+        let command_sent = Rc::new(RefCell::new(false));
+        let command_sent_clone = command_sent.clone();
+
+        let cmd_received = Rc::new(RefCell::new(false));
+        let cmd_received_clone = cmd_received.clone();
+        let cmd_handler = TypedIntoHandler::from(move |_cmd: TradingCommand| {
+            *cmd_received_clone.borrow_mut() = true;
+        });
+        let cmd_endpoint: MStr<Endpoint> = "ReentrantTest.execCmd".into();
+        register_trading_command_endpoint(cmd_endpoint, cmd_handler);
+
+        let event_handler = TypedIntoHandler::from(move |_event: OrderEventAny| {
+            // Simulate strategy calling cancel_order from on_order_accepted
+            let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
+                TraderId::new("TESTER-001"),
+                None,
+                StrategyId::new("S-001"),
+                InstrumentId::from("TEST.VENUE"),
+                OrderSide::Buy,
+                UUID4::new(),
+                0.into(),
+                None,
+            ));
+            send_trading_command(cmd_endpoint, command);
+            *command_sent_clone.borrow_mut() = true;
+        });
+
+        let event_endpoint: MStr<Endpoint> = "ReentrantTest.orderEvt".into();
+        register_order_event_endpoint(event_endpoint, event_handler);
+
+        let event = OrderEventAny::Denied(OrderDenied::new(
+            TraderId::new("TESTER-001"),
+            StrategyId::new("S-001"),
+            InstrumentId::from("TEST.VENUE"),
+            ClientOrderId::new("O-001"),
+            "Test denial".into(),
+            UUID4::new(),
+            0.into(),
+            0.into(),
+        ));
+        send_order_event(event_endpoint, event);
+
+        assert!(
+            *command_sent.borrow(),
+            "Order event handler should have run"
+        );
+        assert!(
+            *cmd_received.borrow(),
+            "Trading command should have been received"
+        );
+    }
+
+    #[rstest]
+    fn test_data_handler_can_send_data_command() {
+        // Tests that a handler processing data can send a data command
+        // without causing a borrow conflict.
+        let _msgbus = get_message_bus();
+        let command_sent = Rc::new(RefCell::new(false));
+        let command_sent_clone = command_sent.clone();
+
+        let cmd_received = Rc::new(RefCell::new(false));
+        let cmd_received_clone = cmd_received.clone();
+        let cmd_handler = TypedIntoHandler::from(move |_cmd: DataCommand| {
+            *cmd_received_clone.borrow_mut() = true;
+        });
+        let cmd_endpoint: MStr<Endpoint> = "ReentrantTest.dataCmd2".into();
+        register_data_command_endpoint(cmd_endpoint, cmd_handler);
+
+        let data_handler = TypedIntoHandler::from(move |_data: Data| {
+            let command = DataCommand::Subscribe(SubscribeCommand::Quotes(SubscribeQuotes::new(
+                InstrumentId::from("TEST.VENUE"),
+                Some(ClientId::new("SIM")),
+                None,
+                UUID4::new(),
+                0.into(),
+                None,
+                None,
+            )));
+            send_data_command(cmd_endpoint, command);
+            *command_sent_clone.borrow_mut() = true;
+        });
+
+        let data_endpoint: MStr<Endpoint> = "ReentrantTest.data2".into();
+        register_data_endpoint(data_endpoint, data_handler);
+
+        let quote = QuoteTick::default();
+        send_data(data_endpoint, Data::Quote(quote));
+
+        assert!(*command_sent.borrow(), "Data handler should have run");
+        assert!(
+            *cmd_received.borrow(),
+            "Data command should have been received"
+        );
+    }
+
+    #[rstest]
+    fn test_trading_command_handler_can_send_order_event() {
+        // Tests that a handler processing a trading command can send an order event
+        // without causing a borrow conflict. This is the reverse direction of the
+        // common re-entrancy scenario.
+        let _msgbus = get_message_bus();
+        let event_sent = Rc::new(RefCell::new(false));
+        let event_sent_clone = event_sent.clone();
+
+        let evt_received = Rc::new(RefCell::new(false));
+        let evt_received_clone = evt_received.clone();
+        let evt_handler = TypedIntoHandler::from(move |_event: OrderEventAny| {
+            *evt_received_clone.borrow_mut() = true;
+        });
+        let evt_endpoint: MStr<Endpoint> = "ReentrantTest.orderEvt2".into();
+        register_order_event_endpoint(evt_endpoint, evt_handler);
+
+        let cmd_handler = TypedIntoHandler::from(move |_cmd: TradingCommand| {
+            let event = OrderEventAny::Denied(OrderDenied::new(
+                TraderId::new("TESTER-001"),
+                StrategyId::new("S-001"),
+                InstrumentId::from("TEST.VENUE"),
+                ClientOrderId::new("O-001"),
+                "Test denial".into(),
+                UUID4::new(),
+                0.into(),
+                0.into(),
+            ));
+            send_order_event(evt_endpoint, event);
+            *event_sent_clone.borrow_mut() = true;
+        });
+
+        let cmd_endpoint: MStr<Endpoint> = "ReentrantTest.execCmd2".into();
+        register_trading_command_endpoint(cmd_endpoint, cmd_handler);
+
+        let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
+            TraderId::new("TESTER-001"),
+            None,
+            StrategyId::new("S-001"),
+            InstrumentId::from("TEST.VENUE"),
+            OrderSide::Buy,
+            UUID4::new(),
+            0.into(),
+            None,
+        ));
+        send_trading_command(cmd_endpoint, command);
+
+        assert!(
+            *event_sent.borrow(),
+            "Trading command handler should have run"
+        );
+        assert!(
+            *evt_received.borrow(),
+            "Order event should have been received"
+        );
+    }
+
+    #[rstest]
+    fn test_nested_reentrant_calls() {
+        // Tests deeply nested re-entrant calls: order event -> trading command -> order event.
+        // This simulates a complex scenario where handlers chain multiple calls.
+        let _msgbus = get_message_bus();
+        let call_depth = Rc::new(RefCell::new(0u32));
+
+        let final_received = Rc::new(RefCell::new(false));
+        let final_received_clone = final_received.clone();
+        let final_evt_handler = TypedIntoHandler::from(move |_event: OrderEventAny| {
+            *final_received_clone.borrow_mut() = true;
+        });
+        let final_evt_endpoint: MStr<Endpoint> = "ReentrantTest.finalEvt".into();
+        register_order_event_endpoint(final_evt_endpoint, final_evt_handler);
+
+        let call_depth_clone2 = call_depth.clone();
+        let mid_cmd_handler = TypedIntoHandler::from(move |_cmd: TradingCommand| {
+            *call_depth_clone2.borrow_mut() += 1;
+            let event = OrderEventAny::Denied(OrderDenied::new(
+                TraderId::new("TESTER-001"),
+                StrategyId::new("S-001"),
+                InstrumentId::from("TEST.VENUE"),
+                ClientOrderId::new("O-002"),
+                "Nested denial".into(),
+                UUID4::new(),
+                0.into(),
+                0.into(),
+            ));
+            send_order_event(final_evt_endpoint, event);
+        });
+        let mid_cmd_endpoint: MStr<Endpoint> = "ReentrantTest.midCmd".into();
+        register_trading_command_endpoint(mid_cmd_endpoint, mid_cmd_handler);
+
+        let call_depth_clone1 = call_depth.clone();
+        let init_evt_handler = TypedIntoHandler::from(move |_event: OrderEventAny| {
+            *call_depth_clone1.borrow_mut() += 1;
+            let command = TradingCommand::CancelAllOrders(CancelAllOrders::new(
+                TraderId::new("TESTER-001"),
+                None,
+                StrategyId::new("S-001"),
+                InstrumentId::from("TEST.VENUE"),
+                OrderSide::Buy,
+                UUID4::new(),
+                0.into(),
+                None,
+            ));
+            send_trading_command(mid_cmd_endpoint, command);
+        });
+        let init_evt_endpoint: MStr<Endpoint> = "ReentrantTest.initEvt".into();
+        register_order_event_endpoint(init_evt_endpoint, init_evt_handler);
+
+        let event = OrderEventAny::Denied(OrderDenied::new(
+            TraderId::new("TESTER-001"),
+            StrategyId::new("S-001"),
+            InstrumentId::from("TEST.VENUE"),
+            ClientOrderId::new("O-001"),
+            "Initial denial".into(),
+            UUID4::new(),
+            0.into(),
+            0.into(),
+        ));
+        send_order_event(init_evt_endpoint, event);
+
+        assert_eq!(
+            *call_depth.borrow(),
+            2,
+            "Both intermediate handlers should have run"
+        );
+        assert!(
+            *final_received.borrow(),
+            "Final event handler should have received the event"
+        );
     }
 }

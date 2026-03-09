@@ -276,6 +276,7 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
                                 "code": -2010,
                                 "msg": "Order rejected: insufficient balance"
                             });
+
                             if socket
                                 .send(Message::Text(error_response.to_string().into()))
                                 .await
@@ -313,6 +314,7 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
                             "code": -2011,
                             "msg": "Order does not exist"
                         });
+
                         if socket
                             .send(Message::Text(error_response.to_string().into()))
                             .await
@@ -326,6 +328,7 @@ async fn handle_socket(mut socket: WebSocket, state: TestServerState) {
             }
             Message::Ping(_) => {
                 state.ping_count.fetch_add(1, Ordering::Relaxed);
+
                 if socket.send(Message::Pong(vec![].into())).await.is_err() {
                     break;
                 }
@@ -540,7 +543,7 @@ async fn test_order_rejection_via_json_error() {
                             assert_eq!(code, -2010);
                             assert!(msg.contains("insufficient balance"));
                         }
-                        _ => panic!("Expected OrderRejected, got {rejection:?}"),
+                        _ => panic!("Expected OrderRejected, was {rejection:?}"),
                     }
                 }
             }
@@ -548,7 +551,7 @@ async fn test_order_rejection_via_json_error() {
                 assert_eq!(code, -2010);
                 assert!(msg.contains("insufficient balance"));
             }
-            _ => panic!("Expected OrderRejected or Connected, got {msg:?}"),
+            _ => panic!("Expected OrderRejected or Connected, was {msg:?}"),
         }
     }
 

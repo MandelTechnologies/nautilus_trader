@@ -18,7 +18,10 @@
 use std::{any::Any, cell::RefCell, fmt::Debug, path::PathBuf, rc::Rc};
 
 use nautilus_common::{cache::Cache, clients::DataClient, clock::Clock};
-use nautilus_core::time::{AtomicTime, get_atomic_clock_realtime};
+use nautilus_core::{
+    string::REDACTED,
+    time::{AtomicTime, get_atomic_clock_realtime},
+};
 use nautilus_model::identifiers::ClientId;
 use nautilus_system::factories::{ClientConfig, DataClientFactory};
 
@@ -30,6 +33,13 @@ use crate::{
 
 /// Configuration for Databento data clients used with `LiveNode`.
 #[derive(Clone)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.databento",
+        from_py_object
+    )
+)]
 pub struct DatabentoLiveClientConfig {
     /// Databento API credential.
     credential: Credential,
@@ -44,7 +54,7 @@ pub struct DatabentoLiveClientConfig {
 impl Debug for DatabentoLiveClientConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(DatabentoLiveClientConfig))
-            .field("credential", &"<redacted>")
+            .field("credential", &REDACTED)
             .field("publishers_filepath", &self.publishers_filepath)
             .field("use_exchange_as_venue", &self.use_exchange_as_venue)
             .field("bars_timestamp_on_close", &self.bars_timestamp_on_close)
@@ -89,7 +99,14 @@ impl ClientConfig for DatabentoLiveClientConfig {
 }
 
 /// Factory for creating Databento data clients.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.databento",
+        from_py_object
+    )
+)]
 pub struct DatabentoDataClientFactory;
 
 impl DatabentoDataClientFactory {
@@ -276,8 +293,6 @@ impl DatabentoDataClientConfigBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
-
     use nautilus_core::time::get_atomic_clock_realtime;
     use rstest::rstest;
 
@@ -312,27 +327,23 @@ mod tests {
 
     #[rstest]
     fn test_historical_client_factory() {
-        let api_key = env::var("DATABENTO_API_KEY").unwrap_or_else(|_| "test_key".to_string());
+        let api_key = "db-test0000000000000000000000000".to_string();
         let publishers_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("publishers.json");
         let clock = get_atomic_clock_realtime();
 
-        // This will fail without a real publishers.json file, but tests the factory creation
         let result =
             DatabentoHistoricalClientFactory::create(api_key, publishers_path, false, clock);
 
-        // We expect this to fail in tests due to missing publishers.json
-        // but the factory function should be callable
-        assert!(result.is_err() || result.is_ok());
+        assert!(result.is_ok());
     }
 
     #[rstest]
-    fn test_live_data_client_factory() {
+    fn test_live_data_client_factory_missing_publishers() {
         let client_id = ClientId::from("DATABENTO-001");
         let api_key = "test_key".to_string();
-        let publishers_path = PathBuf::from("test_publishers.json");
+        let publishers_path = PathBuf::from("nonexistent_publishers.json");
         let clock = get_atomic_clock_realtime();
 
-        // This will fail without a real publishers.json file, but tests the factory creation
         let result = DatabentoDataClientFactory::create_live_data_client(
             client_id,
             api_key,
@@ -342,8 +353,6 @@ mod tests {
             clock,
         );
 
-        // We expect this to fail in tests due to missing publishers.json
-        // but the factory function should be callable
-        assert!(result.is_err() || result.is_ok());
+        assert!(result.is_err());
     }
 }

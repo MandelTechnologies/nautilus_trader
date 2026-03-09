@@ -229,6 +229,7 @@ impl Log for Logger {
                 component,
                 message: format!("{}", record.args()),
             };
+
             if let Err(SendError(LogEvent::Log(line))) = self.tx.send(LogEvent::Log(line)) {
                 eprintln!("Error sending log event (receiver closed): {line}");
             }
@@ -356,12 +357,13 @@ impl Logger {
             log_components_only,
             is_colored,
             print_config: _,
+            use_tracing: _,
         } = config;
 
         // Pre-sort module filters by descending path length for O(n) longest-prefix lookup
         let mut module_filters_sorted: Vec<(Ustr, LevelFilter)> =
             module_level.into_iter().collect();
-        module_filters_sorted.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        module_filters_sorted.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
         let trader_id_cache = Ustr::from(&trader_id);
 
@@ -734,6 +736,7 @@ mod tests {
                 log_components_only: false,
                 is_colored: true,
                 print_config: false,
+                use_tracing: false,
             }
         );
     }
@@ -751,6 +754,7 @@ mod tests {
                 log_components_only: false,
                 is_colored: true,
                 print_config: true,
+                use_tracing: false,
             }
         );
     }
@@ -772,6 +776,7 @@ mod tests {
                 log_components_only: true,
                 is_colored: true,
                 print_config: false,
+                use_tracing: false,
             }
         );
     }
@@ -874,7 +879,7 @@ mod tests {
     /// Helper to convert module level map to sorted vec (descending by path length)
     fn sorted_module_filters(map: AHashMap<Ustr, LevelFilter>) -> Vec<(Ustr, LevelFilter)> {
         let mut v: Vec<_> = map.into_iter().collect();
-        v.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        v.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
         v
     }
 
@@ -1118,7 +1123,7 @@ mod tests {
 
             log::info!(
                 component = "RiskEngine";
-                "This is a test."
+                "This is a test"
             );
 
             let mut log_contents = String::new();
@@ -1152,7 +1157,7 @@ mod tests {
 
             assert_eq!(
                 log_contents,
-                "1970-01-20T02:20:00.000000000Z [INFO] TRADER-001.RiskEngine: This is a test.\n"
+                "1970-01-20T02:20:00.000000000Z [INFO] TRADER-001.RiskEngine: This is a test\n"
             );
         }
 
@@ -1245,7 +1250,7 @@ mod tests {
 
             log::info!(
                 component = "RiskEngine";
-                "This is a test."
+                "This is a test"
             );
 
             drop(log_guard); // Ensure log buffers are flushed
@@ -1302,7 +1307,7 @@ mod tests {
 
             log::info!(
                 component = "RiskEngine";
-                "This is a test."
+                "This is a test"
             );
 
             let mut log_contents = String::new();
@@ -1329,7 +1334,7 @@ mod tests {
 
             assert_eq!(
                 log_contents,
-                "{\"timestamp\":\"1970-01-20T02:20:00.000000000Z\",\"trader_id\":\"TRADER-001\",\"level\":\"INFO\",\"color\":\"NORMAL\",\"component\":\"RiskEngine\",\"message\":\"This is a test.\"}\n"
+                "{\"timestamp\":\"1970-01-20T02:20:00.000000000Z\",\"trader_id\":\"TRADER-001\",\"level\":\"INFO\",\"color\":\"NORMAL\",\"component\":\"RiskEngine\",\"message\":\"This is a test\"}\n"
             );
         }
 

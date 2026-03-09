@@ -262,12 +262,8 @@ impl QuoteTick {
         instrument_id: &InstrumentId,
         price_precision: u8,
         size_precision: u8,
-    ) -> PyResult<HashMap<String, String>> {
-        Ok(Self::get_metadata(
-            instrument_id,
-            price_precision,
-            size_precision,
-        ))
+    ) -> HashMap<String, String> {
+        Self::get_metadata(instrument_id, price_precision, size_precision)
     }
 
     #[staticmethod]
@@ -329,13 +325,13 @@ impl QuoteTick {
     }
 
     #[pyo3(name = "extract_price")]
-    fn py_extract_price(&self, price_type: PriceType) -> PyResult<Price> {
-        Ok(self.extract_price(price_type))
+    fn py_extract_price(&self, price_type: PriceType) -> Price {
+        self.extract_price(price_type)
     }
 
     #[pyo3(name = "extract_size")]
-    fn py_extract_size(&self, price_type: PriceType) -> PyResult<Quantity> {
-        Ok(self.extract_size(price_type))
+    fn py_extract_size(&self, price_type: PriceType) -> Quantity {
+        self.extract_size(price_type)
     }
 
     /// Creates a `PyCapsule` containing a raw pointer to a `Data::Quote` object.
@@ -367,14 +363,12 @@ impl QuoteTick {
     /// Return JSON encoded bytes representation of the object.
     #[pyo3(name = "to_json_bytes")]
     fn py_to_json_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_json_bytes().unwrap().into_py_any_unwrap(py)
     }
 
     /// Return MsgPack encoded bytes representation of the object.
     #[pyo3(name = "to_msgpack_bytes")]
     fn py_to_msgpack_bytes(&self, py: Python<'_>) -> Py<PyAny> {
-        // SAFETY: Unwrap safe when serializing a valid object
         self.to_msgpack_bytes().unwrap().into_py_any_unwrap(py)
     }
 }
@@ -434,7 +428,7 @@ mod tests {
         Python::initialize();
         Python::attach(|py| {
             let dict_string = quote.py_to_dict(py).unwrap().to_string();
-            let expected_string = r"{'type': 'QuoteTick', 'instrument_id': 'ETHUSDT-PERP.BINANCE', 'bid_price': '10000.0000', 'ask_price': '10001.0000', 'bid_size': '1.00000000', 'ask_size': '1.00000000', 'ts_event': 0, 'ts_init': 1}";
+            let expected_string = "{'type': 'QuoteTick', 'instrument_id': 'ETHUSDT-PERP.BINANCE', 'bid_price': '10000.0000', 'ask_price': '10001.0000', 'bid_size': '1.00000000', 'ask_size': '1.00000000', 'ts_event': 0, 'ts_init': 1}";
             assert_eq!(dict_string, expected_string);
         });
     }

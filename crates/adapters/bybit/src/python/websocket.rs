@@ -17,10 +17,10 @@
 
 use futures_util::StreamExt;
 use nautilus_common::live::get_runtime;
-use nautilus_core::python::{call_python, to_pyruntime_err};
+use nautilus_core::python::{call_python_threadsafe, to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::{
-    data::{Data, OrderBookDeltas_API},
-    enums::{OrderSide, OrderType, TimeInForce},
+    data::{BarType, Data, OrderBookDeltas_API},
+    enums::{AggregationSource, BarAggregation, OrderSide, OrderType, PriceType, TimeInForce},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     python::{data::data_to_pycapsule, instruments::pyobject_to_instrument_any},
     types::{Price, Quantity},
@@ -35,6 +35,32 @@ use crate::{
         messages::{BybitWebSocketError, NautilusWsMessage},
     },
 };
+
+fn validate_bar_type(bar_type: &BarType) -> anyhow::Result<()> {
+    let spec = bar_type.spec();
+
+    if spec.price_type != PriceType::Last {
+        anyhow::bail!(
+            "Invalid bar type: Bybit bars only support LAST price type, received {}",
+            spec.price_type
+        );
+    }
+
+    if bar_type.aggregation_source() != AggregationSource::External {
+        anyhow::bail!(
+            "Invalid bar type: Bybit bars only support EXTERNAL aggregation source, received {}",
+            bar_type.aggregation_source()
+        );
+    }
+
+    let step = spec.step.get();
+    if spec.aggregation == BarAggregation::Minute && step >= 60 {
+        let hours = step / 60;
+        anyhow::bail!("Invalid bar type: {step}-MINUTE not supported, use {hours}-HOUR instead");
+    }
+
+    Ok(())
+}
 
 #[pymethods]
 impl BybitWebSocketError {
@@ -158,8 +184,10 @@ impl BybitWebSocketClient {
     fn py_connect<'py>(
         &mut self,
         py: Python<'py>,
+        loop_: Py<PyAny>,
         callback: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let call_soon: Py<PyAny> = loop_.getattr(py, "call_soon_threadsafe")?;
         let mut client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
@@ -176,7 +204,7 @@ impl BybitWebSocketClient {
                             Python::attach(|py| {
                                 for data in data_vec {
                                     let py_obj = data_to_pycapsule(py, data);
-                                    call_python(py, &callback, py_obj);
+                                    call_python_threadsafe(py, &call_soon, &callback, py_obj);
                                 }
                             });
                         }
@@ -186,58 +214,77 @@ impl BybitWebSocketClient {
                                     py,
                                     Data::Deltas(OrderBookDeltas_API::new(deltas)),
                                 );
-                                call_python(py, &callback, py_obj);
+                                call_python_threadsafe(py, &call_soon, &callback, py_obj);
                             });
                         }
                         NautilusWsMessage::FundingRates(rates) => {
                             for rate in rates {
-                                call_python_with_data(&callback, move |py| {
+                                call_python_with_data(&call_soon, &callback, move |py| {
                                     rate.into_py_any(py).map(|obj| obj.into_bound(py))
+                                });
+                            }
+                        }
+                        NautilusWsMessage::MarkPrices(prices) => {
+                            for price in prices {
+                                call_python_with_data(&call_soon, &callback, move |py| {
+                                    price.into_py_any(py).map(|obj| obj.into_bound(py))
+                                });
+                            }
+                        }
+                        NautilusWsMessage::IndexPrices(prices) => {
+                            for price in prices {
+                                call_python_with_data(&call_soon, &callback, move |py| {
+                                    price.into_py_any(py).map(|obj| obj.into_bound(py))
                                 });
                             }
                         }
                         NautilusWsMessage::OrderStatusReports(reports) => {
                             for report in reports {
-                                call_python_with_data(&callback, move |py| {
+                                call_python_with_data(&call_soon, &callback, move |py| {
                                     report.into_py_any(py).map(|obj| obj.into_bound(py))
                                 });
                             }
                         }
                         NautilusWsMessage::FillReports(reports) => {
                             for report in reports {
-                                call_python_with_data(&callback, move |py| {
+                                call_python_with_data(&call_soon, &callback, move |py| {
                                     report.into_py_any(py).map(|obj| obj.into_bound(py))
                                 });
                             }
                         }
                         NautilusWsMessage::PositionStatusReport(report) => {
-                            call_python_with_data(&callback, move |py| {
+                            call_python_with_data(&call_soon, &callback, move |py| {
                                 report.into_py_any(py).map(|obj| obj.into_bound(py))
                             });
                         }
                         NautilusWsMessage::AccountState(state) => {
-                            call_python_with_data(&callback, move |py| {
+                            call_python_with_data(&call_soon, &callback, move |py| {
                                 state.into_py_any(py).map(|obj| obj.into_bound(py))
                             });
                         }
                         NautilusWsMessage::OrderRejected(event) => {
-                            call_python_with_data(&callback, move |py| {
+                            call_python_with_data(&call_soon, &callback, move |py| {
                                 event.into_py_any(py).map(|obj| obj.into_bound(py))
                             });
                         }
                         NautilusWsMessage::OrderCancelRejected(event) => {
-                            call_python_with_data(&callback, move |py| {
+                            call_python_with_data(&call_soon, &callback, move |py| {
                                 event.into_py_any(py).map(|obj| obj.into_bound(py))
                             });
                         }
                         NautilusWsMessage::OrderModifyRejected(event) => {
-                            call_python_with_data(&callback, move |py| {
+                            call_python_with_data(&call_soon, &callback, move |py| {
                                 event.into_py_any(py).map(|obj| obj.into_bound(py))
                             });
                         }
                         NautilusWsMessage::Error(err) => {
-                            call_python_with_data(&callback, move |py| {
+                            call_python_with_data(&call_soon, &callback, move |py| {
                                 err.into_py_any(py).map(|obj| obj.into_bound(py))
+                            });
+                        }
+                        NautilusWsMessage::OptionGreeks(greeks) => {
+                            call_python_with_data(&call_soon, &callback, move |py| {
+                                greeks.into_py_any(py).map(|obj| obj.into_bound(py))
                             });
                         }
                         NautilusWsMessage::Reconnected => {
@@ -381,6 +428,56 @@ impl BybitWebSocketClient {
         })
     }
 
+    #[pyo3(name = "subscribe_option_greeks")]
+    fn py_subscribe_option_greeks<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.add_option_greeks_sub(instrument_id);
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .subscribe_ticker(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    /// Registers an instrument for option greeks emission without subscribing
+    /// the ticker channel.
+    #[pyo3(name = "add_option_greeks_sub")]
+    fn py_add_option_greeks_sub(&self, instrument_id: InstrumentId) {
+        self.add_option_greeks_sub(instrument_id);
+    }
+
+    /// Removes an instrument from the option greeks subscription set without
+    /// touching the underlying ticker channel.
+    #[pyo3(name = "remove_option_greeks_sub")]
+    fn py_remove_option_greeks_sub(&self, instrument_id: InstrumentId) {
+        self.remove_option_greeks_sub(&instrument_id);
+    }
+
+    #[pyo3(name = "unsubscribe_option_greeks")]
+    fn py_unsubscribe_option_greeks<'py>(
+        &self,
+        py: Python<'py>,
+        instrument_id: InstrumentId,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.remove_option_greeks_sub(&instrument_id);
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            client
+                .unsubscribe_ticker(instrument_id)
+                .await
+                .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
     #[pyo3(name = "unsubscribe_ticker")]
     fn py_unsubscribe_ticker<'py>(
         &self,
@@ -398,36 +495,36 @@ impl BybitWebSocketClient {
         })
     }
 
-    #[pyo3(name = "subscribe_klines")]
-    fn py_subscribe_klines<'py>(
+    #[pyo3(name = "subscribe_bars")]
+    fn py_subscribe_bars<'py>(
         &self,
         py: Python<'py>,
-        instrument_id: InstrumentId,
-        interval: String,
+        bar_type: BarType,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
+        validate_bar_type(&bar_type).map_err(to_pyvalue_err)?;
 
+        let client = self.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .subscribe_klines(instrument_id, interval)
+                .subscribe_bars(bar_type)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
         })
     }
 
-    #[pyo3(name = "unsubscribe_klines")]
-    fn py_unsubscribe_klines<'py>(
+    #[pyo3(name = "unsubscribe_bars")]
+    fn py_unsubscribe_bars<'py>(
         &self,
         py: Python<'py>,
-        instrument_id: InstrumentId,
-        interval: String,
+        bar_type: BarType,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let client = self.clone();
+        validate_bar_type(&bar_type).map_err(to_pyvalue_err)?;
 
+        let client = self.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             client
-                .unsubscribe_klines(instrument_id, interval)
+                .unsubscribe_bars(bar_type)
                 .await
                 .map_err(to_pyruntime_err)?;
             Ok(())
@@ -711,6 +808,8 @@ impl BybitWebSocketClient {
         post_only=None,
         reduce_only=None,
         is_leverage=false,
+        take_profit=None,
+        stop_loss=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn py_build_place_order_params(
@@ -728,6 +827,8 @@ impl BybitWebSocketClient {
         post_only: Option<bool>,
         reduce_only: Option<bool>,
         is_leverage: bool,
+        take_profit: Option<Price>,
+        stop_loss: Option<Price>,
     ) -> PyResult<BybitWsPlaceOrderParams> {
         let params = self
             .build_place_order_params(
@@ -744,6 +845,8 @@ impl BybitWebSocketClient {
                 post_only,
                 reduce_only,
                 is_leverage,
+                take_profit,
+                stop_loss,
             )
             .map_err(to_pyruntime_err)?;
         Ok(params.into())
@@ -866,15 +969,14 @@ impl BybitWebSocketClient {
     }
 }
 
-fn call_python_with_data<F>(callback: &Py<PyAny>, data_fn: F)
+fn call_python_with_data<F>(call_soon: &Py<PyAny>, callback: &Py<PyAny>, data_fn: F)
 where
     F: FnOnce(Python<'_>) -> PyResult<Bound<'_, PyAny>> + Send + 'static,
 {
     Python::attach(|py| match data_fn(py) {
         Ok(data) => {
-            if let Err(e) = callback.call1(py, (data,)) {
-                log::error!("Error calling Python callback: {e}");
-            }
+            let py_obj = data.unbind();
+            call_python_threadsafe(py, call_soon, callback, py_obj);
         }
         Err(e) => {
             log::error!("Error converting data to Python: {e}");

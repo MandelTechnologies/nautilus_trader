@@ -15,6 +15,62 @@ Logging output is configurable and supports:
 Infrastructure such as [Vector](https://github.com/vectordotdev/vector) can be integrated to collect and aggregate events within your system.
 :::
 
+## Architecture
+
+The logging subsystem captures events from multiple sources and routes them through an MPSC channel to a dedicated logging thread:
+
+```mermaid
+flowchart TB
+    subgraph Sources["Log Sources"]
+        PY["Python Logger"]
+        NAUT["Nautilus Rust Components"]
+        LOG["External Rust Libraries<br/>(using log crate)<br/>rustls, etc."]
+    end
+
+    subgraph Filtering["Filtering"]
+        LF["log_level / log_level_file<br/>(LoggingConfig)"]
+    end
+
+    subgraph Logger["Nautilus Logger"]
+        NL["Logger<br/>(implements log::Log)"]
+    end
+
+    subgraph Channel["MPSC Channel"]
+        TX["Sender (tx)"]
+        RX["Receiver (rx)"]
+    end
+
+    subgraph Thread["Logging Thread"]
+        LT["Log Writer"]
+    end
+
+    subgraph Output["Output"]
+        STDOUT["stdout/stderr"]
+        FILE["Log Files"]
+    end
+
+    PY --> NL
+    NAUT --> NL
+    LOG --> LF --> NL
+
+    NL --> TX --> RX --> LT
+    LT --> STDOUT
+    LT --> FILE
+
+    subgraph Tracing["Tracing Subscriber (optional)"]
+        TRACE["External Rust Libraries<br/>(using tracing crate)<br/>hyper_util, h2, tokio, etc."]
+        EF["RUST_LOG<br/>(EnvFilter)"]
+        FMT["fmt::Layer"]
+    end
+
+    TRACE --> EF --> FMT --> STDOUT
+```
+
+- **Python and Nautilus components**: Log directly through the Nautilus Logger.
+- **External `log` crate users**: Filtered by `log_level`/`log_level_file` in `LoggingConfig`.
+- **External `tracing` crate users**: When enabled, output goes directly to stdout (separate from Nautilus logging), filtered by the `RUST_LOG` environment variable.
+- **Logging thread**: All Nautilus log events are sent through an MPSC channel to a dedicated thread, ensuring the main thread isn't blocked by I/O operations.
+
 ## Configuration
 
 Logging can be configured by importing the `LoggingConfig` object.
@@ -35,7 +91,7 @@ The following log levels are supported:
 You can set `TRACE` as a filter level to capture trace logs from Rust components, even though Python code cannot emit them directly.
 :::
 
-See the `LoggingConfig` [API Reference](../api_reference/config.md#class-loggingconfig) for further details.
+See the `LoggingConfig` [API Reference](/docs/python-api-latest/config.html#nautilus_trader.common.config.LoggingConfig) for further details.
 
 Logging can be configured in the following ways:
 
@@ -206,7 +262,7 @@ export NAUTILUS_LOG="stdout=Info;nautilus_okx=Warn;nautilus_okx::websocket=Debug
 The longest matching prefix takes precedence. In the example above, `nautilus_okx::websocket::handler` would use the `Debug` level (longer prefix), while `nautilus_okx::data` would use `Warn`.
 
 :::tip
-Rust log macros automatically capture the module path when no explicit component is provided. This enables module-level filtering to work seamlessly with standard logging calls.
+Rust log macros automatically capture the module path when no explicit component is provided. This enables module-level filtering to work with standard logging calls.
 :::
 
 :::note
@@ -219,14 +275,13 @@ If `log_components_only=True` (or `log_components_only` is present in the spec s
 
 ### Log Colors
 
-ANSI color codes are utilized to enhance the readability of logs when viewed in a terminal.
-These color codes can make it easier to distinguish different parts of log messages.
+ANSI color codes improve log readability in terminals.
 In environments that do not support ANSI color rendering (such as some cloud environments or text editors),
 these color codes may not be appropriate as they can appear as raw text.
 
 To accommodate for such scenarios, the `LoggingConfig.log_colors` option can be set to `false`.
-Disabling `log_colors` will prevent the addition of ANSI color codes to the log messages, ensuring
-compatibility across different environments where color rendering is not supported.
+Disabling `log_colors` will prevent the addition of ANSI color codes to the log messages,
+which avoids raw escape codes in environments without color support.
 
 ## Using a logger directly
 
@@ -243,9 +298,7 @@ log_guard = init_logging()
 logger = Logger("MyLogger")
 ```
 
-:::info
-See the `init_logging` [API Reference](../api_reference/common.md) for further details.
-:::
+See the [`init_logging` API Reference](/docs/python-api-latest/common.html) for further details.
 
 :::warning
 Only one logging subsystem can be initialized per process with an `init_logging` call. Multiple `LogGuard` instances (up to 255) can exist concurrently, and the logging thread will remain active until all guards are dropped.
@@ -282,12 +335,12 @@ Error sending log event: [INFO] ...
 This occurs because the logging subsystem's underlying channel and Rust `Logger` are closed when the first engine is disposed.
 As a result, subsequent engines lose access to the logging subsystem, leading to these errors.
 
-By leveraging a `LogGuard`, you can ensure robust logging behavior across multiple backtests or engine runs in the same process.
+By using a `LogGuard`, you can ensure consistent logging behavior across multiple backtests or engine runs in the same process.
 The `LogGuard` retains the resources of the logging subsystem and ensures that logs continue to function correctly,
 even as engines are disposed and initialized.
 
 :::note
-Using `LogGuard` is critical to maintain consistent logging behavior throughout a process with multiple engines.
+Using `LogGuard` is required to maintain consistent logging behavior throughout a process with multiple engines.
 :::
 
 ## Running multiple engines
@@ -322,6 +375,82 @@ for i in range(number_of_backtests):
 - **Multiple LogGuards per process**: The system supports up to 255 concurrent `LogGuard` instances per process. Each guard increments a reference counter when created and decrements it when dropped.
 - **Thread safety**: The logging subsystem, including `LogGuard`, is thread-safe, ensuring consistent behavior even in multi-threaded environments.
 - **Automatic cleanup**: When the last `LogGuard` is dropped (reference count reaches zero), the logging thread is properly joined to ensure all pending logs are written before the process terminates.
+
+## Tracing subscriber for external Rust libraries
+
+External Rust crates that use the `tracing` crate can have their log output displayed by enabling
+the tracing subscriber. This is useful for debugging external dependencies or when integrating
+custom Rust components (such as feature extractors or adapters) compiled as separate PyO3 extensions.
+
+### Enabling the subscriber
+
+Enable the tracing subscriber by setting `use_tracing=True` in `LoggingConfig`:
+
+```python
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.config import TradingNodeConfig
+
+config_node = TradingNodeConfig(
+    trader_id="TESTER-001",
+    logging=LoggingConfig(
+        log_level="INFO",
+        use_tracing=True,
+    ),
+    ... # Omitted
+)
+```
+
+Alternatively, call `init_tracing()` directly:
+
+```python
+from nautilus_trader.core import nautilus_pyo3
+
+nautilus_pyo3.init_tracing()
+```
+
+### Filtering with RUST_LOG
+
+The `RUST_LOG` environment variable controls which tracing events are displayed:
+
+```bash
+# Show debug logs from your crate, warn and above from hyper
+RUST_LOG=my_feature_extractor=debug,hyper=warn python my_script.py
+```
+
+If `RUST_LOG` is not set, the default filter level is `warn`.
+
+### How it works
+
+The tracing subscriber uses a `tracing-subscriber` fmt layer with a custom formatter to output
+directly to stdout. This is separate from the Nautilus logging infrastructure - tracing output
+uses a Nautilus-aligned format with nanosecond timestamps.
+
+Example tracing output:
+
+```
+2026-01-24T05:51:42.809619000Z [DEBUG] hyper_util::client::legacy::connect::http: connecting to 104.18.5.240:443
+2026-01-24T05:51:42.810543000Z [DEBUG] hyper_util::client::legacy::pool: pooling idle connection for ("https", api.example.com)
+```
+
+**Differences from Nautilus logging:**
+
+- Tracing output goes directly to stdout, not through the Nautilus logging thread.
+- Tracing events are not written to Nautilus log files.
+- Filtering is controlled exclusively by `RUST_LOG`, independent of `LoggingConfig`.
+
+For external libraries that use the `log` crate (such as `rustls`), their events go through
+the Nautilus logger and are filtered by `log_level`/`log_level_file` in `LoggingConfig`.
+
+:::tip
+`RUST_LOG` only affects crates using `tracing`. For crates using `log`, configure verbosity
+via `LoggingConfig` or the `NAUTILUS_LOG` environment variable (e.g., `NAUTILUS_LOG=stdout=Debug`).
+:::
+
+:::note
+The tracing subscriber can only be initialized once per process. When using `use_tracing=True` in
+`LoggingConfig`, subsequent kernel creations safely skip re-initialization. Direct calls to
+`init_tracing()` when already initialized will raise an error.
+:::
 
 ## Platform-specific considerations
 

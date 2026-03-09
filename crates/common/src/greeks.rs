@@ -20,7 +20,9 @@ use std::{cell::RefCell, collections::HashMap, fmt::Debug, rc::Rc};
 use derive_builder::Builder;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::greeks::{GreeksData, PortfolioGreeks, black_scholes_greeks, imply_vol_and_greeks},
+    data::greeks::{
+        GreeksData, OptionGreekValues, PortfolioGreeks, black_scholes_greeks, imply_vol_and_greeks,
+    },
     enums::{InstrumentClass, OptionKind, PositionSide, PriceType},
     identifiers::{InstrumentId, StrategyId, Venue},
     instruments::Instrument,
@@ -368,7 +370,7 @@ impl GreeksCalculator {
                 .unwrap_or_default()
                 .as_f64();
             let (delta, _, _) = self.modify_greeks(
-                multiplier.as_f64(),
+                1.0,
                 0.0,
                 underlying_instrument_id,
                 underlying_price + spot_shock,
@@ -385,7 +387,7 @@ impl GreeksCalculator {
                 GreeksData::from_delta(instrument_id, delta, multiplier.as_f64(), ts_event);
 
             if let Some(pos) = position {
-                greeks_data.pnl = multiplier * ((underlying_price + spot_shock) - pos.avg_px_open);
+                greeks_data.pnl = (underlying_price + spot_shock) - pos.avg_px_open;
                 greeks_data.price = greeks_data.pnl;
             }
 
@@ -458,7 +460,6 @@ impl GreeksCalculator {
                 strike,
                 expiry_in_years,
                 option_mid_price,
-                multiplier.as_f64(),
             );
             let (delta, gamma, vega) = self.modify_greeks(
                 greeks.delta,
@@ -491,11 +492,14 @@ impl GreeksCalculator {
                 greeks.vol,
                 0.0,
                 greeks.price,
-                delta,
-                gamma,
-                vega,
-                greeks.theta,
-                (greeks.delta / multiplier.as_f64()).abs(),
+                OptionGreekValues {
+                    delta,
+                    gamma,
+                    vega,
+                    theta: greeks.theta,
+                    rho: 0.0,
+                },
+                greeks.itm_prob,
             ));
 
             // Adding greeks to cache if requested
@@ -534,7 +538,6 @@ impl GreeksCalculator {
                 greeks_data.is_call,
                 greeks_data.strike,
                 shocked_time_to_expiry,
-                greeks_data.multiplier,
             );
             let (delta, gamma, vega) = self.modify_greeks(
                 greeks.delta,
@@ -567,11 +570,14 @@ impl GreeksCalculator {
                 shocked_vol,
                 0.0,
                 greeks.price,
-                delta,
-                gamma,
-                vega,
-                greeks.theta,
-                (greeks.delta / greeks_data.multiplier).abs(),
+                OptionGreekValues {
+                    delta,
+                    gamma,
+                    vega,
+                    theta: greeks.theta,
+                    rho: 0.0,
+                },
+                greeks.itm_prob,
             );
         }
 
@@ -632,6 +638,7 @@ impl GreeksCalculator {
             );
 
             let mut beta = 1.0;
+
             if let Some(weights) = beta_weights
                 && let Some(&weight) = weights.get(&underlying_instrument_id)
             {
@@ -688,10 +695,8 @@ impl GreeksCalculator {
     ///
     /// Returns an error if any underlying greeks calculation fails.
     ///
-    /// # Panics
-    ///
-    /// Panics if `greeks_filter` is `Some` but the filter function panics when called.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::missing_panics_doc)] // Guarded by is_none check
     pub fn portfolio_greeks(
         &self,
         underlyings: Option<Vec<String>>,

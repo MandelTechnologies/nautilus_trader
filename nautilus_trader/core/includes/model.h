@@ -1449,10 +1449,10 @@ typedef struct InstrumentClose_t {
 } InstrumentClose_t;
 
 /**
- * A built-in Nautilus data type.
+ * A C-compatible representation of [`Data`] for FFI.
  *
- * Not recommended for storing large amounts of data, as the largest variant is significantly
- * larger (10x) than the smallest.
+ * This enum matches the standard variants of [`Data`] but excludes the `Custom`
+ * variant which is not FFI-safe.
  */
 typedef enum Data_t_Tag {
     DELTA,
@@ -2125,8 +2125,6 @@ uint64_t orderbook_delta_hash(const struct OrderBookDelta_t *delta);
 
 /**
  * Creates a new [`OrderBookDeltas_API`] instance from a `CVec` of `OrderBookDelta`.
- *
- * # Safety
  *
  * - The `deltas` must be a valid pointer to a `CVec` containing `OrderBookDelta` objects.
  * - This function clones the data pointed to by `deltas` into Rust-managed memory, then forgets the original `Vec` to prevent Rust from auto-deallocating it.
@@ -3094,11 +3092,36 @@ void orderbook_apply_delta(struct OrderBook_API *book, const struct OrderBookDel
 
 void orderbook_apply_deltas(struct OrderBook_API *book, const struct OrderBookDeltas_API *deltas);
 
+/**
+ * Creates an `OrderBookDeltas` snapshot from the current order book state.
+ *
+ * This is the reverse operation of `orderbook_apply_deltas`: it converts the current book state
+ * back into a snapshot format with a `Clear` delta followed by `Add` deltas for all orders.
+ *
+ * # Parameters
+ *
+ * * `book` - The order book to convert.
+ * * `sequence` - The message sequence number for the snapshot.
+ * * `ts_event` - UNIX timestamp (nanoseconds) when the book event occurred.
+ * * `ts_init` - UNIX timestamp (nanoseconds) when the instance was created.
+ *
+ * # Returns
+ *
+ * An `OrderBookDeltas_API` containing a snapshot of the current order book state.
+ */
+struct OrderBookDeltas_API orderbook_to_snapshot_deltas(const struct OrderBook_API *book,
+                                                        uint64_t ts_event,
+                                                        uint64_t ts_init);
+
 void orderbook_apply_depth(struct OrderBook_API *book, const struct OrderBookDepth10_t *depth);
 
 CVec orderbook_bids(struct OrderBook_API *book);
 
 CVec orderbook_asks(struct OrderBook_API *book);
+
+CVec orderbook_bids_down_to(struct OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
+
+CVec orderbook_asks_up_to(struct OrderBook_API *book, PriceRaw price_raw, uint8_t price_prec);
 
 uint8_t orderbook_has_bid(struct OrderBook_API *book);
 
@@ -3149,6 +3172,10 @@ double orderbook_midpoint(struct OrderBook_API *book);
 double orderbook_get_avg_px_for_quantity(struct OrderBook_API *book,
                                          struct Quantity_t qty,
                                          enum OrderSide order_side);
+
+struct Price_t orderbook_get_worst_px_for_quantity(struct OrderBook_API *book,
+                                                   struct Quantity_t qty,
+                                                   enum OrderSide order_side);
 
 double orderbook_get_quantity_for_price(struct OrderBook_API *book,
                                         struct Price_t price,
@@ -3206,6 +3233,8 @@ struct Price_t level_price(const struct BookLevel_API *level);
 CVec level_orders(const struct BookLevel_API *level);
 
 double level_size(const struct BookLevel_API *level);
+
+QuantityRaw level_size_raw(const struct BookLevel_API *level);
 
 double level_exposure(const struct BookLevel_API *level);
 

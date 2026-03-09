@@ -19,6 +19,13 @@ use crate::common::consts::{info_url, ws_url};
 
 /// Configuration for the Hyperliquid data client.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.hyperliquid",
+        from_py_object
+    )
+)]
 pub struct HyperliquidDataClientConfig {
     /// Optional private key for authenticated endpoints.
     pub private_key: Option<String>,
@@ -66,10 +73,12 @@ impl HyperliquidDataClientConfig {
         Self::default()
     }
 
-    /// Returns `true` when private key is populated.
+    /// Returns `true` when private key is populated and non-empty.
     #[must_use]
     pub fn has_credentials(&self) -> bool {
-        self.private_key.is_some()
+        self.private_key
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
     }
 
     /// Returns the WebSocket URL, respecting the testnet flag and overrides.
@@ -91,11 +100,26 @@ impl HyperliquidDataClientConfig {
 
 /// Configuration for the Hyperliquid execution client.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(
+        module = "nautilus_trader.core.nautilus_pyo3.hyperliquid",
+        from_py_object
+    )
+)]
 pub struct HyperliquidExecClientConfig {
-    /// Private key for signing transactions (required for execution).
-    pub private_key: String,
+    /// Private key for signing transactions.
+    ///
+    /// If not provided, falls back to environment variable:
+    /// - Mainnet: `HYPERLIQUID_PK`
+    /// - Testnet: `HYPERLIQUID_TESTNET_PK`
+    pub private_key: Option<String>,
     /// Optional vault address for vault operations.
     pub vault_address: Option<String>,
+    /// Optional main account address when using an agent wallet (API sub-key).
+    /// When set, used for balance queries, position reports, and WS subscriptions
+    /// instead of the address derived from the private key.
+    pub account_address: Option<String>,
     /// Override for the WebSocket URL.
     pub base_url_ws: Option<String>,
     /// Override for the HTTP info URL.
@@ -119,13 +143,17 @@ pub struct HyperliquidExecClientConfig {
     pub retry_delay_initial_ms: u64,
     /// Maximum retry delay in milliseconds.
     pub retry_delay_max_ms: u64,
+    /// When true, normalize order prices to 5 significant figures
+    /// before submission (Hyperliquid requirement).
+    pub normalize_prices: bool,
 }
 
 impl Default for HyperliquidExecClientConfig {
     fn default() -> Self {
         Self {
-            private_key: String::new(),
+            private_key: None,
             vault_address: None,
+            account_address: None,
             base_url_ws: None,
             base_url_http: None,
             base_url_exchange: None,
@@ -136,6 +164,7 @@ impl Default for HyperliquidExecClientConfig {
             max_retries: 3,
             retry_delay_initial_ms: 100,
             retry_delay_max_ms: 5000,
+            normalize_prices: true,
         }
     }
 }
@@ -143,17 +172,19 @@ impl Default for HyperliquidExecClientConfig {
 impl HyperliquidExecClientConfig {
     /// Creates a new configuration with the provided private key.
     #[must_use]
-    pub fn new(private_key: String) -> Self {
+    pub fn new(private_key: Option<String>) -> Self {
         Self {
             private_key,
             ..Self::default()
         }
     }
 
-    /// Returns `true` when private key is populated.
+    /// Returns `true` when private key is populated and non-empty.
     #[must_use]
     pub fn has_credentials(&self) -> bool {
-        !self.private_key.is_empty()
+        self.private_key
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
     }
 
     /// Returns the WebSocket URL, respecting the testnet flag and overrides.
@@ -170,5 +201,27 @@ impl HyperliquidExecClientConfig {
         self.base_url_http
             .clone()
             .unwrap_or_else(|| info_url(self.is_testnet).to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+
+    use super::*;
+
+    #[rstest]
+    fn test_exec_config_default_account_address_is_none() {
+        let config = HyperliquidExecClientConfig::default();
+        assert!(config.account_address.is_none());
+    }
+
+    #[rstest]
+    fn test_exec_config_with_account_address() {
+        let config = HyperliquidExecClientConfig {
+            account_address: Some("0x1234".to_string()),
+            ..HyperliquidExecClientConfig::default()
+        };
+        assert_eq!(config.account_address.as_deref(), Some("0x1234"));
     }
 }

@@ -107,8 +107,7 @@ it will default to `UNSPECIFIED`. This means the `ExecutionEngine` will not over
 and the OMS type will follow the venue's OMS type.
 
 :::tip
-When configuring a backtest, you can specify the `oms_type` for the venue. To enhance backtest
-accuracy, it is recommended to match this with the actual OMS type used by the venue in practice.
+When configuring a backtest, you can specify the `oms_type` for the venue. For accuracy, match this with the OMS type used by the venue.
 :::
 
 ## Risk engine
@@ -138,9 +137,7 @@ The `TradingState` enum has three variants:
 - `HALTED`: Does not process further order commands until state changes.
 - `REDUCING`: Only processes cancels or commands that reduce open positions.
 
-:::info
-See the `RiskEngineConfig` [API Reference](../api_reference/config#risk) for further details.
-:::
+See the [`RiskEngineConfig` API Reference](/docs/python-api-latest/config.html#nautilus_trader.risk.config.RiskEngineConfig) for further details.
 
 ## Execution algorithms
 
@@ -160,7 +157,7 @@ minimizing the concentration of trade size at any given time.
 The algorithm will immediately submit the first order, with the final order submitted being the
 primary order at the end of the horizon period.
 
-Using the TWAP algorithm as an example (found in ``/examples/algorithms/twap.py``), this example
+Using the TWAP algorithm as an example (found in `/examples/algorithms/twap.py`), this example
 demonstrates how to initialize and register a TWAP execution algorithm directly with a
 `BacktestEngine` (assuming an engine is already initialized):
 
@@ -234,7 +231,7 @@ The order may also carry the `exec_algorithm_params` being a `dict[str, Any]`.
 :::warning
 Because of the flexibility of the `exec_algorithm_params` dictionary, it's important to thoroughly
 validate all of the key value pairs for correct operation of the algorithm (for starters that the
-dictionary is not ``None`` and all necessary parameters actually exist).
+dictionary is not `None` and all necessary parameters actually exist).
 :::
 
 Received orders will arrive via the following `on_order(...)` method. These received orders are

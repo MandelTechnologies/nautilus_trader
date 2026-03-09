@@ -42,11 +42,11 @@ ignore = [
   # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for migration to alternative serialization
   { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained, transitive via hypersync-client (not a security vulnerability)" },
 
-  # RSA Marvin Attack: timing sidechannel in RSA PKCS#1 v1.5 decryption
-  # Transitive via sqlx-mysql, no fix available yet
-  # Low risk for our use case (MySQL connection, not exposed to untrusted input)
-  # TODO: Monitor https://github.com/launchbadge/sqlx for RSA crate update
-  { id = "RUSTSEC-2023-0071", reason = "rsa timing sidechannel (Marvin Attack), transitive via sqlx-mysql, no fix available" },
+  # capnp unsound APIs in constant::Reader and StructSchema
+  # Transitive via hypersync-client, fix requires upstream update to capnp >= 0.24.0
+  # Low risk: only affects internal schema handling, not directly exposed
+  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for capnp update
+  { id = "RUSTSEC-2025-0143", reason = "capnp unsound APIs, transitive via hypersync-client, awaiting upstream fix" },
 
 ]
 
@@ -138,6 +138,7 @@ skip = [
 
   # RNG ecosystem - version-locked together, pulled by crypto and blockchain crates
   { crate = "getrandom" },
+  { crate = "r-efi" },
   { crate = "rand" },
   { crate = "rand_chacha" },
   { crate = "rand_core" },
@@ -148,6 +149,10 @@ skip = [
   { crate = "darling_macro" },
   { crate = "derive_more" },
   { crate = "derive_more-impl" },
+
+  # Enum derive macros - strum 0.27 (alloy, hypersync) vs 0.28 (nautilus)
+  { crate = "strum" },
+  { crate = "strum_macros" },
 
   # Case conversion - version fragmentation via derive_more
   { crate = "convert_case" },
@@ -170,20 +175,24 @@ skip = [
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
 
+  # CPU feature detection - cpufeatures 0.2 vs 0.3 (const-hex vs chacha20/rand)
+  { crate = "cpufeatures" },
+
   # HTTP client - reqwest 0.12 vs 0.13 transition (databento, hypersync, object_store on 0.12)
   { crate = "reqwest" },
+  { crate = "wasm-streams" },
 
-  # Cap'n Proto - hypersync-client uses 0.23.x, nautilus-serialization uses 0.24.x
+  # Cap'n Proto - hypersync-client uses 0.23.x, nautilus-serialization uses 0.25.0
   { crate = "capnp" },
+
+  # TOML parser - cbindgen requires 0.9.x, pyo3-stub-gen requires 1.0.x
+  { crate = "toml" },
+  { crate = "toml_datetime" },
 
   # TLS roots - version fragmentation in TLS ecosystem
   { crate = "webpki-roots" },
 
   # Windows platform crates - notoriously fragmented across Windows SDK versions
-  { crate = "windows-core" },
-  { crate = "windows-link" },
-  { crate = "windows-result" },
-  { crate = "windows-strings" },
   { crate = "windows-sys" },
   { crate = "windows-targets" },
   { crate = "windows_aarch64_gnullvm" },

@@ -24,14 +24,13 @@ use std::{
 };
 
 use ahash::AHashMap;
-use nautilus_common::cache::quote::QuoteCache;
 use nautilus_core::{AtomicTime, UUID4, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_model::{
-    data::{Bar, Data, OrderBookDeltas, QuoteTick},
+    data::{Bar, Data, OrderBookDeltas},
     events::{OrderAccepted, OrderCanceled, OrderExpired, OrderRejected, OrderUpdated},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
-    types::{Price, Quantity},
+    types::Quantity,
 };
 use nautilus_network::{
     RECONNECTED,
@@ -52,6 +51,7 @@ use super::{
         parse_ws_order_status_report,
     },
 };
+use crate::common::consts::KRAKEN_SPOT_POST_ONLY_REJECT;
 
 /// Cached information about a client order needed for event generation.
 #[derive(Debug, Clone)]
@@ -82,6 +82,10 @@ pub enum SpotHandlerCommand {
         trader_id: TraderId,
         strategy_id: StrategyId,
     },
+    CacheTruncatedId {
+        truncated: String,
+        original: ClientOrderId,
+    },
 }
 
 /// Key for buffering OHLC bars: (symbol, interval).
@@ -100,10 +104,9 @@ pub(super) struct SpotFeedHandler {
     subscriptions: SubscriptionState,
     instruments_cache: AHashMap<Ustr, InstrumentAny>,
     client_order_cache: AHashMap<ClientOrderId, CachedOrderInfo>,
+    truncated_id_map: AHashMap<String, ClientOrderId>,
     order_qty_cache: AHashMap<VenueOrderId, f64>,
-    quote_cache: QuoteCache,
     book_sequence: u64,
-    pending_quotes: Vec<QuoteTick>,
     pending_messages: VecDeque<NautilusWsMessage>,
     account_id: Option<AccountId>,
     ohlc_buffer: AHashMap<OhlcBufferKey, OhlcBufferEntry>,
@@ -126,10 +129,9 @@ impl SpotFeedHandler {
             subscriptions,
             instruments_cache: AHashMap::new(),
             client_order_cache: AHashMap::new(),
+            truncated_id_map: AHashMap::new(),
             order_qty_cache: AHashMap::new(),
-            quote_cache: QuoteCache::new(),
             book_sequence: 0,
-            pending_quotes: Vec::new(),
             pending_messages: VecDeque::new(),
             account_id: None,
             ohlc_buffer: AHashMap::new(),
@@ -178,10 +180,6 @@ impl SpotFeedHandler {
             return Some(msg);
         }
 
-        if let Some(quote) = self.pending_quotes.pop() {
-            return Some(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
-        }
-
         loop {
             tokio::select! {
                 Some(cmd) = self.cmd_rx.recv() => {
@@ -192,6 +190,7 @@ impl SpotFeedHandler {
                         }
                         SpotHandlerCommand::Disconnect => {
                             log::debug!("Disconnect command received");
+
                             if let Some(client) = self.client.take() {
                                 client.disconnect().await;
                             }
@@ -236,8 +235,16 @@ impl SpotFeedHandler {
                                 },
                             );
                         }
+                        SpotHandlerCommand::CacheTruncatedId {
+                            truncated,
+                            original,
+                        } => {
+                            log::debug!(
+                                "Cached truncated ID mapping: {truncated} -> {original}"
+                            );
+                            self.truncated_id_map.insert(truncated, original);
+                        }
                     }
-                    continue;
                 }
 
                 msg = self.raw_rx.recv() => {
@@ -252,6 +259,7 @@ impl SpotFeedHandler {
 
                     if let Message::Ping(data) = &msg {
                         log::trace!("Received ping frame with {} bytes", data.len());
+
                         if let Some(client) = &self.client
                             && let Err(e) = client.send_pong(data.to_vec()).await
                         {
@@ -295,7 +303,6 @@ impl SpotFeedHandler {
 
                     if text == RECONNECTED {
                         log::info!("Received WebSocket reconnected signal");
-                        self.quote_cache.clear();
                         return Some(NautilusWsMessage::Reconnected);
                     }
 
@@ -304,8 +311,6 @@ impl SpotFeedHandler {
                     if let Some(nautilus_msg) = self.parse_message(&text, ts_init) {
                         return Some(nautilus_msg);
                     }
-
-                    continue;
                 }
             }
         }
@@ -319,6 +324,7 @@ impl SpotFeedHandler {
                 log::trace!("Received heartbeat");
                 return None;
             }
+
             if text.contains("status") {
                 log::debug!("Received status message");
                 return None;
@@ -430,51 +436,21 @@ impl SpotFeedHandler {
             match serde_json::from_value::<KrakenWsBookData>(data) {
                 Ok(book_data) => {
                     let symbol = &book_data.symbol;
+
+                    if !self.is_subscribed(&format!("book:{symbol}")) {
+                        continue;
+                    }
+
                     let instrument = self.get_instrument(symbol)?;
                     instrument_id = Some(instrument.id());
 
-                    let price_precision = instrument.price_precision();
-                    let size_precision = instrument.size_precision();
-
-                    let has_book = self.is_subscribed(&format!("book:{symbol}"));
-                    let has_quotes = self.is_subscribed(&format!("quotes:{symbol}"));
-
-                    if has_quotes {
-                        let best_bid = book_data.bids.as_ref().and_then(|bids| bids.first());
-                        let best_ask = book_data.asks.as_ref().and_then(|asks| asks.first());
-
-                        let bid_price = best_bid.map(|b| Price::new(b.price, price_precision));
-                        let ask_price = best_ask.map(|a| Price::new(a.price, price_precision));
-                        let bid_size = best_bid.map(|b| Quantity::new(b.qty, size_precision));
-                        let ask_size = best_ask.map(|a| Quantity::new(a.qty, size_precision));
-
-                        if let Ok(quote) = self.quote_cache.process(
-                            instrument.id(),
-                            bid_price,
-                            ask_price,
-                            bid_size,
-                            ask_size,
-                            ts_init,
-                            ts_init,
-                        ) {
-                            self.pending_quotes.push(quote);
+                    match parse_book_deltas(&book_data, &instrument, self.book_sequence, ts_init) {
+                        Ok(mut deltas) => {
+                            self.book_sequence += deltas.len() as u64;
+                            all_deltas.append(&mut deltas);
                         }
-                    }
-
-                    if has_book {
-                        match parse_book_deltas(
-                            &book_data,
-                            &instrument,
-                            self.book_sequence,
-                            ts_init,
-                        ) {
-                            Ok(mut deltas) => {
-                                self.book_sequence += deltas.len() as u64;
-                                all_deltas.append(&mut deltas);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to parse book deltas: {e}");
-                            }
+                        Err(e) => {
+                            log::error!("Failed to parse book deltas: {e}");
                         }
                     }
                 }
@@ -485,9 +461,6 @@ impl SpotFeedHandler {
         }
 
         if all_deltas.is_empty() {
-            if let Some(quote) = self.pending_quotes.pop() {
-                return Some(NautilusWsMessage::Data(vec![Data::Quote(quote)]));
-            }
             None
         } else {
             let deltas = OrderBookDeltas::new(instrument_id?, all_deltas);
@@ -505,7 +478,17 @@ impl SpotFeedHandler {
         for data in msg.data {
             match serde_json::from_value::<KrakenWsTickerData>(data) {
                 Ok(ticker_data) => {
-                    let instrument = self.get_instrument(&ticker_data.symbol)?;
+                    let symbol = &ticker_data.symbol;
+
+                    // Accept both quotes:{symbol} (BBO via subscribe_quotes) and
+                    // ticker:{symbol} (raw ticker via subscribe API).
+                    let quotes_key = format!("quotes:{symbol}");
+                    let ticker_key = format!("ticker:{symbol}");
+                    if !self.is_subscribed(&quotes_key) && !self.is_subscribed(&ticker_key) {
+                        continue;
+                    }
+
+                    let instrument = self.get_instrument(symbol)?;
 
                     match parse_quote_tick(&ticker_data, &instrument, ts_init) {
                         Ok(quote) => quotes.push(Data::Quote(quote)),
@@ -640,6 +623,17 @@ impl SpotFeedHandler {
                             .insert(VenueOrderId::new(&exec_data.order_id), qty);
                     }
 
+                    let resolved_cl_ord_id = exec_data
+                        .cl_ord_id
+                        .as_ref()
+                        .filter(|id| !id.is_empty())
+                        .map(|id| {
+                            self.truncated_id_map
+                                .get(id)
+                                .copied()
+                                .unwrap_or_else(|| ClientOrderId::new(id))
+                        });
+
                     // Resolve instrument and cached order info
                     let (instrument, cached_info) = if let Some(ref symbol) = exec_data.symbol {
                         let symbol_ustr = Ustr::from(symbol.as_str());
@@ -650,23 +644,12 @@ impl SpotFeedHandler {
                                 exec_data.order_id
                             );
                         }
-                        let cached = exec_data
-                            .cl_ord_id
+                        let cached = resolved_cl_ord_id
                             .as_ref()
-                            .filter(|id| !id.is_empty())
-                            .and_then(|id| {
-                                self.client_order_cache
-                                    .get(&ClientOrderId::new(id))
-                                    .cloned()
-                            });
+                            .and_then(|id| self.client_order_cache.get(id).cloned());
                         (inst, cached)
-                    } else if let Some(ref cl_ord_id) =
-                        exec_data.cl_ord_id.as_ref().filter(|id| !id.is_empty())
-                    {
-                        let cached = self
-                            .client_order_cache
-                            .get(&ClientOrderId::new(cl_ord_id))
-                            .cloned();
+                    } else if let Some(ref resolved_id) = resolved_cl_ord_id {
+                        let cached = self.client_order_cache.get(resolved_id).cloned();
                         let inst = cached.as_ref().and_then(|info| {
                             self.instruments_cache
                                 .iter()
@@ -694,17 +677,15 @@ impl SpotFeedHandler {
                         .get(&VenueOrderId::new(&exec_data.order_id))
                         .copied();
                     let ts_event = chrono::DateTime::parse_from_rfc3339(&exec_data.timestamp)
-                        .map(|t| UnixNanos::from(t.timestamp_nanos_opt().unwrap_or(0) as u64))
-                        .unwrap_or(ts_init);
+                        .map_or(ts_init, |t| {
+                            UnixNanos::from(t.timestamp_nanos_opt().unwrap_or(0) as u64)
+                        });
 
                     // Emit proper order events when we have cached info, otherwise fall back
                     // to OrderStatusReport for external orders or reconciliation
                     if let Some(ref info) = cached_info {
-                        let client_order_id = exec_data
-                            .cl_ord_id
-                            .as_ref()
-                            .map(ClientOrderId::new)
-                            .expect("cl_ord_id should exist if cached");
+                        let client_order_id =
+                            resolved_cl_ord_id.expect("cl_ord_id should exist if cached");
                         let venue_order_id = VenueOrderId::new(&exec_data.order_id);
 
                         match exec_data.exec_type {
@@ -729,12 +710,10 @@ impl SpotFeedHandler {
                                 // Order is now live - already accepted, skip
                             }
                             KrakenExecType::Canceled => {
-                                // Check if this is a post-only rejection based on reason
-                                // Kraken sends reason="Post only order" for post-only rejections
                                 let is_post_only_rejection = exec_data
                                     .reason
                                     .as_ref()
-                                    .is_some_and(|r| r.eq_ignore_ascii_case("Post only order"));
+                                    .is_some_and(|r| r == KRAKEN_SPOT_POST_ONLY_REJECT);
 
                                 if is_post_only_rejection {
                                     let reason = exec_data
@@ -818,13 +797,14 @@ impl SpotFeedHandler {
                                     exec_data.last_qty.is_some_and(|q| q > 0.0)
                                         && exec_data.last_price.is_some_and(|p| p > 0.0);
 
-                                if let Ok(status_report) = parse_ws_order_status_report(
+                                if let Ok(mut status_report) = parse_ws_order_status_report(
                                     &exec_data,
                                     &instrument,
                                     account_id,
                                     cached_order_qty,
                                     ts_init,
                                 ) {
+                                    status_report.client_order_id = Some(client_order_id);
                                     self.pending_messages.push_back(
                                         NautilusWsMessage::OrderStatusReport(Box::new(
                                             status_report,
@@ -833,13 +813,14 @@ impl SpotFeedHandler {
                                 }
 
                                 if has_complete_trade_data
-                                    && let Ok(fill_report) = parse_ws_fill_report(
+                                    && let Ok(mut fill_report) = parse_ws_fill_report(
                                         &exec_data,
                                         &instrument,
                                         account_id,
                                         ts_init,
                                     )
                                 {
+                                    fill_report.client_order_id = Some(client_order_id);
                                     self.pending_messages
                                         .push_back(NautilusWsMessage::FillReport(Box::new(
                                             fill_report,
@@ -871,13 +852,14 @@ impl SpotFeedHandler {
                             }
                             KrakenExecType::Status => {
                                 // Status update without state change - emit OrderStatusReport
-                                if let Ok(status_report) = parse_ws_order_status_report(
+                                if let Ok(mut status_report) = parse_ws_order_status_report(
                                     &exec_data,
                                     &instrument,
                                     account_id,
                                     cached_order_qty,
                                     ts_init,
                                 ) {
+                                    status_report.client_order_id = Some(client_order_id);
                                     self.pending_messages.push_back(
                                         NautilusWsMessage::OrderStatusReport(Box::new(
                                             status_report,
@@ -900,7 +882,7 @@ impl SpotFeedHandler {
                                     && exec_data.last_price.is_some_and(|p| p > 0.0);
 
                             if has_order_data
-                                && let Ok(status_report) = parse_ws_order_status_report(
+                                && let Ok(mut status_report) = parse_ws_order_status_report(
                                     &exec_data,
                                     &instrument,
                                     account_id,
@@ -908,31 +890,34 @@ impl SpotFeedHandler {
                                     ts_init,
                                 )
                             {
+                                status_report.client_order_id = resolved_cl_ord_id;
                                 self.pending_messages.push_back(
                                     NautilusWsMessage::OrderStatusReport(Box::new(status_report)),
                                 );
                             }
 
                             if has_complete_trade_data
-                                && let Ok(fill_report) = parse_ws_fill_report(
+                                && let Ok(mut fill_report) = parse_ws_fill_report(
                                     &exec_data,
                                     &instrument,
                                     account_id,
                                     ts_init,
                                 )
                             {
+                                fill_report.client_order_id = resolved_cl_ord_id;
                                 self.pending_messages
                                     .push_back(NautilusWsMessage::FillReport(Box::new(
                                         fill_report,
                                     )));
                             }
-                        } else if let Ok(report) = parse_ws_order_status_report(
+                        } else if let Ok(mut report) = parse_ws_order_status_report(
                             &exec_data,
                             &instrument,
                             account_id,
                             cached_order_qty,
                             ts_init,
                         ) {
+                            report.client_order_id = resolved_cl_ord_id;
                             self.pending_messages
                                 .push_back(NautilusWsMessage::OrderStatusReport(Box::new(report)));
                         }
@@ -946,5 +931,300 @@ impl SpotFeedHandler {
 
         // Return first queued message (rest returned via next() pending check)
         self.pending_messages.pop_front()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nautilus_model::{
+        identifiers::{InstrumentId, Symbol, Venue},
+        instruments::{InstrumentAny, currency_pair::CurrencyPair},
+        types::{Currency, Price, Quantity},
+    };
+    use rstest::rstest;
+
+    use super::*;
+
+    fn create_test_handler() -> SpotFeedHandler {
+        let signal = Arc::new(AtomicBool::new(false));
+        let (_cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscriptions = SubscriptionState::new(':');
+
+        SpotFeedHandler::new(signal, cmd_rx, raw_rx, subscriptions)
+    }
+
+    fn create_test_instrument(symbol: &str) -> InstrumentAny {
+        let instrument_id = InstrumentId::new(Symbol::new(symbol), Venue::new("KRAKEN"));
+        InstrumentAny::CurrencyPair(CurrencyPair::new(
+            instrument_id,
+            Symbol::new(symbol),
+            Currency::BTC(),
+            Currency::USD(),
+            2,
+            8,
+            Price::from("0.01"),
+            Quantity::from("0.00000001"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UnixNanos::default(),
+            UnixNanos::default(),
+        ))
+    }
+
+    #[rstest]
+    fn test_ticker_message_filtered_without_quotes_subscription() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument("BTC/USD");
+        handler
+            .instruments_cache
+            .insert(Ustr::from("BTC/USD"), instrument);
+
+        let json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24
+            }]
+        }"#;
+
+        let ts_init = UnixNanos::from(1_000_000_000);
+        let result = handler.parse_message(json, ts_init);
+
+        assert!(
+            result.is_none(),
+            "Ticker message should be filtered when no quotes subscription exists"
+        );
+    }
+
+    #[rstest]
+    fn test_ticker_message_passes_with_quotes_subscription() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument("BTC/USD");
+        handler
+            .instruments_cache
+            .insert(Ustr::from("BTC/USD"), instrument);
+
+        handler.subscriptions.mark_subscribe("quotes:BTC/USD");
+        handler.subscriptions.confirm_subscribe("quotes:BTC/USD");
+
+        let json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24
+            }]
+        }"#;
+
+        let ts_init = UnixNanos::from(1_000_000_000);
+        let result = handler.parse_message(json, ts_init);
+
+        assert!(
+            result.is_some(),
+            "Ticker message should pass with quotes subscription"
+        );
+        match result.unwrap() {
+            NautilusWsMessage::Data(data) => {
+                assert!(!data.is_empty(), "Should have quote data");
+            }
+            _ => panic!("Expected Data message with quote"),
+        }
+    }
+
+    #[rstest]
+    fn test_ticker_message_passes_with_ticker_subscription() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument("BTC/USD");
+        handler
+            .instruments_cache
+            .insert(Ustr::from("BTC/USD"), instrument);
+
+        // Direct ticker subscription via subscribe(Ticker, ...) API
+        handler.subscriptions.mark_subscribe("ticker:BTC/USD");
+        handler.subscriptions.confirm_subscribe("ticker:BTC/USD");
+
+        let json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24
+            }]
+        }"#;
+
+        let ts_init = UnixNanos::from(1_000_000_000);
+        let result = handler.parse_message(json, ts_init);
+
+        assert!(
+            result.is_some(),
+            "Ticker message should pass with ticker: subscription"
+        );
+        match result.unwrap() {
+            NautilusWsMessage::Data(data) => {
+                assert!(!data.is_empty(), "Should have quote data");
+            }
+            _ => panic!("Expected Data message with quote"),
+        }
+    }
+
+    #[rstest]
+    fn test_book_message_filtered_without_book_subscription() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument("BTC/USD");
+        handler
+            .instruments_cache
+            .insert(Ustr::from("BTC/USD"), instrument);
+
+        let json = r#"{
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 105944.20, "qty": 2.5}],
+                "asks": [{"price": 105944.30, "qty": 3.2}],
+                "checksum": 12345
+            }]
+        }"#;
+
+        let ts_init = UnixNanos::from(1_000_000_000);
+        let result = handler.parse_message(json, ts_init);
+
+        assert!(
+            result.is_none(),
+            "Book message should be filtered when no book subscription exists"
+        );
+    }
+
+    #[rstest]
+    fn test_book_message_passes_with_book_subscription() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument("BTC/USD");
+        handler
+            .instruments_cache
+            .insert(Ustr::from("BTC/USD"), instrument);
+
+        handler.subscriptions.mark_subscribe("book:BTC/USD");
+        handler.subscriptions.confirm_subscribe("book:BTC/USD");
+
+        let json = r#"{
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 105944.20, "qty": 2.5}],
+                "asks": [{"price": 105944.30, "qty": 3.2}],
+                "checksum": 12345
+            }]
+        }"#;
+
+        let ts_init = UnixNanos::from(1_000_000_000);
+        let result = handler.parse_message(json, ts_init);
+
+        assert!(
+            result.is_some(),
+            "Book message should pass with book subscription"
+        );
+        match result.unwrap() {
+            NautilusWsMessage::Deltas(_) => {}
+            _ => panic!("Expected Deltas message"),
+        }
+    }
+
+    #[rstest]
+    fn test_quotes_and_book_subscriptions_independent() {
+        let mut handler = create_test_handler();
+        let instrument = create_test_instrument("BTC/USD");
+        handler
+            .instruments_cache
+            .insert(Ustr::from("BTC/USD"), instrument);
+
+        handler.subscriptions.mark_subscribe("quotes:BTC/USD");
+        handler.subscriptions.confirm_subscribe("quotes:BTC/USD");
+
+        let book_json = r#"{
+            "channel": "book",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bids": [{"price": 105944.20, "qty": 2.5}],
+                "asks": [{"price": 105944.30, "qty": 3.2}],
+                "checksum": 12345
+            }]
+        }"#;
+
+        let ts_init = UnixNanos::from(1_000_000_000);
+        let book_result = handler.parse_message(book_json, ts_init);
+        assert!(
+            book_result.is_none(),
+            "Book message should be filtered without book: subscription"
+        );
+
+        let ticker_json = r#"{
+            "channel": "ticker",
+            "type": "snapshot",
+            "data": [{
+                "symbol": "BTC/USD",
+                "bid": 105944.20,
+                "bid_qty": 2.5,
+                "ask": 105944.30,
+                "ask_qty": 3.2,
+                "last": 105899.40,
+                "volume": 163.28908096,
+                "vwap": 105904.39279,
+                "low": 104711.00,
+                "high": 106613.10,
+                "change": 250.00,
+                "change_pct": 0.24
+            }]
+        }"#;
+
+        let ticker_result = handler.parse_message(ticker_json, ts_init);
+        assert!(
+            ticker_result.is_some(),
+            "Ticker should pass with quotes subscription"
+        );
     }
 }

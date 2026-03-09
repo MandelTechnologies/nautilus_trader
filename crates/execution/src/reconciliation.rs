@@ -315,10 +315,8 @@ pub fn calculate_reconciliation_price(
 ///
 /// Returns `FillAdjustmentResult` indicating what adjustments (if any) are needed.
 ///
-/// # Panics
-///
-/// This function does not panic under normal circumstances as all unwrap calls are guarded by prior checks.
 #[must_use]
+#[allow(clippy::missing_panics_doc)] // All unwraps guarded by prior checks
 pub fn adjust_fills_for_partial_window(
     fills: &[FillSnapshot],
     venue_position: &VenuePositionSnapshot,
@@ -805,6 +803,7 @@ fn extract_instrument_reports(
             .filter(|f| f.instrument_id == instrument_id)
             .cloned()
             .collect();
+
         if !filtered.is_empty() {
             fills.insert(id, filtered);
         }
@@ -1159,6 +1158,22 @@ pub fn create_reconciliation_updated(
     report: &OrderStatusReport,
     ts_now: UnixNanos,
 ) -> OrderEventAny {
+    // Only pass trigger_price for order types that support it.
+    // Limit, Market, and MarketToLimit orders assert trigger_price.is_none()
+    // in their update() methods — passing a spurious trigger_price from the
+    // venue report (e.g. Bybit sends "0.00" for non-conditional orders)
+    // causes a panic. Positive list ensures new order types without
+    // trigger_price support won't accidentally receive one.
+    let trigger_price = match order.order_type() {
+        OrderType::StopMarket
+        | OrderType::StopLimit
+        | OrderType::MarketIfTouched
+        | OrderType::LimitIfTouched
+        | OrderType::TrailingStopMarket
+        | OrderType::TrailingStopLimit => report.trigger_price,
+        _ => None,
+    };
+
     OrderEventAny::Updated(OrderUpdated::new(
         order.trader_id(),
         order.strategy_id(),
@@ -1172,7 +1187,7 @@ pub fn create_reconciliation_updated(
         order.venue_order_id(),
         order.account_id(),
         report.price,
-        report.trigger_price,
+        trigger_price,
         None, // protection_price
     ))
 }
@@ -1298,6 +1313,7 @@ fn reconcile_fill_quantity_mismatch(
         // (matching Python behavior in _handle_fill_quantity_mismatch)
         if order.is_closed() {
             let precision = order_filled_qty.precision.max(report_filled_qty.precision);
+
             if is_within_single_unit_tolerance(
                 report_filled_qty.as_decimal(),
                 order_filled_qty.as_decimal(),
@@ -1495,9 +1511,11 @@ fn calculate_incremental_fill_price(
         if let Some(avg_px) = report.avg_px {
             return Price::from_decimal_dp(avg_px, instrument.price_precision()).ok();
         }
+
         if let Some(price) = report.price {
             return Some(price);
         }
+
         if let Some(price) = order.price() {
             return Some(price);
         }

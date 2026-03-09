@@ -65,6 +65,10 @@ documentation feel natural to end-users.
 
 2. **Spelling**: Use "hardcoded" (single word) rather than "hard-coded" or "hard coded" – this is the more modern and accepted spelling.
 
+3. **Error variable naming**: Use single-letter `e` for caught errors/exceptions:
+   - Rust: `Err(e)` not `Err(err)` or `Err(error)`, and `|e|` not `|err|` in closures
+   - Python: `except SomeError as e:` not `as err:` or `as error:`
+
 ### Naming conventions
 
 1. **Internal fields**: Abbreviations are acceptable for private/internal fields (e.g., `_price_prec`, `_size_prec`) to keep hot-path code concise.
@@ -75,11 +79,11 @@ documentation feel natural to end-users.
 
 ### Formatting
 
-1. For longer lines of code, and when passing more than a couple of arguments, you should take a new line which aligns at the next logical indent (rather than attempting a hanging 'vanity' alignment off an opening parenthesis). This practice conserves space to the right, ensures important code is more central in view, and is also robust to function/method name changes.
+1. For longer lines of code, and when passing more than a couple of arguments, you should take a new line which aligns at the next logical indent (rather than attempting a hanging 'vanity' alignment off an opening parenthesis). This practice conserves space to the right, keeps important code more central in view, and survives function/method name changes.
 
 2. The closing parenthesis should be located on a new line, aligned at the logical indent.
 
-3. Also ensure multiple hanging parameters or arguments end with a trailing comma:
+3. Multiple hanging parameters or arguments should end with a trailing comma:
 
 ```python
 long_method_with_many_params(
@@ -133,5 +137,5 @@ Configuration is in `.gitlint` at the repository root:
 - **79-character body width**: Aligns with Python's PEP 8 conventions and the traditional limit for git tooling.
 
 :::note
-Gitlint may be enforced in CI in the future, so adopting these practices early helps ensure a smooth transition.
+Gitlint may be enforced in CI in the future, so adopting these practices early eases the transition.
 :::

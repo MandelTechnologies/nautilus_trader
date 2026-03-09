@@ -17,8 +17,6 @@
 //!
 //! Run with: `cargo run --example okx-data-tester --package nautilus-okx`
 
-use std::num::NonZeroUsize;
-
 use nautilus_common::enums::Environment;
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
@@ -45,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let okx_config = OKXDataClientConfig {
         api_key: None,        // Will use 'OKX_API_KEY' env var
         api_secret: None,     // Will use 'OKX_API_SECRET' env var
-        api_passphrase: None, // Will use 'OKX_PASSPHRASE' env var
+        api_passphrase: None, // Will use 'OKX_API_PASSPHRASE' env var
         instrument_types: vec![OKXInstrumentType::Swap],
         is_demo: false,
         ..Default::default()
@@ -61,10 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let tester_config = DataTesterConfig::new(client_id, instrument_ids)
-        // .with_subscribe_quotes(true)
-        // .with_subscribe_trades(true);
-        .with_subscribe_book_at_interval(true)
-        .with_book_interval_ms(NonZeroUsize::new(10).unwrap());
+        .with_subscribe_quotes(true)
+        .with_subscribe_trades(true)
+        .with_subscribe_mark_prices(true)
+        .with_subscribe_index_prices(true)
+        .with_subscribe_funding_rates(true)
+        .with_subscribe_instrument_status(true)
+        .with_request_book_snapshot(true)
+        .with_request_funding_rates(true);
     let tester = DataTester::new(tester_config);
 
     node.add_actor(tester)?;

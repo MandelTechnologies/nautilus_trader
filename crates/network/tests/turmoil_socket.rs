@@ -44,6 +44,7 @@ fn socket_config() -> SocketConfig {
         reconnect_jitter_ms: Some(10),
         connection_max_retries: None,
         reconnect_max_attempts: None,
+        idle_timeout_ms: None,
         certs_dir: None,
     }
 }
@@ -153,6 +154,7 @@ fn test_turmoil_real_socket_reconnection(mut socket_config: SocketConfig) {
                         if buffer.starts_with(b"close\r\n") {
                             break;
                         }
+
                         if stream.write_all(&buffer[..n]).await.is_err() {
                             break;
                         }
@@ -238,6 +240,86 @@ fn test_turmoil_real_socket_network_partition(mut socket_config: SocketConfig) {
         // Close
         client.send_bytes(b"close".to_vec()).await.ok();
         client.close().await;
+
+        Ok(())
+    });
+
+    sim.run().unwrap();
+}
+
+#[rstest]
+fn test_turmoil_real_socket_close_during_reconnect(mut socket_config: SocketConfig) {
+    socket_config.reconnect_timeout_ms = Some(5_000);
+    socket_config.reconnect_delay_initial_ms = Some(100);
+
+    let mut sim = Builder::new().build();
+
+    sim.host("server", echo_server);
+
+    sim.client("client", async move {
+        let client = SocketClient::connect(socket_config, None, None, None)
+            .await
+            .expect("Should connect");
+
+        assert!(client.is_active(), "Client should be active after connect");
+
+        turmoil::partition("client", "server");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        client.close().await;
+
+        assert!(
+            client.is_closed(),
+            "Client should be closed after close during reconnect"
+        );
+        assert!(
+            !client.is_active(),
+            "Client should not be active after close"
+        );
+
+        Ok(())
+    });
+
+    sim.run().unwrap();
+}
+
+#[rstest]
+fn test_turmoil_real_socket_disconnect_during_backoff(mut socket_config: SocketConfig) {
+    socket_config.reconnect_timeout_ms = Some(1_000);
+    socket_config.reconnect_delay_initial_ms = Some(10_000); // Long backoff
+    socket_config.reconnect_delay_max_ms = Some(10_000);
+    socket_config.reconnect_backoff_factor = Some(1.0);
+    socket_config.reconnect_jitter_ms = Some(0);
+
+    let mut sim = Builder::new()
+        .simulation_duration(Duration::from_secs(30))
+        .build();
+
+    sim.host("server", echo_server);
+
+    sim.client("client", async move {
+        let client = SocketClient::connect(socket_config, None, None, None)
+            .await
+            .expect("Should connect");
+
+        assert!(client.is_active());
+
+        // Partition to force reconnect
+        turmoil::partition("client", "server");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // Client should be reconnecting; reconnect attempt fails, enters 10s backoff
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+        let start = tokio::time::Instant::now();
+        client.close().await;
+        let elapsed = start.elapsed();
+
+        assert!(client.is_closed(), "Client should be closed");
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "Close should interrupt backoff, took {elapsed:?}"
+        );
 
         Ok(())
     });

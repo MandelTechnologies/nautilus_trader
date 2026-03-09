@@ -26,7 +26,9 @@ use std::{
 use ahash::AHashSet;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use nautilus_core::{datetime::nanos_to_millis, nanos::UnixNanos, time::get_atomic_clock_realtime};
+use nautilus_core::{
+    AtomicTime, datetime::nanos_to_millis, nanos::UnixNanos, time::get_atomic_clock_realtime,
+};
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
     enums::{AggregationSource, BarAggregation},
@@ -49,14 +51,16 @@ use ustr::Ustr;
 use super::{
     error::DeribitHttpError,
     models::{
-        DeribitAccountSummariesResponse, DeribitCurrency, DeribitInstrument, DeribitJsonRpcRequest,
-        DeribitJsonRpcResponse, DeribitPosition, DeribitUserTradesResponse,
+        DeribitAccountSummariesResponse, DeribitBookSummary, DeribitCurrency, DeribitInstrument,
+        DeribitJsonRpcRequest, DeribitJsonRpcResponse, DeribitPosition, DeribitProductType,
+        DeribitTicker, DeribitUserTradesResponse,
     },
     query::{
-        GetAccountSummariesParams, GetInstrumentParams, GetInstrumentsParams,
-        GetOpenOrdersByInstrumentParams, GetOpenOrdersParams, GetOrderHistoryByCurrencyParams,
-        GetOrderHistoryByInstrumentParams, GetOrderStateParams, GetPositionsParams,
-        GetUserTradesByCurrencyAndTimeParams, GetUserTradesByInstrumentAndTimeParams,
+        GetAccountSummariesParams, GetBookSummaryByCurrencyParams, GetInstrumentParams,
+        GetInstrumentsParams, GetOpenOrdersByInstrumentParams, GetOpenOrdersParams,
+        GetOrderHistoryByCurrencyParams, GetOrderHistoryByInstrumentParams, GetOrderStateParams,
+        GetPositionsParams, GetTickerParams, GetUserTradesByCurrencyAndTimeParams,
+        GetUserTradesByInstrumentAndTimeParams,
     },
 };
 use crate::{
@@ -85,6 +89,11 @@ use crate::{
         parse::{parse_position_status_report, parse_user_order_msg, parse_user_trade_msg},
     },
 };
+
+/// Maximum number of trades per request for Deribit's historical trades API.
+/// Deribit's default is 10 which is insufficient for most use cases.
+/// The API maximum is 1000.
+pub const DERIBIT_HISTORICAL_TRADES_MAX_COUNT: u32 = 1000;
 
 /// Low-level Deribit HTTP client for raw API operations.
 ///
@@ -300,6 +309,7 @@ impl DeribitRawHttpClient {
     pub fn new_with_env(
         api_key: Option<String>,
         api_secret: Option<String>,
+        base_url: Option<String>,
         is_testnet: bool,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
@@ -323,7 +333,7 @@ impl DeribitRawHttpClient {
             Self::with_credentials(
                 key,
                 secret,
-                None,
+                base_url,
                 is_testnet,
                 timeout_secs,
                 max_retries,
@@ -334,7 +344,7 @@ impl DeribitRawHttpClient {
         } else {
             // No credentials - create unauthenticated client
             Self::new(
-                None,
+                base_url,
                 is_testnet,
                 timeout_secs,
                 max_retries,
@@ -717,6 +727,31 @@ impl DeribitRawHttpClient {
             .await
     }
 
+    /// Gets book summaries for all instruments of a given currency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_book_summary_by_currency(
+        &self,
+        params: GetBookSummaryByCurrencyParams,
+    ) -> Result<DeribitJsonRpcResponse<Vec<DeribitBookSummary>>, DeribitHttpError> {
+        self.send_request("public/get_book_summary_by_currency", params, false)
+            .await
+    }
+
+    /// Gets ticker data for a single instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails or the response cannot be parsed.
+    pub async fn get_ticker(
+        &self,
+        params: GetTickerParams,
+    ) -> Result<DeribitJsonRpcResponse<DeribitTicker>, DeribitHttpError> {
+        self.send_request("public/ticker", params, false).await
+    }
+
     /// Gets positions for a specific currency.
     ///
     /// # Errors
@@ -741,11 +776,12 @@ impl DeribitRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.deribit")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.deribit", from_py_object)
 )]
 pub struct DeribitHttpClient {
     pub(crate) inner: Arc<DeribitRawHttpClient>,
     pub(crate) instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
+    clock: &'static AtomicTime,
     cache_initialized: AtomicBool,
 }
 
@@ -762,6 +798,7 @@ impl Clone for DeribitHttpClient {
             inner: self.inner.clone(),
             instruments_cache: self.instruments_cache.clone(),
             cache_initialized,
+            clock: self.clock,
         }
     }
 }
@@ -800,6 +837,7 @@ impl DeribitHttpClient {
             inner: raw_client,
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: AtomicBool::new(false),
+            clock: get_atomic_clock_realtime(),
         })
     }
 
@@ -818,6 +856,7 @@ impl DeribitHttpClient {
     pub fn new_with_env(
         api_key: Option<String>,
         api_secret: Option<String>,
+        base_url: Option<String>,
         is_testnet: bool,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
@@ -828,6 +867,7 @@ impl DeribitHttpClient {
         let raw_client = Arc::new(DeribitRawHttpClient::new_with_env(
             api_key,
             api_secret,
+            base_url,
             is_testnet,
             timeout_secs,
             max_retries,
@@ -840,6 +880,7 @@ impl DeribitHttpClient {
             inner: raw_client,
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: AtomicBool::new(false),
+            clock: get_atomic_clock_realtime(),
         })
     }
 
@@ -851,11 +892,11 @@ impl DeribitHttpClient {
     pub async fn request_instruments(
         &self,
         currency: DeribitCurrency,
-        kind: Option<super::models::DeribitInstrumentKind>,
+        product_type: Option<DeribitProductType>,
     ) -> anyhow::Result<Vec<InstrumentAny>> {
         // Build parameters
-        let params = if let Some(k) = kind {
-            GetInstrumentsParams::with_kind(currency, k)
+        let params = if let Some(pt) = product_type {
+            GetInstrumentsParams::with_kind(currency, pt)
         } else {
             GetInstrumentsParams::new(currency)
         };
@@ -960,6 +1001,12 @@ impl DeribitHttpClient {
     /// Returns an error if:
     /// - The request fails
     /// - Trade parsing fails
+    ///
+    /// # Pagination
+    ///
+    /// When `limit` is `None`, this function automatically paginates through all available
+    /// trades in the time range using the `has_more` field from the API response.
+    /// When `limit` is specified, pagination stops once that many trades are collected.
     pub async fn request_trades(
         &self,
         instrument_id: InstrumentId,
@@ -985,51 +1032,90 @@ impl DeribitHttpClient {
             anyhow::ensure!(s < e, "Invalid time range: start={s:?} end={e:?}");
         }
 
-        let start_timestamp = start_dt.timestamp_millis();
+        let mut current_start_timestamp = start_dt.timestamp_millis();
         let end_timestamp = end_dt.timestamp_millis();
-
-        let params = GetLastTradesByInstrumentAndTimeParams::new(
-            instrument_id.symbol.to_string(),
-            start_timestamp,
-            end_timestamp,
-            limit,
-            Some("asc".to_string()), // Sort ascending for historical data
-        );
-
-        let full_response = self
-            .inner
-            .get_last_trades_by_instrument_and_time(params)
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
-
-        let response_data = full_response
-            .result
-            .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
-
         let ts_init = self.generate_ts_init();
-        let mut trades = Vec::with_capacity(response_data.trades.len());
+        let mut all_trades = Vec::new();
+        let mut has_more = true;
 
-        for raw_trade in &response_data.trades {
-            match parse_trade_tick(
-                raw_trade,
-                instrument_id,
-                price_precision,
-                size_precision,
-                ts_init,
-            ) {
-                Ok(trade) => trades.push(trade),
-                Err(e) => {
-                    log::warn!(
-                        "Failed to parse trade {} for {}: {}",
-                        raw_trade.trade_id,
-                        instrument_id,
-                        e
-                    );
+        // Paginate through all trades in the time range
+        while has_more {
+            let params = GetLastTradesByInstrumentAndTimeParams::new(
+                instrument_id.symbol.to_string(),
+                current_start_timestamp,
+                end_timestamp,
+                Some(DERIBIT_HISTORICAL_TRADES_MAX_COUNT),
+                Some("asc".to_string()), // Sort ascending for pagination
+            );
+
+            let full_response = self
+                .inner
+                .get_last_trades_by_instrument_and_time(params)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            let response_data = full_response
+                .result
+                .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
+
+            has_more = response_data.has_more;
+
+            if response_data.trades.is_empty() {
+                break;
+            }
+
+            // Track last timestamp for pagination
+            let mut last_timestamp = current_start_timestamp;
+
+            for raw_trade in &response_data.trades {
+                match parse_trade_tick(
+                    raw_trade,
+                    instrument_id,
+                    price_precision,
+                    size_precision,
+                    ts_init,
+                ) {
+                    Ok(trade) => {
+                        last_timestamp = raw_trade.timestamp;
+                        all_trades.push(trade);
+
+                        // If user specified a limit, stop when reached
+                        if let Some(max) = limit
+                            && all_trades.len() >= max as usize
+                        {
+                            return Ok(all_trades);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to parse trade {} for {}: {}",
+                            raw_trade.trade_id,
+                            instrument_id,
+                            e
+                        );
+                    }
                 }
+            }
+
+            // Move start timestamp forward for next page
+            // Add 1ms to avoid re-fetching the last trade
+            current_start_timestamp = last_timestamp + 1;
+
+            // Safety check: if we're past the end timestamp, stop
+            if current_start_timestamp >= end_timestamp {
+                break;
             }
         }
 
-        Ok(trades)
+        log::info!(
+            "Fetched {} historical trades for {} from {} to {}",
+            all_trades.len(),
+            instrument_id,
+            start_dt,
+            end_dt
+        );
+
+        Ok(all_trades)
     }
 
     /// Requests historical bars (OHLCV) for an instrument.
@@ -1082,6 +1168,7 @@ impl DeribitHttpClient {
         let supported_resolutions = [
             "1", "3", "5", "10", "15", "30", "60", "120", "180", "360", "720", "1D",
         ];
+
         if !supported_resolutions.contains(&resolution.as_str()) {
             anyhow::bail!(
                 "Deribit does not support resolution '{resolution}'. Supported: {supported_resolutions:?}"
@@ -1223,7 +1310,7 @@ impl DeribitHttpClient {
 
     /// Generates a timestamp for initialization.
     fn generate_ts_init(&self) -> UnixNanos {
-        get_atomic_clock_realtime().get_time_ns()
+        self.clock.get_time_ns()
     }
 
     /// Caches instruments for later retrieval.
@@ -1324,6 +1411,7 @@ impl DeribitHttpClient {
                 instrument_name: instrument_name.clone(),
                 r#type: None,
             };
+
             if let Some(orders) = self
                 .inner
                 .get_open_orders_by_instrument(open_params)
@@ -1335,24 +1423,34 @@ impl DeribitHttpClient {
                 }
             }
 
-            // Get historical orders if not open_only
             if !open_only {
-                let history_params = GetOrderHistoryByInstrumentParams {
-                    instrument_name,
-                    count: Some(100),
-                    offset: None,
-                    include_old: Some(true),
-                    include_unfilled: Some(true),
-                };
-                if let Some(orders) = self
-                    .inner
-                    .get_order_history_by_instrument(history_params)
-                    .await?
-                    .result
-                {
+                const PAGE_SIZE: u32 = 100;
+                let mut offset: u32 = 0;
+
+                loop {
+                    let history_params = GetOrderHistoryByInstrumentParams {
+                        instrument_name: instrument_name.clone(),
+                        count: Some(PAGE_SIZE),
+                        offset: Some(offset),
+                        include_old: Some(true),
+                        include_unfilled: Some(true),
+                    };
+                    let orders = self
+                        .inner
+                        .get_order_history_by_instrument(history_params)
+                        .await?
+                        .result
+                        .unwrap_or_default();
+
+                    let count = orders.len() as u32;
                     for order in &orders {
                         parse_and_add(order);
                     }
+
+                    if count < PAGE_SIZE {
+                        break;
+                    }
+                    offset += count;
                 }
             }
         } else {
@@ -1364,24 +1462,37 @@ impl DeribitHttpClient {
                 }
             }
 
-            // For historical orders, iterate currencies (ANY may not be supported)
             if !open_only {
+                const PAGE_SIZE: u32 = 100;
+
                 for currency in DeribitCurrency::iter().filter(|c| *c != DeribitCurrency::ANY) {
-                    let history_params = GetOrderHistoryByCurrencyParams {
-                        currency,
-                        kind: None,
-                        count: Some(100),
-                        include_unfilled: Some(true),
-                    };
-                    if let Some(orders) = self
-                        .inner
-                        .get_order_history_by_currency(history_params)
-                        .await?
-                        .result
-                    {
+                    let mut offset: u32 = 0;
+
+                    loop {
+                        let history_params = GetOrderHistoryByCurrencyParams {
+                            currency,
+                            kind: None,
+                            count: Some(PAGE_SIZE),
+                            offset: Some(offset),
+                            include_old: Some(true),
+                            include_unfilled: Some(true),
+                        };
+                        let orders = self
+                            .inner
+                            .get_order_history_by_currency(history_params)
+                            .await?
+                            .result
+                            .unwrap_or_default();
+
+                        let count = orders.len() as u32;
                         for order in &orders {
                             parse_and_add(order);
                         }
+
+                        if count < PAGE_SIZE {
+                            break;
+                        }
+                        offset += count;
                     }
                 }
             }
@@ -1394,6 +1505,7 @@ impl DeribitHttpClient {
     /// Requests fill reports for reconciliation.
     ///
     /// Fetches user trades from Deribit and converts them to Nautilus [`FillReport`].
+    /// Automatically paginates through all results using time-cursor advancement.
     ///
     /// # Strategy
     /// - Uses `/private/get_user_trades_by_instrument_and_time` when instrument is provided
@@ -1441,43 +1553,95 @@ impl DeribitHttpClient {
             }
         };
 
+        // Track seen trade IDs to deduplicate across page boundaries when
+        // multiple trades share the same millisecond timestamp.
+        let mut seen_trade_ids: AHashSet<String> = AHashSet::new();
+
         if let Some(instrument_id) = instrument_id {
-            // Use instrument-specific endpoint (1 API call)
-            let params = GetUserTradesByInstrumentAndTimeParams {
-                instrument_name: instrument_id.symbol.to_string(),
-                start_timestamp: start_ms,
-                end_timestamp: end_ms,
-                count: Some(1000),
-                sorting: None,
-            };
-            if let Some(response) = self
-                .inner
-                .get_user_trades_by_instrument_and_time(params)
-                .await?
-                .result
-            {
-                for trade in &response.trades {
-                    parse_and_add(trade);
+            let mut current_start = start_ms;
+
+            loop {
+                let params = GetUserTradesByInstrumentAndTimeParams {
+                    instrument_name: instrument_id.symbol.to_string(),
+                    start_timestamp: current_start,
+                    end_timestamp: end_ms,
+                    count: Some(DERIBIT_HISTORICAL_TRADES_MAX_COUNT),
+                    sorting: Some("asc".to_string()),
+                };
+                let response = self
+                    .inner
+                    .get_user_trades_by_instrument_and_time(params)
+                    .await?;
+
+                let Some(data) = response.result else { break };
+
+                let prev_seen = seen_trade_ids.len();
+                for trade in &data.trades {
+                    if seen_trade_ids.insert(trade.trade_id.clone()) {
+                        parse_and_add(trade);
+                    }
+                }
+                let new_count = seen_trade_ids.len() - prev_seen;
+
+                let Some(last_trade) = data.trades.last() else {
+                    break;
+                };
+
+                if !data.has_more {
+                    break;
+                }
+
+                // Advance past the boundary timestamp when all trades were
+                // already seen, preventing an infinite loop on duplicate pages
+                if new_count == 0 {
+                    current_start = last_trade.timestamp as i64 + 1;
+                } else {
+                    current_start = last_trade.timestamp as i64;
                 }
             }
         } else {
-            // Iterate currencies (ANY not supported for user trades endpoint)
             for currency in DeribitCurrency::iter().filter(|c| *c != DeribitCurrency::ANY) {
-                let params = GetUserTradesByCurrencyAndTimeParams {
-                    currency,
-                    start_timestamp: start_ms,
-                    end_timestamp: end_ms,
-                    kind: None,
-                    count: Some(1000),
-                };
-                if let Some(response) = self
-                    .inner
-                    .get_user_trades_by_currency_and_time(params)
-                    .await?
-                    .result
-                {
-                    for trade in &response.trades {
-                        parse_and_add(trade);
+                let mut current_start = start_ms;
+                seen_trade_ids.clear();
+
+                loop {
+                    let params = GetUserTradesByCurrencyAndTimeParams {
+                        currency,
+                        start_timestamp: current_start,
+                        end_timestamp: end_ms,
+                        kind: None,
+                        count: Some(DERIBIT_HISTORICAL_TRADES_MAX_COUNT),
+                        sorting: Some("asc".to_string()),
+                    };
+                    let response = self
+                        .inner
+                        .get_user_trades_by_currency_and_time(params)
+                        .await?;
+
+                    let Some(data) = response.result else { break };
+
+                    let prev_seen = seen_trade_ids.len();
+                    for trade in &data.trades {
+                        if seen_trade_ids.insert(trade.trade_id.clone()) {
+                            parse_and_add(trade);
+                        }
+                    }
+                    let new_count = seen_trade_ids.len() - prev_seen;
+
+                    let Some(last_trade) = data.trades.last() else {
+                        break;
+                    };
+
+                    if !data.has_more {
+                        break;
+                    }
+
+                    // Advance past the boundary timestamp when all trades were
+                    // already seen, preventing an infinite loop on duplicate pages
+                    if new_count == 0 {
+                        current_start = last_trade.timestamp as i64 + 1;
+                    } else {
+                        current_start = last_trade.timestamp as i64;
                     }
                 }
             }
@@ -1485,6 +1649,50 @@ impl DeribitHttpClient {
 
         log::debug!("Generated {} fill reports", reports.len());
         Ok(reports)
+    }
+
+    /// Requests ticker data for a single instrument.
+    ///
+    /// Returns the `DeribitTicker` which includes `underlying_price` (forward price).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn request_ticker(&self, instrument_name: &str) -> anyhow::Result<DeribitTicker> {
+        let params = GetTickerParams {
+            instrument_name: instrument_name.to_string(),
+        };
+        let response = self
+            .inner
+            .get_ticker(params)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in ticker response"))
+    }
+
+    /// Requests book summaries for options of a given currency.
+    ///
+    /// Returns raw `DeribitBookSummary` items which include `underlying_price`
+    /// (the forward price) for each option instrument.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    pub async fn request_book_summaries(
+        &self,
+        currency: &str,
+    ) -> anyhow::Result<Vec<DeribitBookSummary>> {
+        let params = GetBookSummaryByCurrencyParams::options(currency);
+        let full_response = self
+            .inner
+            .get_book_summary_by_currency(params)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+        full_response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("No result in book summary response"))
     }
 
     /// Requests position status reports for reconciliation.
@@ -1511,6 +1719,7 @@ impl DeribitHttpClient {
             currency: DeribitCurrency::ANY,
             kind: None,
         };
+
         if let Some(positions) = self.inner.get_positions(params).await?.result {
             for position in &positions {
                 // Skip flat positions (size == 0)
@@ -1518,7 +1727,7 @@ impl DeribitHttpClient {
                     continue;
                 }
 
-                let symbol = Ustr::from(position.instrument_name.as_str());
+                let symbol = position.instrument_name;
                 if let Some(instrument) = self.get_instrument(&symbol) {
                     let report =
                         parse_position_status_report(position, &instrument, account_id, ts_init);

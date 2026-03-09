@@ -64,7 +64,6 @@ impl DateCursor {
         let date_utc = current_utc.date_naive();
 
         // Calculate end of the current UTC day
-        // SAFETY: Known safe input values
         let end_utc =
             date_utc.and_hms_opt(23, 59, 59).unwrap() + Duration::nanoseconds(999_999_999);
         let end_ns = UnixNanos::from(end_utc.and_utc().timestamp_nanos_opt().unwrap() as u64);
@@ -115,11 +114,11 @@ async fn gather_instruments_info(
 /// Panics if unable to determine the output path (current directory fallback fails).
 pub async fn run_tardis_machine_replay_from_config(config_filepath: &Path) -> anyhow::Result<()> {
     log::info!("Starting replay");
-    log::info!("Config filepath: {config_filepath:?}");
+    log::info!("Config filepath: {}", config_filepath.display());
 
     // Load and parse the replay configuration
     let config_data = fs::read_to_string(config_filepath)
-        .with_context(|| format!("Failed to read config file: {config_filepath:?}"))?;
+        .with_context(|| format!("Failed to read config file: {}", config_filepath.display()))?;
     let config: TardisReplayConfig = serde_json::from_str(&config_data)
         .context("failed to parse config JSON into TardisReplayConfig")?;
 
@@ -135,7 +134,7 @@ pub async fn run_tardis_machine_replay_from_config(config_filepath: &Path) -> an
         })
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
-    log::info!("Output path: {path:?}");
+    log::info!("Output path: {}", path.display());
 
     let normalize_symbols = config.normalize_symbols.unwrap_or(true);
     log::info!("normalize_symbols={normalize_symbols}");
@@ -223,7 +222,8 @@ pub async fn run_tardis_machine_replay_from_config(config_filepath: &Path) -> an
                     }
                     Data::MarkPriceUpdate(_)
                     | Data::IndexPriceUpdate(_)
-                    | Data::InstrumentClose(_) => {
+                    | Data::InstrumentClose(_)
+                    | Data::Custom(_) => {
                         log::debug!(
                             "Skipping unsupported data type for instrument {}",
                             msg.instrument_id()
@@ -465,9 +465,9 @@ fn batch_and_write_bars(bars: Vec<Bar>, bar_type: &BarType, date: NaiveDate, pat
 
     let filepath = path.join(parquet_filepath_bars(bar_type, date));
     if let Err(e) = write_parquet_local(batch, &filepath) {
-        log::error!("Error writing {filepath:?}: {e:?}");
+        log::error!("Error writing {}: {e}", filepath.display());
     } else {
-        log::info!("File written: {filepath:?}");
+        log::info!("File written: {}", filepath.display());
     }
 }
 
@@ -564,9 +564,9 @@ fn write_batch(
 ) {
     let filepath = path.join(parquet_filepath(typename, instrument_id, date));
     if let Err(e) = write_parquet_local(batch, &filepath) {
-        log::error!("Error writing {filepath:?}: {e:?}");
+        log::error!("Error writing {}: {e}", filepath.display());
     } else {
-        log::info!("File written: {filepath:?}");
+        log::info!("File written: {}", filepath.display());
     }
 }
 

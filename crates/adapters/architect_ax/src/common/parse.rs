@@ -15,14 +15,60 @@
 
 //! Conversion functions that translate AX API schemas into Nautilus types.
 
+use std::sync::LazyLock;
+
+use ahash::RandomState;
+use nautilus_core::nanos::UnixNanos;
 pub use nautilus_core::serialization::{
-    deserialize_decimal_or_zero, deserialize_optional_decimal,
-    deserialize_optional_decimal_from_str, deserialize_optional_decimal_or_zero, parse_decimal,
+    deserialize_decimal_or_zero, deserialize_optional_decimal_from_str,
+    deserialize_optional_decimal_or_zero, deserialize_optional_decimal_str, parse_decimal,
     parse_optional_decimal, serialize_decimal_as_str, serialize_optional_decimal_as_str,
 };
-use nautilus_model::{data::BarSpecification, enums::BarAggregation};
+use nautilus_model::{
+    data::BarSpecification,
+    identifiers::ClientOrderId,
+    types::{Quantity, fixed::FIXED_PRECISION, quantity::QuantityRaw},
+};
 
 use super::enums::AxCandleWidth;
+
+const NANOSECONDS_IN_SECOND: u64 = 1_000_000_000;
+
+/// Converts an AX epoch-seconds timestamp to [`UnixNanos`].
+///
+/// # Errors
+///
+/// Returns an error if `seconds` is negative (malformed data from AX).
+pub fn ax_timestamp_s_to_unix_nanos(seconds: i64) -> anyhow::Result<UnixNanos> {
+    anyhow::ensure!(
+        seconds >= 0,
+        "AX timestamp must be non-negative, was {seconds}"
+    );
+    Ok(UnixNanos::from(seconds as u64 * NANOSECONDS_IN_SECOND))
+}
+
+/// Converts an AX nanosecond timestamp to [`UnixNanos`].
+///
+/// # Errors
+///
+/// Returns an error if `nanos` is negative (malformed data from AX).
+pub fn ax_timestamp_ns_to_unix_nanos(nanos: i64) -> anyhow::Result<UnixNanos> {
+    anyhow::ensure!(
+        nanos >= 0,
+        "AX timestamp_ns must be non-negative, was {nanos}"
+    );
+    Ok(UnixNanos::from(nanos as u64))
+}
+
+/// Cached hasher state for deterministic client order ID to cid conversion
+static CID_HASHER: LazyLock<RandomState> = LazyLock::new(|| {
+    RandomState::with_seeds(
+        0x517cc1b727220a95,
+        0x9b5c18c90c3c314d,
+        0x5851f42d4c957f2d,
+        0x14057b7ef767814f,
+    )
+});
 
 /// Maps a Nautilus [`BarSpecification`] to an [`AxCandleWidth`].
 ///
@@ -30,36 +76,122 @@ use super::enums::AxCandleWidth;
 ///
 /// Returns an error if the bar specification is not supported by Ax.
 pub fn map_bar_spec_to_candle_width(spec: &BarSpecification) -> anyhow::Result<AxCandleWidth> {
-    match spec.step.get() {
-        1 => match spec.aggregation {
-            BarAggregation::Second => Ok(AxCandleWidth::Seconds1),
-            BarAggregation::Minute => Ok(AxCandleWidth::Minutes1),
-            BarAggregation::Hour => Ok(AxCandleWidth::Hours1),
-            BarAggregation::Day => Ok(AxCandleWidth::Days1),
-            _ => anyhow::bail!("Unsupported bar aggregation: {:?}", spec.aggregation),
-        },
-        5 => match spec.aggregation {
-            BarAggregation::Second => Ok(AxCandleWidth::Seconds5),
-            BarAggregation::Minute => Ok(AxCandleWidth::Minutes5),
-            _ => anyhow::bail!(
-                "Unsupported bar step 5 with aggregation {:?}",
-                spec.aggregation
-            ),
-        },
-        15 if spec.aggregation == BarAggregation::Minute => Ok(AxCandleWidth::Minutes15),
-        step => anyhow::bail!(
-            "Unsupported bar step: {step} with aggregation {:?}",
-            spec.aggregation
-        ),
+    AxCandleWidth::try_from(spec)
+}
+
+/// Converts a [`Quantity`] to an i64 contract count for AX orders.
+///
+/// AX uses integer contracts only. Uses integer arithmetic to avoid
+/// floating-point precision issues.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The quantity represents a fractional number of contracts.
+/// - The quantity is zero.
+pub fn quantity_to_contracts(quantity: Quantity) -> anyhow::Result<u64> {
+    let raw = quantity.raw;
+    let scale = 10_u64.pow(FIXED_PRECISION as u32) as QuantityRaw;
+
+    // AX requires whole contract quantities
+    if !raw.is_multiple_of(scale) {
+        anyhow::bail!(
+            "AX requires whole contract quantities, was {}",
+            quantity.as_f64()
+        );
     }
+
+    #[allow(clippy::unnecessary_cast)]
+    let contracts = (raw / scale) as u64;
+    if contracts == 0 {
+        anyhow::bail!("Order quantity must be at least 1 contract");
+    }
+    Ok(contracts)
+}
+
+/// Converts a [`ClientOrderId`] to a 64-bit unsigned integer for AX `cid` field.
+///
+/// Uses a deterministic hash of the client order ID string to produce
+/// a u64 value that can be used for order correlation.
+#[must_use]
+pub fn client_order_id_to_cid(client_order_id: &ClientOrderId) -> u64 {
+    CID_HASHER.hash_one(client_order_id.inner())
+}
+
+/// Creates a [`ClientOrderId`] from a cid value.
+///
+/// Used when we receive an order with a cid but cannot resolve it to the
+/// original ClientOrderId (e.g., after restart when in-memory mapping is lost).
+#[must_use]
+pub fn cid_to_client_order_id(cid: u64) -> ClientOrderId {
+    ClientOrderId::new(format!("CID-{cid}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::enums::PriceType;
+    use nautilus_model::{
+        enums::{BarAggregation, PriceType},
+        identifiers::ClientOrderId,
+        types::Quantity,
+    };
     use rstest::rstest;
 
     use super::*;
+
+    #[rstest]
+    fn test_client_order_id_to_cid_deterministic() {
+        let coid = ClientOrderId::new("O-20240101-000001");
+
+        // Must produce same result across multiple calls
+        let cid1 = client_order_id_to_cid(&coid);
+        let cid2 = client_order_id_to_cid(&coid);
+        let cid3 = client_order_id_to_cid(&coid);
+
+        assert_eq!(cid1, cid2);
+        assert_eq!(cid2, cid3);
+    }
+
+    #[rstest]
+    fn test_client_order_id_to_cid_different_ids() {
+        let coid1 = ClientOrderId::new("O-20240101-000001");
+        let coid2 = ClientOrderId::new("O-20240101-000002");
+
+        let cid1 = client_order_id_to_cid(&coid1);
+        let cid2 = client_order_id_to_cid(&coid2);
+
+        assert_ne!(cid1, cid2);
+    }
+
+    #[rstest]
+    fn test_quantity_to_contracts_valid_precision_zero() {
+        let qty = Quantity::new(10.0, 0);
+        let result = quantity_to_contracts(qty);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 10);
+    }
+
+    #[rstest]
+    fn test_quantity_to_contracts_valid_with_precision() {
+        // Whole number with non-zero precision should work
+        let qty = Quantity::new(10.0, 2);
+        let result = quantity_to_contracts(qty);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 10);
+    }
+
+    #[rstest]
+    fn test_quantity_to_contracts_fractional_rejects() {
+        let qty = Quantity::new(10.5, 1);
+        let result = quantity_to_contracts(qty);
+        assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_quantity_to_contracts_zero_rejects() {
+        let qty = Quantity::new(0.0, 0);
+        let result = quantity_to_contracts(qty);
+        assert!(result.is_err());
+    }
 
     #[rstest]
     fn test_map_bar_spec_1_second() {
@@ -129,5 +261,33 @@ mod tests {
         let spec = BarSpecification::new(1, BarAggregation::Tick, PriceType::Last);
         let result = map_bar_spec_to_candle_width(&spec);
         assert!(result.is_err());
+    }
+
+    #[rstest]
+    fn test_ax_timestamp_s_to_unix_nanos_valid() {
+        let result = ax_timestamp_s_to_unix_nanos(1_000).unwrap();
+        assert_eq!(result, UnixNanos::from(1_000_000_000_000u64));
+    }
+
+    #[rstest]
+    fn test_ax_timestamp_s_to_unix_nanos_zero() {
+        let result = ax_timestamp_s_to_unix_nanos(0).unwrap();
+        assert_eq!(result, UnixNanos::from(0u64));
+    }
+
+    #[rstest]
+    fn test_ax_timestamp_s_to_unix_nanos_negative_errors() {
+        assert!(ax_timestamp_s_to_unix_nanos(-1).is_err());
+    }
+
+    #[rstest]
+    fn test_ax_timestamp_ns_to_unix_nanos_valid() {
+        let result = ax_timestamp_ns_to_unix_nanos(1_000_000_000).unwrap();
+        assert_eq!(result, UnixNanos::from(1_000_000_000u64));
+    }
+
+    #[rstest]
+    fn test_ax_timestamp_ns_to_unix_nanos_negative_errors() {
+        assert!(ax_timestamp_ns_to_unix_nanos(-1).is_err());
     }
 }

@@ -46,7 +46,7 @@
 
 use std::{ffi::c_char, num::NonZeroUsize};
 
-use databento::dbn::{self};
+use databento::dbn;
 use nautilus_core::{UnixNanos, datetime::NANOSECONDS_IN_SECOND, uuid::UUID4};
 use nautilus_model::{
     data::{
@@ -57,7 +57,7 @@ use nautilus_model::{
         AggregationSource, AggressorSide, AssetClass, BarAggregation, BookAction, FromU8, FromU16,
         InstrumentClass, MarketStatusAction, OptionKind, OrderSide, PriceType,
     },
-    identifiers::{InstrumentId, TradeId},
+    identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{
         Equity, FuturesContract, FuturesSpread, InstrumentAny, OptionContract, OptionSpread,
     },
@@ -73,7 +73,6 @@ use super::{
     types::{DatabentoImbalance, DatabentoStatistics},
 };
 
-// SAFETY: Known valid value
 const STEP_ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 
 const BAR_SPEC_1S: BarSpecification = BarSpecification {
@@ -174,15 +173,12 @@ fn parse_currency_or_usd_default(value: Result<&str, impl std::error::Error>) ->
 
 /// Parses a CFI (Classification of Financial Instruments) code to extract asset and instrument classes.
 ///
-/// # Errors
-///
-/// Returns an error if `value` has fewer than 3 characters.
-pub fn parse_cfi_iso10926(
-    value: &str,
-) -> anyhow::Result<(Option<AssetClass>, Option<InstrumentClass>)> {
+/// Returns `(None, None)` if `value` has fewer than 3 characters.
+#[must_use]
+pub fn parse_cfi_iso10926(value: &str) -> (Option<AssetClass>, Option<InstrumentClass>) {
     let chars: Vec<char> = value.chars().collect();
     if chars.len() < 3 {
-        anyhow::bail!("Value string is too short");
+        return (None, None);
     }
 
     // TODO: A proper CFI parser would be useful: https://en.wikipedia.org/wiki/ISO_10962
@@ -209,7 +205,20 @@ pub fn parse_cfi_iso10926(
         asset_class = Some(AssetClass::Index);
     }
 
-    Ok((asset_class, instrument_class))
+    (asset_class, instrument_class)
+}
+
+fn decode_underlying(underlying_str: &str, symbol: &Symbol) -> Ustr {
+    if underlying_str.is_empty() {
+        // Fall back to first whitespace-separated token from symbol
+        symbol
+            .as_str()
+            .split_whitespace()
+            .next()
+            .map_or_else(|| symbol.inner(), Ustr::from)
+    } else {
+        Ustr::from(underlying_str)
+    }
 }
 
 /// Parses a Databento status reason code into a human-readable string.
@@ -324,13 +333,40 @@ pub fn decode_price_or_undef(value: i64, precision: u8) -> Price {
     }
 }
 
+/// Computes the minimum decimal precision needed to represent a raw price value
+/// expressed in units of 1e-9, by counting trailing decimal zeros.
+///
+/// For example, a raw value of `3_906_250` (representing 0.00390625) has 1 trailing
+/// zero, so the precision is `9 - 1 = 8`.
+#[inline(always)]
+#[must_use]
+pub fn precision_from_raw(value: i64) -> u8 {
+    let mut v = value.unsigned_abs();
+    if v == 0 {
+        return 0;
+    }
+    let mut trailing = 0u8;
+    while trailing < 9 && v.is_multiple_of(10) {
+        v /= 10;
+        trailing += 1;
+    }
+    9 - trailing
+}
+
 /// Decodes a minimum price increment from the given value, expressed in units of 1e-9.
+///
+/// The precision is derived from the actual tick value to avoid truncation of
+/// fractional tick sizes (e.g., treasury futures with 1/256 or 1/32 ticks).
+/// The derived precision is floored at `precision` (typically the currency precision).
 #[inline(always)]
 #[must_use]
 pub fn decode_price_increment(value: i64, precision: u8) -> Price {
     match value {
         0 | i64::MAX => Price::new(10f64.powi(-i32::from(precision)), precision),
-        _ => Price::from_raw(decode_raw_price_i64(value), precision),
+        _ => {
+            let derived = precision_from_raw(value).max(precision);
+            Price::from_raw(decode_raw_price_i64(value), derived)
+        }
     }
 }
 
@@ -1184,14 +1220,15 @@ pub fn decode_equity(
         price_increment.precision,
         price_increment,
         Some(lot_size),
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
     ))
@@ -1209,8 +1246,8 @@ pub fn decode_futures_contract(
 ) -> anyhow::Result<FuturesContract> {
     let currency = parse_currency_or_usd_default(msg.currency());
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.asset()?);
-    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+    let underlying = decode_underlying(msg.asset()?, &instrument_id.symbol);
+    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
     let price_increment = decode_price_increment(msg.min_price_increment, currency.precision);
     let multiplier = decode_multiplier(msg.unit_of_measure_qty)?;
     let lot_size = decode_lot_size(msg.min_lot_size_round_lot);
@@ -1230,14 +1267,15 @@ pub fn decode_futures_contract(
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
     )
@@ -1254,8 +1292,8 @@ pub fn decode_futures_spread(
     ts_init: Option<UnixNanos>,
 ) -> anyhow::Result<FuturesSpread> {
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.asset()?);
-    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+    let underlying = decode_underlying(msg.asset()?, &instrument_id.symbol);
+    let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
     let strategy_type = Ustr::from(msg.secsubtype()?);
     let currency = parse_currency_or_usd_default(msg.currency());
     let price_increment = decode_price_increment(msg.min_price_increment, currency.precision);
@@ -1278,14 +1316,15 @@ pub fn decode_futures_spread(
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
     )
@@ -1304,11 +1343,11 @@ pub fn decode_option_contract(
     let currency = parse_currency_or_usd_default(msg.currency());
     let strike_price_currency = parse_currency_or_usd_default(msg.strike_price_currency());
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.underlying()?);
+    let underlying = decode_underlying(msg.underlying()?, &instrument_id.symbol);
     let asset_class_opt = if instrument_id.venue.as_str() == "OPRA" {
         Some(AssetClass::Equity)
     } else {
-        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
         asset_class
     };
     let option_kind = parse_option_kind(msg.instrument_class)?;
@@ -1338,14 +1377,15 @@ pub fn decode_option_contract(
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
     )
@@ -1362,11 +1402,11 @@ pub fn decode_option_spread(
     ts_init: Option<UnixNanos>,
 ) -> anyhow::Result<OptionSpread> {
     let exchange = Ustr::from(msg.exchange()?);
-    let underlying = Ustr::from(msg.underlying()?);
+    let underlying = decode_underlying(msg.underlying()?, &instrument_id.symbol);
     let asset_class_opt = if instrument_id.venue.as_str() == "OPRA" {
         Some(AssetClass::Equity)
     } else {
-        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?)?;
+        let (asset_class, _) = parse_cfi_iso10926(msg.cfi()?);
         asset_class
     };
     let strategy_type = Ustr::from(msg.secsubtype()?);
@@ -1391,14 +1431,15 @@ pub fn decode_option_spread(
         price_increment,
         multiplier,
         lot_size,
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
-        None, // TBD
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
         ts_event,
         ts_init,
     )
@@ -1560,19 +1601,18 @@ mod tests {
     }
 
     #[rstest]
-    #[case("DII", Ok((Some(AssetClass::Index), Some(InstrumentClass::Future))))]
-    #[case("EII", Ok((Some(AssetClass::Index), Some(InstrumentClass::Future))))]
-    #[case("EIA", Ok((Some(AssetClass::Equity), Some(InstrumentClass::Future))))]
-    #[case("XXX", Ok((None, None)))]
-    #[case("D", Err("Value string is too short"))]
+    #[case("DII", (Some(AssetClass::Index), Some(InstrumentClass::Future)))]
+    #[case("EII", (Some(AssetClass::Index), Some(InstrumentClass::Future)))]
+    #[case("EIA", (Some(AssetClass::Equity), Some(InstrumentClass::Future)))]
+    #[case("XXX", (None, None))]
+    #[case("D", (None, None))]
+    #[case("", (None, None))]
     fn test_parse_cfi_iso10926(
         #[case] input: &str,
-        #[case] expected: Result<(Option<AssetClass>, Option<InstrumentClass>), &'static str>,
+        #[case] expected: (Option<AssetClass>, Option<InstrumentClass>),
     ) {
-        match parse_cfi_iso10926(input) {
-            Ok(result) => assert_eq!(Ok(result), expected),
-            Err(e) => assert_eq!(Err(e.to_string().as_str()), expected),
-        }
+        let result = parse_cfi_iso10926(input);
+        assert_eq!(result, expected);
     }
 
     #[rstest]
@@ -1595,13 +1635,33 @@ mod tests {
     }
 
     #[rstest]
+    #[case(0, 0)]
+    #[case(1, 9)] // 0.000000001 needs 9 decimal places
+    #[case(10, 8)] // 0.00000001 needs 8
+    #[case(3_906_250, 8)] // ZT: 1/256 = 0.00390625
+    #[case(7_812_500, 7)] // ZF: 1/128 = 0.0078125
+    #[case(15_625_000, 6)] // ZN: 1/64 = 0.015625
+    #[case(31_250_000, 5)] // ZB: 1/32 = 0.03125
+    #[case(250_000_000, 2)] // ES: 0.25
+    #[case(1_000_000_000, 0)] // 1.0
+    #[case(10_000_000_000, 0)] // 10.0
+    fn test_precision_from_raw(#[case] value: i64, #[case] expected: u8) {
+        assert_eq!(precision_from_raw(value), expected);
+    }
+
+    #[rstest]
     #[case(0, 2, Price::new(0.01, 2))] // Default for 0
     #[case(i64::MAX, 2, Price::new(0.01, 2))] // Default for i64::MAX
     #[case(
         10_000_000_000,
         2,
         Price::from_raw(decode_raw_price_i64(10_000_000_000), 2)
-    )]
+    )] // 10.0: derived=0, max(0,2)=2
+    #[case(3_906_250, 2, Price::from_raw(decode_raw_price_i64(3_906_250), 8))] // ZT 1/256: derived=8, max(8,2)=8
+    #[case(7_812_500, 2, Price::from_raw(decode_raw_price_i64(7_812_500), 7))] // ZF 1/128: derived=7, max(7,2)=7
+    #[case(15_625_000, 2, Price::from_raw(decode_raw_price_i64(15_625_000), 6))] // ZN 1/64: derived=6, max(6,2)=6
+    #[case(31_250_000, 2, Price::from_raw(decode_raw_price_i64(31_250_000), 5))] // ZB 1/32: derived=5, max(5,2)=5
+    #[case(250_000_000, 2, Price::from_raw(decode_raw_price_i64(250_000_000), 2))] // ES 0.25: derived=2, max(2,2)=2
     fn test_decode_price_increment(
         #[case] value: i64,
         #[case] precision: u8,

@@ -1,8 +1,8 @@
 # Live Trading
 
 NautilusTrader enables traders to deploy their backtested strategies in a real-time
-trading environment with no code changes. This seamless transition from backtesting to live trading
-is a core feature of the platform, ensuring consistency and reliability.
+trading environment with no code changes. This transition from backtesting to live trading
+is a core feature of the platform.
 
 **Live trading involves real financial risk and requires a careful, risk-managed approach.
 Before deploying to production, ensure you thoroughly understand all aspects of system configuration,
@@ -10,14 +10,7 @@ node operations, execution reconciliation, and the differences between backtesti
 
 This guide provides an overview of the key aspects of live trading.
 
-:::warning **One TradingNode per process**
-Running multiple `TradingNode` instances concurrently in the same process is not supported due to global singleton state.
-Add multiple strategies to a single node, or run additional nodes in separate processes for parallel execution.
-
-See [Processes and threads](architecture.md#processes-and-threads) for details.
-:::
-
-:::danger **Jupyter notebooks not recommended for live trading**
+:::danger[Jupyter notebooks not recommended for live trading]
 Running live trading nodes in Jupyter notebooks is **not recommended** due to event loop conflicts and operational risks:
 
 - Jupyter runs its own asyncio event loop, which conflicts with `TradingNode`'s event loop management.
@@ -28,7 +21,22 @@ Running live trading nodes in Jupyter notebooks is **not recommended** due to ev
 Use Jupyter notebooks for backtesting, analysis, and experimentation. For live trading, run your trading nodes as standalone Python scripts or services with proper process management.
 :::
 
-:::info Platform differences
+:::warning[One TradingNode per process]
+Running multiple `TradingNode` instances concurrently in the same process is not supported due to global singleton state.
+Add multiple strategies to a single node, or run additional nodes in separate processes for parallel execution.
+
+See [Processes and threads](architecture.md#processes-and-threads) for details.
+:::
+
+:::warning[Do not block the event loop]
+User code running on the event loop thread (strategy callbacks, actor handlers, and `on_event`
+methods) should return as quickly as possible. This applies to both Python and Rust implementations.
+Expensive operations such as model inference, heavy calculations, or synchronous I/O can degrade
+performance and compromise correctness (missed fills, stale data, delayed order submissions).
+Offload long-running work to an executor, or to a separate thread/process.
+:::
+
+:::info[Platform differences]
 Windows signal handling differs from Unix-like systems. If you are running on Windows, please read
 the note on [Windows signal handling](#windows-signal-handling) for guidance on graceful shutdown
 behavior and Ctrl+C (SIGINT) support.
@@ -162,10 +170,7 @@ config = TradingNodeConfig(
 The `LiveExecEngineConfig` sets up the live execution engine, managing order processing, execution events, and reconciliation with trading venues.
 The following outlines the main configuration options.
 
-By configuring these parameters thoughtfully, you can ensure that your trading system operates efficiently,
-handles orders correctly, and remains resilient in the face of potential issues, such as lost events or conflicting data/information.
-
-For full details see the `LiveExecEngineConfig` [API Reference](../api_reference/config#class-liveexecengineconfig).
+For full details see the `LiveExecEngineConfig` [API Reference](/docs/python-api-latest/config.html#nautilus_trader.live.config.LiveExecEngineConfig).
 
 #### Reconciliation
 
@@ -189,7 +194,7 @@ See [Execution reconciliation](#execution-reconciliation) for additional backgro
 | `filter_unclaimed_external_orders` | False   | Filters out unclaimed external orders to prevent irrelevant orders from impacting the strategy.            |
 | `filter_position_reports`          | False   | Filters out position status reports, useful when multiple nodes trade the same account to avoid conflicts. |
 
-:::note Order tagging behavior
+:::note[Order tagging behavior]
 During reconciliation, orders are tagged to distinguish their origin:
 
 - **`VENUE` tag**: Applied to external orders discovered from the venue (placed outside this system).
@@ -222,6 +227,7 @@ If an order's status cannot be reconciled after exhausting all retries, the engi
 
 | Cache status       | Venue status | Resolution  | Rationale                                                           |
 |--------------------|--------------|-------------|---------------------------------------------------------------------|
+| `SUBMITTED`        | Not found    | `REJECTED`  | Order never confirmed by venue (e.g., lost during network error).   |
 | `ACCEPTED`         | Not found    | `REJECTED`  | Order doesn't exist at venue, likely was never successfully placed. |
 | `ACCEPTED`         | `CANCELED`   | `CANCELED`  | Venue canceled the order (user action or venue-initiated).          |
 | `ACCEPTED`         | `EXPIRED`    | `EXPIRED`   | Order reached GTD expiration at venue.                              |
@@ -265,6 +271,10 @@ This ensures the trading node maintains a consistent execution state even under 
 | `single_order_query_delay_ms`        | 100&nbsp;ms    | Delay (milliseconds) between single-order queries to prevent rate limit exhaustion. |
 | `reconciliation_startup_delay_secs`  | 10.0&nbsp;s    | Additional delay (seconds) applied *after* startup reconciliation completes before starting continuous reconciliation loop. Provides time for additional system stabilization. |
 | `own_books_audit_interval_secs`      | None           | Sets the interval (in seconds) between audits of own order books against public ones. Verifies synchronization and logs errors for inconsistencies. |
+| `position_check_interval_secs`       | None           | Interval (seconds) between checks for position discrepancies between cache and venue. When a discrepancy is detected, the system queries for missing fills. Set to None to disable. Recommended: 30-60 seconds. |
+| `position_check_lookback_mins`       | 60&nbsp;min    | Lookback window (minutes) for querying fill reports when a position discrepancy is detected. Only fills within this window are requested from the venue. |
+| `position_check_threshold_ms`        | 5,000&nbsp;ms  | Minimum elapsed time (milliseconds) since the position's last local activity before acting on discrepancies. Prevents race conditions with in-flight fills. |
+| `position_check_retries`             | 3&nbsp;retries | Maximum reconciliation attempts for a position discrepancy before the engine stops retrying. Once exceeded, an error is logged and the instrument is no longer actively reconciled until the discrepancy resolves. |
 
 :::warning
 **Important configuration guidelines:**
@@ -319,7 +329,7 @@ Each loop delegates to the cache APIs described in [Purging cached state](cache.
 ### Strategy configuration
 
 The `StrategyConfig` class outlines the configuration for trading strategies, ensuring that each strategy operates with the correct parameters and manages orders effectively.
-For a complete parameter list see the `StrategyConfig` [API Reference](../api_reference/config#class-strategyconfig).
+For a complete parameter list see the `StrategyConfig` [API Reference](/docs/python-api-latest/config.html#nautilus_trader.trading.config.StrategyConfig).
 
 #### Identification
 
@@ -337,7 +347,7 @@ For a complete parameter list see the `StrategyConfig` [API Reference](../api_re
 | Setting                     | Default | Description                                                                                                            |
 |-----------------------------|---------|------------------------------------------------------------------------------------------------------------------------|
 | `oms_type`                  | None    | Specifies the [OMS type](../concepts/execution#oms-configuration), for position ID handling and order processing flow. |
-| `use_uuid_client_order_ids` | False   | If UUID4's should be used for client order ID values (required for some venues such as Coinbase Intx). |
+| `use_uuid_client_order_ids` | False   | If UUID4's should be used for client order ID values. |
 | `external_order_claims`     | None    | Lists instrument IDs for external orders the strategy should claim, aiding accurate order management. |
 | `manage_contingent_orders`  | False   | If enabled, the strategy automatically manages OTO, OCO, and OUO contingent orders. |
 | `manage_gtd_expiry`         | False   | If enabled, the strategy manages GTD expirations, ensuring orders remain active as intended. |
@@ -390,7 +400,7 @@ Execution reconciliation is the process of aligning the external state of realit
 (both closed and open) with the system's internal state built from events.
 This process is primarily applicable to live trading, which is why only the `LiveExecutionEngine` has reconciliation capability.
 
-:::note Terminology
+:::note[Terminology]
 An **in-flight order** is one awaiting venue acknowledgement:
 
 - `SUBMITTED` - initial submission, awaiting accept/reject.
@@ -417,7 +427,7 @@ Additionally, you can specify the lookback window for reconciliation by setting 
 
 :::tip
 We recommend not setting a specific `reconciliation_lookback_mins`. This allows the requests made
-to the venues to utilize the maximum execution history available for reconciliation.
+to the venues to use the maximum execution history available for reconciliation.
 :::
 
 :::warning
@@ -440,7 +450,7 @@ They exist solely to align position discrepancies and should not be managed by u
 To detect external orders in your strategy, check `order.strategy_id.value == "EXTERNAL"`. These orders are included in portfolio calculations and position tracking like any other order.
 :::
 
-For a full list of live trading options see the `LiveExecEngineConfig` [API Reference](../api_reference/config#class-liveexecengineconfig).
+For a full list of live trading options see the `LiveExecEngineConfig` [API Reference](/docs/python-api-latest/config.html#nautilus_trader.live.config.LiveExecEngineConfig).
 
 ### Reconciliation procedure
 
@@ -521,7 +531,7 @@ The scenarios below are split between startup reconciliation (mass status) and r
 | **Position quantity mismatch (short)** | Internal short position differs from external (e.g., internal: -100, external: -150).             | Generates SELL LIMIT order with calculated price when `generate_missing_orders=True`. |
 | **Position reduction**                 | External position smaller than internal (e.g., internal: 150 long, external: 100 long).           | Generates opposite side LIMIT order with calculated price to reduce position.             |
 | **Position side flip**                 | Internal position opposite of external (e.g., internal: 100 long, external: 50 short).            | Generates LIMIT order with calculated price to close internal and open external position. |
-| **Internal reconciliation orders**     | Position reconciliation orders with strategy ID "EXTERNAL" and tag "RECONCILIATION".                    | Never filtered, regardless of `filter_unclaimed_external_orders` (filtered by tag check). |
+| **Internal reconciliation orders**     | Position reconciliation orders with strategy ID "EXTERNAL" and tag "RECONCILIATION".              | Never filtered, regardless of `filter_unclaimed_external_orders` (filtered by tag check). |
 
 #### Runtime/continuous checks
 

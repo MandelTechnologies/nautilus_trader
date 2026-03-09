@@ -25,6 +25,7 @@ from libc.stdint cimport uint64_t
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.core.data cimport Data
 from nautilus_trader.core.rust.core cimport CVec
+from nautilus_trader.core.rust.model cimport ERROR_PRICE
 from nautilus_trader.core.rust.model cimport PRICE_RAW_MAX
 from nautilus_trader.core.rust.model cimport PRICE_RAW_MIN
 from nautilus_trader.core.rust.model cimport BookAction
@@ -32,6 +33,7 @@ from nautilus_trader.core.rust.model cimport BookLevel_API
 from nautilus_trader.core.rust.model cimport BookOrder_t
 from nautilus_trader.core.rust.model cimport BookType
 from nautilus_trader.core.rust.model cimport OrderBook_API
+from nautilus_trader.core.rust.model cimport OrderBookDeltas_API
 from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.core.rust.model cimport OrderType
 from nautilus_trader.core.rust.model cimport Price_t
@@ -65,6 +67,7 @@ from nautilus_trader.core.rust.model cimport orderbook_get_all_crossed_levels
 from nautilus_trader.core.rust.model cimport orderbook_get_avg_px_for_quantity
 from nautilus_trader.core.rust.model cimport orderbook_get_quantity_at_level
 from nautilus_trader.core.rust.model cimport orderbook_get_quantity_for_price
+from nautilus_trader.core.rust.model cimport orderbook_get_worst_px_for_quantity
 from nautilus_trader.core.rust.model cimport orderbook_has_ask
 from nautilus_trader.core.rust.model cimport orderbook_has_bid
 from nautilus_trader.core.rust.model cimport orderbook_instrument_id
@@ -75,6 +78,7 @@ from nautilus_trader.core.rust.model cimport orderbook_reset
 from nautilus_trader.core.rust.model cimport orderbook_sequence
 from nautilus_trader.core.rust.model cimport orderbook_simulate_fills
 from nautilus_trader.core.rust.model cimport orderbook_spread
+from nautilus_trader.core.rust.model cimport orderbook_to_snapshot_deltas
 from nautilus_trader.core.rust.model cimport orderbook_ts_last
 from nautilus_trader.core.rust.model cimport orderbook_update
 from nautilus_trader.core.rust.model cimport orderbook_update_count
@@ -581,6 +585,41 @@ cdef class OrderBook(Data):
 
         return orderbook_get_avg_px_for_quantity(&self._mem, quantity._mem, order_side)
 
+    cpdef get_worst_px_for_quantity(self, Quantity quantity, OrderSide order_side):
+        """
+        Return the worst (last-touched) price required to fill the given `quantity`
+        based on the current state of the order book.
+
+        Parameters
+        ----------
+        quantity : Quantity
+            The quantity for the calculation.
+        order_side : OrderSide
+            The order side for the calculation.
+
+        Returns
+        -------
+        Price or ``None``
+
+        Raises
+        ------
+        ValueError
+            If `order_side` is equal to ``NO_ORDER_SIDE``
+
+        Warnings
+        --------
+        If no worst price can be calculated then returns ``None``.
+
+        """
+        Condition.not_none(quantity, "quantity")
+        Condition.not_equal(order_side, OrderSide.NO_ORDER_SIDE, "order_side", "NO_ORDER_SIDE")
+
+        cdef Price_t result = orderbook_get_worst_px_for_quantity(&self._mem, quantity._mem, order_side)
+        if result.raw == ERROR_PRICE.raw and result.precision == ERROR_PRICE.precision:
+            return None
+
+        return Price.from_mem_c(result)
+
     cpdef double get_quantity_for_price(self, Price price, OrderSide order_side):
         """
         Return the cumulative quantity at or better than the given `price`.
@@ -839,6 +878,11 @@ cdef class OrderBook(Data):
             ts_event=self.ts_last,
             ts_init=self.ts_last,
         )
+
+    cpdef OrderBookDeltas to_deltas_c(self, uint64_t ts_event, uint64_t ts_init):
+        cdef OrderBookDeltas obj = OrderBookDeltas.__new__(OrderBookDeltas)
+        obj._mem = orderbook_to_snapshot_deltas(&self._mem, ts_event, ts_init)
+        return obj
 
     cpdef str pprint(self, int num_levels=3):
         """

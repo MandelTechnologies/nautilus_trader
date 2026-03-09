@@ -35,6 +35,7 @@ python = [
   "nautilus-core/python",
   "nautilus-model/python",
   "nautilus-network/python",
+  "nautilus-system/python",
   "pyo3",
   "pyo3-async-runtimes",
 ]
@@ -124,5 +125,19 @@ doc = false
 [[example]]
 name = "deribit-exec-tester"
 path = "examples/node_exec_tester.rs"
+required-features = []
+doc = false
+
+# Run with `cargo run -p nautilus-deribit --example deribit-greeks-tester`
+[[example]]
+name = "deribit-greeks-tester"
+path = "examples/node_greeks.rs"
+required-features = []
+doc = false
+
+# Run with `cargo run -p nautilus-deribit --example deribit-option-chain-tester`
+[[example]]
+name = "deribit-option-chain"
+path = "examples/node_option_chain.rs"
 required-features = []
 doc = false

@@ -16,6 +16,9 @@
 import copy
 from collections import Counter
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from nautilus_trader.backtest.node import BacktestNode
 from nautilus_trader.backtest.results import BacktestResult
 from nautilus_trader.cache.cache import Cache
@@ -38,6 +41,7 @@ from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AggregationSource
 from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.enums import PriceType
+from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.objects import Price
@@ -47,6 +51,8 @@ from nautilus_trader.persistence.writer import StreamingFeatherWriter
 from nautilus_trader.test_kit.mocks.data import NewsEventData
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
+from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from nautilus_trader.test_kit.stubs.persistence import TestPersistenceStubs
 from tests.integration_tests.adapters.betfair.test_kit import BetfairTestStubs
 
@@ -97,11 +103,11 @@ class TestPersistenceStreaming:
             "ComponentStateChanged": 34,
             "OrderAccepted": 192,
             "OrderBookDelta": 1307,
-            "OrderCanceled": 200,  # Doubled due to publishing to both events.order.* and events.cancels.*
-            "OrderFilled": 188,  # Doubled due to publishing to both events.order.* and events.fills.*
+            "OrderCanceled": 67,
+            "OrderFilled": 127,
             "OrderInitialized": 193,
             "OrderSubmitted": 193,
-            "PositionChanged": 90,
+            "PositionChanged": 123,
             "PositionClosed": 3,
             "PositionOpened": 3,
             "TradeTick": 179,
@@ -451,11 +457,11 @@ class TestPersistenceStreaming:
             "ComponentStateChanged": 34,
             "OrderAccepted": 192,
             "OrderBookDelta": 1307,
-            "OrderCanceled": 200,  # Doubled due to publishing to both events.order.* and events.cancels.*
-            "OrderFilled": 188,  # Doubled due to publishing to both events.order.* and events.fills.*
+            "OrderCanceled": 67,
+            "OrderFilled": 127,
             "OrderInitialized": 193,
             "OrderSubmitted": 193,
-            "PositionChanged": 90,
+            "PositionChanged": 123,
             "PositionClosed": 3,
             "PositionOpened": 3,
             "TradeTick": 179,
@@ -747,3 +753,139 @@ class TestPersistenceStreaming:
         # Original values were: ts_event=3_000_000_000, ts_init=3_300_000_000
         assert trade_ticks[2].ts_event == 3_000_000_000
         assert trade_ticks[2].ts_init == trade_ticks[2].ts_event
+
+    def test_convert_stream_to_data_preserves_feather_schema_in_parquet(
+        self,
+        catalog_betfair: ParquetDataCatalog,
+    ) -> None:
+        # Arrange: write bar to feather then convert to parquet (direct table write).
+        self.catalog = catalog_betfair
+        clock = TestClock()
+        cache = Cache()
+        instrument = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+        cache.add_instrument(instrument)
+
+        instance_id = "test_instance_schema_match"
+        writer = StreamingFeatherWriter(
+            path=f"{self.catalog.path}/backtest/{instance_id}",
+            cache=cache,
+            clock=clock,
+            fs_protocol="file",
+            include_types=[Bar],
+        )
+
+        bar_spec = BarSpecification(1, BarAggregation.MINUTE, PriceType.BID)
+        bar_type_internal = BarType(
+            instrument.id,
+            bar_spec,
+            AggregationSource.INTERNAL,
+        )
+        bar = Bar(
+            bar_type=bar_type_internal,
+            open=Price.from_str("1.00002"),
+            high=Price.from_str("1.00004"),
+            low=Price.from_str("1.00001"),
+            close=Price.from_str("1.00003"),
+            volume=Quantity.from_int(1_000_000),
+            ts_event=1000,
+            ts_init=1000,
+        )
+        writer.write(bar)
+        writer.close()
+
+        feather_files = list(
+            self.catalog.fs.glob(
+                f"{self.catalog.path}/backtest/{instance_id}/bar/**/*.feather",
+            ),
+        )
+        assert len(feather_files) >= 1
+        feather_path = feather_files[0]
+
+        with self.catalog.fs.open(feather_path) as f:
+            feather_table = pa.ipc.open_stream(f).read_all()
+        transformed_feather_table = ParquetDataCatalog._apply_stream_conversion_transforms(
+            feather_table,
+            use_ts_event_for_ts_init=False,
+            convert_bar_type_to_external=True,
+        )
+
+        self.catalog.convert_stream_to_data(instance_id, Bar)
+
+        parquet_files = list(
+            self.catalog.fs.glob(f"{self.catalog.path}/data/bar/**/*.parquet"),
+        )
+        assert len(parquet_files) >= 1
+        with self.catalog.fs.open(parquet_files[0]) as f:
+            parquet_table = pq.read_table(f)
+
+        assert parquet_table.schema.equals(
+            transformed_feather_table.schema,
+            check_metadata=True,
+        )
+
+    def test_feather_writer_dedup_same_event(self, tmp_path) -> None:
+        # Arrange
+        clock = TestClock()
+        cache = Cache()
+        instrument = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+        cache.add_instrument(instrument)
+
+        writer = StreamingFeatherWriter(
+            path=str(tmp_path / "stream"),
+            cache=cache,
+            clock=clock,
+            fs_protocol="file",
+            include_types=[OrderFilled],
+        )
+
+        order = TestExecStubs.market_order(instrument=instrument)
+        fill = TestEventStubs.order_filled(order=order, instrument=instrument)
+
+        # Act - write the same event twice (simulates duplicate
+        # publishing on multiple message bus topics)
+        writer.write(fill)
+        writer.write(fill)
+        writer.close()
+
+        # Assert
+        feather_files = list(tmp_path.glob("stream/order_filled*.feather"))
+        assert len(feather_files) == 1
+
+        with open(feather_files[0], "rb") as f:
+            table = pa.ipc.open_stream(f).read_all()
+
+        assert len(table) == 1
+
+    def test_feather_writer_writes_distinct_events(self, tmp_path) -> None:
+        # Arrange
+        clock = TestClock()
+        cache = Cache()
+        instrument = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+        cache.add_instrument(instrument)
+
+        writer = StreamingFeatherWriter(
+            path=str(tmp_path / "stream"),
+            cache=cache,
+            clock=clock,
+            fs_protocol="file",
+            include_types=[OrderFilled],
+        )
+
+        order1 = TestExecStubs.market_order(instrument=instrument)
+        order2 = TestExecStubs.market_order(instrument=instrument)
+        fill1 = TestEventStubs.order_filled(order=order1, instrument=instrument)
+        fill2 = TestEventStubs.order_filled(order=order2, instrument=instrument)
+
+        # Act
+        writer.write(fill1)
+        writer.write(fill2)
+        writer.close()
+
+        # Assert
+        feather_files = list(tmp_path.glob("stream/order_filled*.feather"))
+        assert len(feather_files) == 1
+
+        with open(feather_files[0], "rb") as f:
+            table = pa.ipc.open_stream(f).read_all()
+
+        assert len(table) == 2

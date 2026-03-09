@@ -38,7 +38,9 @@ python = [
   "nautilus-core/python",
   "nautilus-execution/python",
   "nautilus-model/python",
+  "nautilus-portfolio/python",
   "nautilus-system/python",
+  "nautilus-trading/python",
   "pyo3",
   "streaming",
 ]
@@ -74,6 +76,7 @@ ustr = { workspace = true }
 pyo3 = { workspace = true, optional = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 criterion = { workspace = true }
 rstest = { workspace = true }
 rust_decimal_macros = { workspace = true }

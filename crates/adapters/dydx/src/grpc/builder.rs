@@ -34,12 +34,14 @@ use std::fmt::Debug;
 
 use cosmrs::{
     Any, Coin,
+    tendermint::chain::Id as ChainIdTendermint,
     tx::{self, Fee, SignDoc, SignerInfo},
 };
 use dydx_proto::{ToAny, dydxprotocol::accountplus::TxExtension};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 
-use super::{types::ChainId, wallet::Account};
+use super::types::ChainId;
+use crate::execution::wallet::Account;
 
 /// Gas adjustment value to avoid rejected transactions caused by gas underestimation.
 const GAS_MULTIPLIER: f64 = 1.8;
@@ -48,7 +50,7 @@ const GAS_MULTIPLIER: f64 = 1.8;
 ///
 /// Handles fee calculation, transaction construction, and signing.
 pub struct TxBuilder {
-    chain_id: cosmrs::tendermint::chain::Id,
+    chain_id: ChainIdTendermint,
     fee_denom: String,
 }
 

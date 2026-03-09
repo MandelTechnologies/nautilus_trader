@@ -27,7 +27,7 @@ use nautilus_core::{
 use ustr::Ustr;
 
 use crate::timer::{
-    TestTimer, TimeEvent, TimeEventCallback, TimeEventHandler, create_valid_interval,
+    TestTimer, TimeEvent, TimeEventCallback, TimeEventHandler, Timer, create_valid_interval,
 };
 
 /// Represents a type of clock.
@@ -379,6 +379,7 @@ pub fn validate_and_prepare_timer(
                 start_time_ns.to_rfc3339(),
             );
         }
+
         if !allow_past && stop_time <= ts_now {
             anyhow::bail!(
                 "Timer '{name}' stop time {} is in the past (current time is {ts_now})",
@@ -478,7 +479,7 @@ impl TestClock {
             );
         }
 
-        events.sort_by(|a, b| a.ts_event.cmp(&b.ts_event));
+        events.sort_by_key(|a| a.ts_event);
         events
     }
 
@@ -500,10 +501,7 @@ impl TestClock {
     }
 
     fn replace_existing_timer_if_needed(&mut self, name: &Ustr) {
-        if self.timer_exists(name) {
-            self.cancel_timer(name.as_str());
-            log::warn!("Timer '{name}' replaced");
-        }
+        replace_existing_timer(&mut self.timers, name);
     }
 }
 
@@ -681,6 +679,22 @@ impl Clock for TestClock {
         self.time = AtomicTime::new(false, UnixNanos::default());
         self.timers = BTreeMap::new();
         self.callbacks.clear();
+    }
+}
+
+pub(crate) fn replace_existing_timer<T: Timer>(timers: &mut BTreeMap<Ustr, T>, name: &Ustr) {
+    let is_expired = timers.get(name).map(|t| t.is_expired());
+    match is_expired {
+        Some(true) => {
+            timers.remove(name);
+        }
+        Some(false) => {
+            if let Some(mut timer) = timers.remove(name) {
+                timer.cancel();
+            }
+            log::warn!("Timer '{name}' replaced");
+        }
+        None => {}
     }
 }
 

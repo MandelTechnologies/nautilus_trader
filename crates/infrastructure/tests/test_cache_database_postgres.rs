@@ -23,16 +23,15 @@ mod serial_tests {
     use indexmap::indexmap;
     use nautilus_common::{
         cache::database::CacheDatabaseAdapter,
-        custom::CustomData,
         signal::Signal,
         testing::{wait_until, wait_until_async},
     };
-    use nautilus_core::UnixNanos;
+    use nautilus_core::{Params, UnixNanos};
     use nautilus_infrastructure::sql::cache::get_pg_cache_database;
     use nautilus_model::{
         accounts::{AccountAny, CashAccount},
         data::{
-            DataType,
+            CustomData, DataType,
             stubs::{quote_ethusdt_binance, stub_bar, stub_trade_ethusdt_buyer},
         },
         enums::{CurrencyType, OrderSide, OrderStatus, OrderType},
@@ -52,6 +51,8 @@ mod serial_tests {
         position::Position,
         types::{Currency, Price, Quantity},
     };
+    use nautilus_persistence::test_data::RustTestCustomData;
+    use nautilus_serialization::ensure_custom_data_registered;
     use serde::Serialize;
     use ustr::Ustr;
 
@@ -121,25 +122,25 @@ mod serial_tests {
 
         // Insert all instruments
         pg_cache
-            .add_instrument(&InstrumentAny::BinaryOption(binary_option))
+            .add_instrument(&InstrumentAny::BinaryOption(binary_option.clone()))
             .unwrap();
         pg_cache
-            .add_instrument(&InstrumentAny::CryptoFuture(crypto_future))
+            .add_instrument(&InstrumentAny::CryptoFuture(crypto_future.clone()))
             .unwrap();
         pg_cache
-            .add_instrument(&InstrumentAny::CryptoPerpetual(crypto_perpetual))
+            .add_instrument(&InstrumentAny::CryptoPerpetual(crypto_perpetual.clone()))
             .unwrap();
         pg_cache
-            .add_instrument(&InstrumentAny::CurrencyPair(currency_pair))
+            .add_instrument(&InstrumentAny::CurrencyPair(currency_pair.clone()))
             .unwrap();
         pg_cache
-            .add_instrument(&InstrumentAny::Equity(equity))
+            .add_instrument(&InstrumentAny::Equity(equity.clone()))
             .unwrap();
         pg_cache
-            .add_instrument(&InstrumentAny::FuturesContract(futures_contract))
+            .add_instrument(&InstrumentAny::FuturesContract(futures_contract.clone()))
             .unwrap();
         pg_cache
-            .add_instrument(&InstrumentAny::OptionContract(option_contract))
+            .add_instrument(&InstrumentAny::OptionContract(option_contract.clone()))
             .unwrap();
 
         // Wait for cache to update
@@ -230,7 +231,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::BinaryOption(binary_option)
+            InstrumentAny::BinaryOption(binary_option.clone())
         );
         assert_eq!(
             pg_cache
@@ -238,7 +239,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::CryptoFuture(crypto_future)
+            InstrumentAny::CryptoFuture(crypto_future.clone())
         );
         assert_eq!(
             pg_cache
@@ -246,7 +247,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::CryptoPerpetual(crypto_perpetual)
+            InstrumentAny::CryptoPerpetual(crypto_perpetual.clone())
         );
         assert_eq!(
             pg_cache
@@ -254,7 +255,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::CurrencyPair(currency_pair)
+            InstrumentAny::CurrencyPair(currency_pair.clone())
         );
         assert_eq!(
             pg_cache
@@ -262,7 +263,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::Equity(equity)
+            InstrumentAny::Equity(equity.clone())
         );
         assert_eq!(
             pg_cache
@@ -270,7 +271,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::FuturesContract(futures_contract)
+            InstrumentAny::FuturesContract(futures_contract.clone())
         );
         assert_eq!(
             pg_cache
@@ -278,7 +279,7 @@ mod serial_tests {
                 .await
                 .unwrap()
                 .unwrap(),
-            InstrumentAny::OptionContract(option_contract)
+            InstrumentAny::OptionContract(option_contract.clone())
         );
 
         // Check instrument list is correct
@@ -671,22 +672,29 @@ mod serial_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_add_custom_data() {
+        ensure_custom_data_registered::<RustTestCustomData>();
+
         let mut pg_cache = get_pg_cache_database().await.unwrap();
 
-        // Add custom data
-        let metadata =
-            indexmap! {"a".to_string() => "1".to_string(), "b".to_string() => "2".to_string()};
-        let data_type = DataType::new("TestData", Some(metadata));
-        let json_stub_value = r#"{"a":"1","b":"2"}"#;
-        let json_value: serde_json::Value = serde_json::from_str(json_stub_value).unwrap();
-        let serialized_bytes = serde_json::to_vec(&json_value).unwrap();
-
-        let data = CustomData::new(
-            data_type.clone(),
-            Bytes::from(serialized_bytes),
-            UnixNanos::default(),
-            UnixNanos::default(),
+        let instrument_id = InstrumentId::from("RUST.TEST");
+        let metadata = indexmap! {
+            "a".to_string() => serde_json::Value::String("1".to_string()),
+            "b".to_string() => serde_json::Value::String("2".to_string()),
+        };
+        let params = Params::from_index_map(metadata);
+        let data_type = DataType::new(
+            "RustTestCustomData",
+            Some(params),
+            Some("RUST.TEST".to_string()),
         );
+        let inner = RustTestCustomData {
+            instrument_id,
+            value: 42.0,
+            flag: true,
+            ts_event: UnixNanos::default(),
+            ts_init: UnixNanos::default(),
+        };
+        let data = CustomData::new(std::sync::Arc::new(inner), data_type.clone());
 
         pg_cache.add_custom_data(&data).unwrap();
 
@@ -697,7 +705,13 @@ mod serial_tests {
 
         let datas = pg_cache.load_custom_data(&data_type).unwrap();
         assert_eq!(datas.len(), 1);
-        assert_eq!(datas[0], data);
+        assert_eq!(datas[0].data_type.type_name(), "RustTestCustomData");
+        assert_eq!(datas[0].data_type.identifier(), Some("RUST.TEST"));
+        // Full CustomData wrapper roundtrip: loaded value must equal original
+        assert_eq!(
+            datas[0], data,
+            "CustomData roundtrip through Postgres must preserve equality"
+        );
 
         pg_cache.flush().unwrap();
         pg_cache.close().unwrap();

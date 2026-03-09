@@ -40,7 +40,11 @@ use crate::{
 };
 
 /// Factory for creating Binance data clients.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", from_py_object)
+)]
 pub struct BinanceDataClientFactory;
 
 impl BinanceDataClientFactory {
@@ -109,7 +113,11 @@ impl DataClientFactory for BinanceDataClientFactory {
 }
 
 /// Factory for creating Binance Spot execution clients.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.binance", from_py_object)
+)]
 pub struct BinanceExecutionClientFactory;
 
 impl BinanceExecutionClientFactory {
@@ -132,7 +140,6 @@ impl ExecutionClientFactory for BinanceExecutionClientFactory {
         name: &str,
         config: &dyn ClientConfig,
         cache: Rc<RefCell<Cache>>,
-        clock: Rc<RefCell<dyn Clock>>,
     ) -> anyhow::Result<Box<dyn ExecutionClient>> {
         let binance_config = config
             .as_any()
@@ -164,7 +171,6 @@ impl ExecutionClientFactory for BinanceExecutionClientFactory {
                     binance_config.account_id,
                     account_type,
                     None, // base_currency
-                    clock,
                     cache,
                 );
 
@@ -184,7 +190,6 @@ impl ExecutionClientFactory for BinanceExecutionClientFactory {
                     binance_config.account_id,
                     account_type,
                     None, // base_currency
-                    clock,
                     cache,
                 );
 

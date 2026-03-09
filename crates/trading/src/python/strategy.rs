@@ -16,15 +16,14 @@
 //! Python bindings for Strategy with complete order and position management.
 
 use std::{
-    any::Any,
     cell::{RefCell, UnsafeCell},
+    collections::HashMap,
     fmt::Debug,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
     rc::Rc,
 };
 
-use indexmap::IndexMap;
 use nautilus_common::{
     actor::{
         Actor, DataActor,
@@ -40,22 +39,25 @@ use nautilus_common::{
     timer::{TimeEvent, TimeEventCallback},
 };
 use nautilus_core::{
+    Params, from_pydict,
     nanos::UnixNanos,
     python::{IntoPyObjectNautilusExt, to_pyruntime_err, to_pyvalue_err},
 };
 use nautilus_model::{
     data::{
-        Bar, BarType, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
+        Bar, BarType, CustomData, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
         MarkPriceUpdate, OrderBookDeltas, QuoteTick, TradeTick, close::InstrumentClose,
     },
     enums::{BookType, OmsType, OrderSide, PositionSide, TimeInForce},
     events::{
-        OrderAccepted, OrderCancelRejected, OrderDenied, OrderEmulated, OrderExpired,
-        OrderInitialized, OrderModifyRejected, OrderPendingCancel, OrderPendingUpdate,
-        OrderRejected, OrderReleased, OrderSubmitted, OrderTriggered, OrderUpdated,
-        PositionChanged, PositionClosed, PositionOpened,
+        OrderAccepted, OrderCancelRejected, OrderCanceled, OrderDenied, OrderEmulated,
+        OrderExpired, OrderFilled, OrderInitialized, OrderModifyRejected, OrderPendingCancel,
+        OrderPendingUpdate, OrderRejected, OrderReleased, OrderSubmitted, OrderTriggered,
+        OrderUpdated, PositionChanged, PositionClosed, PositionOpened,
     },
-    identifiers::{AccountId, ClientId, InstrumentId, PositionId, StrategyId, TraderId, Venue},
+    identifiers::{
+        AccountId, ActorId, ClientId, InstrumentId, PositionId, StrategyId, TraderId, Venue,
+    },
     instruments::InstrumentAny,
     orderbook::OrderBook,
     orders::OrderAny,
@@ -64,10 +66,10 @@ use nautilus_model::{
     types::{Price, Quantity},
 };
 use nautilus_portfolio::portfolio::Portfolio;
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::{prelude::*, types::PyDict};
 use ustr::Ustr;
 
-use crate::strategy::{Strategy, StrategyConfig, StrategyCore};
+use crate::strategy::{ImportableStrategyConfig, Strategy, StrategyConfig, StrategyCore};
 
 #[pyo3::pymethods]
 impl StrategyConfig {
@@ -79,6 +81,11 @@ impl StrategyConfig {
         external_order_claims=None,
         manage_contingent_orders=false,
         manage_gtd_expiry=false,
+        manage_stop=false,
+        market_exit_interval_ms=100,
+        market_exit_max_attempts=100,
+        market_exit_time_in_force=TimeInForce::Gtc,
+        market_exit_reduce_only=true,
         use_uuid_client_order_ids=false,
         use_hyphens_in_client_order_ids=true,
         log_events=true,
@@ -93,6 +100,11 @@ impl StrategyConfig {
         external_order_claims: Option<Vec<InstrumentId>>,
         manage_contingent_orders: bool,
         manage_gtd_expiry: bool,
+        manage_stop: bool,
+        market_exit_interval_ms: u64,
+        market_exit_max_attempts: u64,
+        market_exit_time_in_force: TimeInForce,
+        market_exit_reduce_only: bool,
         use_uuid_client_order_ids: bool,
         use_hyphens_in_client_order_ids: bool,
         log_events: bool,
@@ -102,12 +114,17 @@ impl StrategyConfig {
         Self {
             strategy_id,
             order_id_tag,
+            use_uuid_client_order_ids,
+            use_hyphens_in_client_order_ids,
             oms_type,
             external_order_claims,
             manage_contingent_orders,
             manage_gtd_expiry,
-            use_uuid_client_order_ids,
-            use_hyphens_in_client_order_ids,
+            manage_stop,
+            market_exit_interval_ms,
+            market_exit_max_attempts,
+            market_exit_time_in_force,
+            market_exit_reduce_only,
             log_events,
             log_commands,
             log_rejected_due_post_only_as_warning,
@@ -165,6 +182,56 @@ impl StrategyConfig {
     }
 }
 
+#[pyo3::pymethods]
+impl ImportableStrategyConfig {
+    #[new]
+    fn py_new(strategy_path: String, config_path: String, config: Py<PyDict>) -> PyResult<Self> {
+        let json_config = Python::attach(|py| -> PyResult<HashMap<String, serde_json::Value>> {
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("default", py.eval(pyo3::ffi::c_str!("str"), None, None)?)?;
+            let json_str: String = PyModule::import(py, "json")?
+                .call_method("dumps", (config.bind(py),), Some(&kwargs))?
+                .extract()?;
+
+            let json_value: serde_json::Value =
+                serde_json::from_str(&json_str).map_err(to_pyvalue_err)?;
+
+            if let serde_json::Value::Object(map) = json_value {
+                Ok(map.into_iter().collect())
+            } else {
+                Err(to_pyvalue_err("Config must be a dictionary"))
+            }
+        })?;
+
+        Ok(Self {
+            strategy_path,
+            config_path,
+            config: json_config,
+        })
+    }
+
+    #[getter]
+    fn strategy_path(&self) -> &String {
+        &self.strategy_path
+    }
+
+    #[getter]
+    fn config_path(&self) -> &String {
+        &self.config_path
+    }
+
+    #[getter]
+    fn config(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let py_dict = PyDict::new(py);
+        for (key, value) in &self.config {
+            let json_str = serde_json::to_string(value).map_err(to_pyvalue_err)?;
+            let py_value = PyModule::import(py, "json")?.call_method("loads", (json_str,), None)?;
+            py_dict.set_item(key, py_value)?;
+        }
+        Ok(py_dict.unbind())
+    }
+}
+
 /// Inner state of PyStrategy, shared between Python wrapper and Rust registries.
 pub struct PyStrategyInner {
     core: StrategyCore,
@@ -184,6 +251,7 @@ impl Debug for PyStrategyInner {
     }
 }
 
+#[allow(clippy::needless_pass_by_ref_mut)]
 impl PyStrategyInner {
     fn dispatch_on_start(&self) -> PyResult<()> {
         if let Some(ref py_self) = self.py_self {
@@ -385,16 +453,48 @@ impl PyStrategyInner {
         Ok(())
     }
 
-    // TODO: Position events don't have PyO3 bindings yet, so these are stubbed
-    fn dispatch_on_position_opened(&self, _event: PositionOpened) -> PyResult<()> {
+    fn dispatch_on_order_canceled(&self, event: OrderCanceled) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_order_canceled", (event.into_py_any_unwrap(py),))
+            })?;
+        }
         Ok(())
     }
 
-    fn dispatch_on_position_changed(&self, _event: PositionChanged) -> PyResult<()> {
+    fn dispatch_on_order_filled(&self, event: OrderFilled) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_order_filled", (event.into_py_any_unwrap(py),))
+            })?;
+        }
         Ok(())
     }
 
-    fn dispatch_on_position_closed(&self, _event: PositionClosed) -> PyResult<()> {
+    fn dispatch_on_position_opened(&self, event: PositionOpened) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_position_opened", (event.into_py_any_unwrap(py),))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn dispatch_on_position_changed(&self, event: PositionChanged) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_position_changed", (event.into_py_any_unwrap(py),))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn dispatch_on_position_closed(&self, event: PositionClosed) -> PyResult<()> {
+        if let Some(ref py_self) = self.py_self {
+            Python::attach(|py| {
+                py_self.call_method1(py, "on_position_closed", (event.into_py_any_unwrap(py),))
+            })?;
+        }
         Ok(())
     }
 
@@ -518,17 +618,21 @@ impl Deref for PyStrategyInner {
     type Target = DataActorCore;
 
     fn deref(&self) -> &Self::Target {
-        &self.core.actor
+        &self.core
     }
 }
 
 impl DerefMut for PyStrategyInner {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.core.actor
+        &mut self.core
     }
 }
 
 impl Strategy for PyStrategyInner {
+    fn core(&self) -> &StrategyCore {
+        &self.core
+    }
+
     fn core_mut(&mut self) -> &mut StrategyCore {
         &mut self.core
     }
@@ -646,9 +750,9 @@ impl DataActor for PyStrategyInner {
     }
 
     #[allow(unused_variables)]
-    fn on_data(&mut self, data: &dyn Any) -> anyhow::Result<()> {
+    fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
         Python::attach(|py| {
-            let py_data = py.None();
+            let py_data: Py<PyAny> = Py::new(py, data.clone())?.into_any();
             self.dispatch_on_data(py_data)
                 .map_err(|e| anyhow::anyhow!("Python on_data failed: {e}"))
         })
@@ -717,6 +821,16 @@ impl DataActor for PyStrategyInner {
         self.dispatch_on_instrument_close(*update)
             .map_err(|e| anyhow::anyhow!("Python on_instrument_close failed: {e}"))
     }
+
+    fn on_order_filled(&mut self, event: &OrderFilled) -> anyhow::Result<()> {
+        self.dispatch_on_order_filled(*event)
+            .map_err(|e| anyhow::anyhow!("Python on_order_filled failed: {e}"))
+    }
+
+    fn on_order_canceled(&mut self, event: &OrderCanceled) -> anyhow::Result<()> {
+        self.dispatch_on_order_canceled(*event)
+            .map_err(|e| anyhow::anyhow!("Python on_order_canceled failed: {e}"))
+    }
 }
 
 /// Python-facing wrapper for Strategy.
@@ -743,12 +857,16 @@ impl PyStrategy {
     #[inline]
     #[allow(unsafe_code)]
     pub(crate) fn inner(&self) -> &PyStrategyInner {
+        // SAFETY: `PyStrategy` is `unsendable` so access is single-threaded, and
+        // callers never hold a mutable and shared reference simultaneously.
         unsafe { &*self.inner.get() }
     }
 
     #[inline]
     #[allow(unsafe_code, clippy::mut_from_ref)]
     pub(crate) fn inner_mut(&self) -> &mut PyStrategyInner {
+        // SAFETY: `PyStrategy` is `unsendable` so access is single-threaded, and
+        // callers never hold a mutable and shared reference simultaneously.
         unsafe { &mut *self.inner.get() }
     }
 }
@@ -776,6 +894,36 @@ impl PyStrategy {
     /// Sets the Python instance reference for method dispatch.
     pub fn set_python_instance(&mut self, py_obj: Py<PyAny>) {
         self.inner_mut().py_self = Some(py_obj);
+    }
+
+    /// Updates the strategy_id (actor_id) in both the core config and the actor_id field.
+    ///
+    /// Must only be called before registration. See `PyDataActor::set_actor_id`.
+    pub fn set_strategy_id(&mut self, strategy_id: StrategyId) {
+        let actor_id = ActorId::from(strategy_id.inner().as_str());
+        let inner = self.inner_mut();
+        inner.core.config.strategy_id = Some(strategy_id);
+        inner.core.actor.config.actor_id = Some(actor_id);
+        inner.core.actor.actor_id = actor_id;
+    }
+
+    /// Updates the log_events setting in the core config.
+    pub fn set_log_events(&mut self, log_events: bool) {
+        let inner = self.inner_mut();
+        inner.core.config.log_events = log_events;
+        inner.core.actor.config.log_events = log_events;
+    }
+
+    /// Updates the log_commands setting in the core config.
+    pub fn set_log_commands(&mut self, log_commands: bool) {
+        let inner = self.inner_mut();
+        inner.core.config.log_commands = log_commands;
+        inner.core.actor.config.log_commands = log_commands;
+    }
+
+    /// Returns the strategy ID.
+    pub fn strategy_id(&self) -> StrategyId {
+        StrategyId::from(self.inner().core.actor.actor_id.inner().as_str())
     }
 
     /// Returns a value indicating whether the strategy has been registered with a trader.
@@ -834,16 +982,28 @@ impl PyStrategy {
 
 #[pyo3::pymethods]
 impl PyStrategy {
+    /// Creates a new [`PyStrategy`] instance.
+    ///
+    /// Accepts `None` or any Python object. If the object is a [`StrategyConfig`]
+    /// (or can be extracted as one via `from_py_object`), its values are used;
+    /// otherwise the strategy falls back to [`StrategyConfig::default()`].
+    ///
+    /// This permissive signature is required so that Python subclasses can pass
+    /// a **custom** config dataclass to their `__init__`; the Rust
+    /// `add_strategy_from_config` then extracts `strategy_id`, `log_events`, etc.
+    /// via `getattr` and calls the corresponding setters separately.
     #[new]
     #[pyo3(signature = (config=None))]
-    fn py_new(config: Option<StrategyConfig>) -> Self {
-        Self::new(config)
+    fn py_new(config: Option<Py<PyAny>>) -> Self {
+        let strategy_config =
+            config.and_then(|obj| Python::attach(|py| obj.extract::<StrategyConfig>(py).ok()));
+        Self::new(strategy_config)
     }
 
     /// Captures the Python self reference for Rust→Python event dispatch.
     #[pyo3(signature = (config=None))]
     #[allow(unused_variables)]
-    fn __init__(slf: &Bound<'_, Self>, config: Option<StrategyConfig>) {
+    fn __init__(slf: &Bound<'_, Self>, config: Option<Py<PyAny>>) {
         let py_self: Py<PyAny> = slf.clone().unbind().into_any();
         slf.borrow_mut().set_python_instance(py_self);
     }
@@ -867,7 +1027,7 @@ impl PyStrategy {
         if inner.core.actor.is_registered() {
             Ok(inner.clock.clone())
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            Err(to_pyruntime_err(
                 "Strategy must be registered with a trader before accessing clock",
             ))
         }
@@ -880,7 +1040,7 @@ impl PyStrategy {
         if inner.core.actor.is_registered() {
             Ok(PyCache::from_rc(inner.core.actor.cache_rc()))
         } else {
-            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+            Err(to_pyruntime_err(
                 "Strategy must be registered with a trader before accessing cache",
             ))
         }
@@ -970,11 +1130,17 @@ impl PyStrategy {
         order: Py<PyAny>,
         position_id: Option<PositionId>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
         let order = pyobject_to_order_any(py, order)?;
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let inner = self.inner_mut();
-        match params {
+        match params_map {
             Some(p) => Strategy::submit_order_with_params(inner, order, position_id, client_id, p),
             None => Strategy::submit_order(inner, order, position_id, client_id),
         }
@@ -992,11 +1158,17 @@ impl PyStrategy {
         price: Option<Price>,
         trigger_price: Option<Price>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
         let order = pyobject_to_order_any(py, order)?;
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let inner = self.inner_mut();
-        match params {
+        match params_map {
             Some(p) => Strategy::modify_order_with_params(
                 inner,
                 order,
@@ -1018,11 +1190,17 @@ impl PyStrategy {
         py: Python<'_>,
         order: Py<PyAny>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
         let order = pyobject_to_order_any(py, order)?;
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let inner = self.inner_mut();
-        match params {
+        match params_map {
             Some(p) => Strategy::cancel_order_with_params(inner, order, client_id, p),
             None => Strategy::cancel_order(inner, order, client_id),
         }
@@ -1036,13 +1214,19 @@ impl PyStrategy {
         py: Python<'_>,
         orders: Vec<Py<PyAny>>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let orders: Vec<OrderAny> = orders
             .into_iter()
             .map(|o| pyobject_to_order_any(py, o))
             .collect::<PyResult<Vec<_>>>()?;
-        Strategy::cancel_orders(self.inner_mut(), orders, client_id, params)
+        Strategy::cancel_orders(self.inner_mut(), orders, client_id, params_map)
             .map_err(to_pyruntime_err)
     }
 
@@ -1053,10 +1237,16 @@ impl PyStrategy {
         instrument_id: InstrumentId,
         order_side: Option<OrderSide>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let inner = self.inner_mut();
-        match params {
+        match params_map {
             Some(p) => Strategy::cancel_all_orders_with_params(
                 inner,
                 instrument_id,
@@ -1178,8 +1368,9 @@ impl PyStrategy {
     }
 
     #[pyo3(name = "on_data")]
-    fn py_on_data(&mut self, data: Py<PyAny>) -> PyResult<()> {
-        self.inner_mut().dispatch_on_data(data)
+    fn py_on_data(&mut self, py: Python<'_>, data: CustomData) -> PyResult<()> {
+        self.inner_mut()
+            .dispatch_on_data(Py::new(py, data)?.into_any())
     }
 
     #[pyo3(name = "on_signal")]
@@ -1248,9 +1439,15 @@ impl PyStrategy {
         &mut self,
         data_type: DataType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_data(self.inner_mut(), data_type, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_data(self.inner_mut(), data_type, client_id, params_map);
         Ok(())
     }
 
@@ -1260,9 +1457,15 @@ impl PyStrategy {
         &mut self,
         venue: Venue,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_instruments(self.inner_mut(), venue, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_instruments(self.inner_mut(), venue, client_id, params_map);
         Ok(())
     }
 
@@ -1272,9 +1475,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_instrument(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_instrument(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1287,8 +1496,14 @@ impl PyStrategy {
         depth: Option<usize>,
         client_id: Option<ClientId>,
         managed: bool,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let depth = depth.and_then(NonZeroUsize::new);
         DataActor::subscribe_book_deltas(
             self.inner_mut(),
@@ -1297,7 +1512,7 @@ impl PyStrategy {
             depth,
             client_id,
             managed,
-            params,
+            params_map,
         );
         Ok(())
     }
@@ -1311,11 +1526,17 @@ impl PyStrategy {
         interval_ms: usize,
         depth: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let depth = depth.and_then(NonZeroUsize::new);
         let interval_ms = NonZeroUsize::new(interval_ms)
-            .ok_or_else(|| PyErr::new::<PyValueError, _>("interval_ms must be > 0"))?;
+            .ok_or_else(|| to_pyvalue_err("interval_ms must be > 0"))?;
 
         DataActor::subscribe_book_at_interval(
             self.inner_mut(),
@@ -1324,7 +1545,7 @@ impl PyStrategy {
             depth,
             interval_ms,
             client_id,
-            params,
+            params_map,
         );
         Ok(())
     }
@@ -1335,9 +1556,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_quotes(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_quotes(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1347,9 +1574,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_trades(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_trades(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1359,9 +1592,15 @@ impl PyStrategy {
         &mut self,
         bar_type: BarType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_bars(self.inner_mut(), bar_type, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_bars(self.inner_mut(), bar_type, client_id, params_map);
         Ok(())
     }
 
@@ -1371,9 +1610,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_mark_prices(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_mark_prices(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1383,9 +1628,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_index_prices(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_index_prices(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1395,9 +1646,20 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_instrument_status(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_instrument_status(
+            self.inner_mut(),
+            instrument_id,
+            client_id,
+            params_map,
+        );
         Ok(())
     }
 
@@ -1407,9 +1669,20 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::subscribe_instrument_close(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::subscribe_instrument_close(
+            self.inner_mut(),
+            instrument_id,
+            client_id,
+            params_map,
+        );
         Ok(())
     }
 
@@ -1422,8 +1695,14 @@ impl PyStrategy {
         start: Option<u64>,
         end: Option<u64>,
         limit: Option<usize>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1435,7 +1714,7 @@ impl PyStrategy {
             start,
             end,
             limit,
-            params,
+            params_map,
         )
         .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
@@ -1449,8 +1728,14 @@ impl PyStrategy {
         start: Option<u64>,
         end: Option<u64>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
 
@@ -1460,7 +1745,7 @@ impl PyStrategy {
             start,
             end,
             client_id,
-            params,
+            params_map,
         )
         .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
@@ -1474,14 +1759,26 @@ impl PyStrategy {
         start: Option<u64>,
         end: Option<u64>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
 
-        let request_id =
-            DataActor::request_instruments(self.inner_mut(), venue, start, end, client_id, params)
-                .map_err(to_pyvalue_err)?;
+        let request_id = DataActor::request_instruments(
+            self.inner_mut(),
+            venue,
+            start,
+            end,
+            client_id,
+            params_map,
+        )
+        .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
     }
 
@@ -1492,8 +1789,14 @@ impl PyStrategy {
         instrument_id: InstrumentId,
         depth: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let depth = depth.and_then(NonZeroUsize::new);
 
         let request_id = DataActor::request_book_snapshot(
@@ -1501,7 +1804,7 @@ impl PyStrategy {
             instrument_id,
             depth,
             client_id,
-            params,
+            params_map,
         )
         .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
@@ -1516,8 +1819,14 @@ impl PyStrategy {
         end: Option<u64>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1529,7 +1838,7 @@ impl PyStrategy {
             end,
             limit,
             client_id,
-            params,
+            params_map,
         )
         .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
@@ -1544,8 +1853,14 @@ impl PyStrategy {
         end: Option<u64>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1557,7 +1872,7 @@ impl PyStrategy {
             end,
             limit,
             client_id,
-            params,
+            params_map,
         )
         .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
@@ -1572,8 +1887,14 @@ impl PyStrategy {
         end: Option<u64>,
         limit: Option<usize>,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<String> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let limit = limit.and_then(NonZeroUsize::new);
         let start = start.map(|ts| UnixNanos::from(ts).to_datetime_utc());
         let end = end.map(|ts| UnixNanos::from(ts).to_datetime_utc());
@@ -1585,7 +1906,7 @@ impl PyStrategy {
             end,
             limit,
             client_id,
-            params,
+            params_map,
         )
         .map_err(to_pyvalue_err)?;
         Ok(request_id.to_string())
@@ -1597,9 +1918,15 @@ impl PyStrategy {
         &mut self,
         data_type: DataType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_data(self.inner_mut(), data_type, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_data(self.inner_mut(), data_type, client_id, params_map);
         Ok(())
     }
 
@@ -1609,9 +1936,15 @@ impl PyStrategy {
         &mut self,
         venue: Venue,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_instruments(self.inner_mut(), venue, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_instruments(self.inner_mut(), venue, client_id, params_map);
         Ok(())
     }
 
@@ -1621,9 +1954,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_instrument(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_instrument(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1633,9 +1972,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_book_deltas(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_book_deltas(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1646,17 +1991,23 @@ impl PyStrategy {
         instrument_id: InstrumentId,
         interval_ms: usize,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         let interval_ms = NonZeroUsize::new(interval_ms)
-            .ok_or_else(|| PyErr::new::<PyValueError, _>("interval_ms must be > 0"))?;
+            .ok_or_else(|| to_pyvalue_err("interval_ms must be > 0"))?;
 
         DataActor::unsubscribe_book_at_interval(
             self.inner_mut(),
             instrument_id,
             interval_ms,
             client_id,
-            params,
+            params_map,
         );
         Ok(())
     }
@@ -1667,9 +2018,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_quotes(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_quotes(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1679,9 +2036,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_trades(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_trades(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1691,9 +2054,15 @@ impl PyStrategy {
         &mut self,
         bar_type: BarType,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_bars(self.inner_mut(), bar_type, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_bars(self.inner_mut(), bar_type, client_id, params_map);
         Ok(())
     }
 
@@ -1703,9 +2072,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_mark_prices(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_mark_prices(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1715,9 +2090,15 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_index_prices(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_index_prices(self.inner_mut(), instrument_id, client_id, params_map);
         Ok(())
     }
 
@@ -1727,13 +2108,19 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
         DataActor::unsubscribe_instrument_status(
             self.inner_mut(),
             instrument_id,
             client_id,
-            params,
+            params_map,
         );
         Ok(())
     }
@@ -1744,9 +2131,20 @@ impl PyStrategy {
         &mut self,
         instrument_id: InstrumentId,
         client_id: Option<ClientId>,
-        params: Option<IndexMap<String, String>>,
+        params: Option<Py<PyDict>>,
     ) -> PyResult<()> {
-        DataActor::unsubscribe_instrument_close(self.inner_mut(), instrument_id, client_id, params);
+        let params_map = Python::attach(|py| -> PyResult<Option<Params>> {
+            match params {
+                Some(dict) => from_pydict(py, dict),
+                None => Ok(None),
+            }
+        })?;
+        DataActor::unsubscribe_instrument_close(
+            self.inner_mut(),
+            instrument_id,
+            client_id,
+            params_map,
+        );
         Ok(())
     }
 }

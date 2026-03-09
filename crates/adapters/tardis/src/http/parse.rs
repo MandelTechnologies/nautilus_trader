@@ -110,7 +110,7 @@ fn parse_spot_instrument(
     if let Some(changes) = &info.changes {
         // Sort changes newest to oldest
         let mut sorted_changes = changes.clone();
-        sorted_changes.sort_by(|a, b| b.until.cmp(&a.until));
+        sorted_changes.sort_by_key(|b| std::cmp::Reverse(b.until));
 
         if let Some(effective_time) = effective {
             // Apply changes where change.until >= effective_time
@@ -258,7 +258,7 @@ fn parse_perp_instrument(
     if let Some(changes) = &info.changes {
         // Sort changes newest to oldest
         let mut sorted_changes = changes.clone();
-        sorted_changes.sort_by(|a, b| b.until.cmp(&a.until));
+        sorted_changes.sort_by_key(|b| std::cmp::Reverse(b.until));
 
         if let Some(effective_time) = effective {
             // Apply changes where change.until >= effective_time
@@ -410,7 +410,7 @@ fn parse_future_instrument(
     if let Some(changes) = &info.changes {
         // Sort changes newest to oldest
         let mut sorted_changes = changes.clone();
-        sorted_changes.sort_by(|a, b| b.until.cmp(&a.until));
+        sorted_changes.sort_by_key(|b| std::cmp::Reverse(b.until));
 
         if let Some(effective_time) = effective {
             // Apply changes where change.until >= effective_time
@@ -566,7 +566,7 @@ fn parse_option_instrument(
     if let Some(changes) = &info.changes {
         // Sort changes newest to oldest
         let mut sorted_changes = changes.clone();
-        sorted_changes.sort_by(|a, b| b.until.cmp(&a.until));
+        sorted_changes.sort_by_key(|b| std::cmp::Reverse(b.until));
 
         if let Some(effective_time) = effective {
             // Apply changes where change.until >= effective_time
@@ -744,7 +744,7 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::tests::load_test_json;
+    use crate::common::testing::load_test_json;
 
     #[rstest]
     fn test_parse_instrument_spot() {
@@ -874,8 +874,8 @@ mod tests {
         assert_eq!(instrument.max_quantity(), None);
         assert_eq!(instrument.min_notional(), None);
         assert_eq!(instrument.max_notional(), None);
-        assert_eq!(instrument.maker_fee(), dec!(0));
-        assert_eq!(instrument.taker_fee(), dec!(0));
+        assert_eq!(instrument.maker_fee(), dec!(-0.0001));
+        assert_eq!(instrument.taker_fee(), dec!(0.0005));
     }
 
     #[rstest]
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(instrument.max_quantity(), None);
         assert_eq!(instrument.min_notional(), None);
         assert_eq!(instrument.max_notional(), None);
-        assert_eq!(instrument.maker_fee(), dec!(0));
-        assert_eq!(instrument.taker_fee(), dec!(0));
+        assert_eq!(instrument.maker_fee(), dec!(0.0003));
+        assert_eq!(instrument.taker_fee(), dec!(0.0003));
     }
 }

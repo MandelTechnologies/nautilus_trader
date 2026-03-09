@@ -235,6 +235,7 @@ impl<'a> PoolDiscoveryService<'a> {
                     if self.cache.get_token(&pool.token0).is_none() {
                         token_rpc_buffer.insert(pool.token0);
                     }
+
                     if self.cache.get_token(&pool.token1).is_none() {
                         token_rpc_buffer.insert(pool.token1);
                     }
@@ -410,7 +411,7 @@ impl<'a> PoolDiscoveryService<'a> {
     /// Logs errors for pools that cannot be constructed (missing tokens),
     /// but does not fail the entire batch.
     async fn construct_pools_batch(
-        &mut self,
+        &self,
         pool_events: &mut Vec<PoolCreatedEvent>,
         dex: &SharedDex,
     ) -> anyhow::Result<Vec<Pool>> {

@@ -18,12 +18,6 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use nautilus_model::{
-    data::{Data, funding::FundingRateUpdate},
-    events::{AccountState, OrderUpdated},
-    instruments::InstrumentAny,
-    reports::{FillReport, OrderStatusReport, PositionStatusReport},
-};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::Value;
@@ -93,25 +87,23 @@ pub struct BitmexSubscription {
     pub args: Vec<Ustr>,
 }
 
-/// Unified WebSocket message type for BitMEX.
-#[derive(Clone, Debug)]
-pub enum NautilusWsMessage {
-    Data(Vec<Data>),
-    Instruments(Vec<InstrumentAny>),
-    OrderStatusReports(Vec<OrderStatusReport>),
-    OrderUpdated(OrderUpdated),
-    FillReports(Vec<FillReport>),
-    PositionStatusReport(PositionStatusReport),
-    FundingRateUpdates(Vec<FundingRateUpdate>),
-    AccountState(AccountState),
+/// Output message from the BitMEX WebSocket handler.
+///
+/// Contains venue-specific types that consumers parse into Nautilus domain types.
+#[derive(Debug)]
+pub enum BitmexWsMessage {
+    /// Table-based data message from the BitMEX WS stream.
+    Table(BitmexTableMessage),
+    /// Emitted when the underlying WebSocket reconnects.
     Reconnected,
+    /// Emitted when authentication succeeds.
     Authenticated,
 }
 
 /// Represents all possible message types from the BitMEX WebSocket API.
 #[derive(Debug, Display, Deserialize)]
 #[serde(untagged)]
-pub enum BitmexWsMessage {
+pub(super) enum BitmexRawWsMessage {
     /// Table websocket message.
     Table(BitmexTableMessage),
     /// Initial welcome message received when connecting to the WebSocket.
@@ -267,6 +259,7 @@ pub struct BitmexOrderBookMsg {
     pub timestamp: DateTime<Utc>,
     /// Timestamp of the transaction.
     pub transact_time: DateTime<Utc>,
+    pub pool: Option<Ustr>,
 }
 
 /// Represents a single order book entry in the BitMEX order book.
@@ -281,6 +274,7 @@ pub struct BitmexOrderBook10Msg {
     pub asks: Vec<[f64; 2]>,
     /// Timestamp of the orderbook snapshot.
     pub timestamp: DateTime<Utc>,
+    pub pool: Option<Ustr>,
 }
 
 /// Represents a top-of-book quote.
@@ -299,6 +293,7 @@ pub struct BitmexQuoteMsg {
     pub ask_size: Option<u64>,
     /// Timestamp of the quote.
     pub timestamp: DateTime<Utc>,
+    pub pool: Option<Ustr>,
 }
 
 /// Represents a single trade execution on BitMEX.
@@ -329,6 +324,7 @@ pub struct BitmexTradeMsg {
     /// Trade type.
     #[serde(rename = "trdType")]
     pub trade_type: Ustr, // TODO: Add enum
+    pub pool: Option<Ustr>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -360,6 +356,7 @@ pub struct BitmexTradeBinMsg {
     pub home_notional: f64,
     /// Foreign currency volume.
     pub foreign_notional: f64,
+    pub pool: Option<Ustr>,
 }
 
 /// Represents a single order book entry in the BitMEX order book.
@@ -384,6 +381,7 @@ pub struct BitmexInstrumentMsg {
     pub reference_symbol: Option<Ustr>,
     pub max_order_qty: Option<f64>,
     pub max_price: Option<f64>,
+    pub min_price: Option<f64>,
     pub lot_size: Option<f64>,
     pub tick_size: Option<f64>,
     pub multiplier: Option<f64>,
@@ -486,6 +484,7 @@ impl TryFrom<BitmexInstrumentMsg> for crate::http::models::BitmexInstrument {
             publish_time: None,
             max_order_qty: msg.max_order_qty,
             max_price: msg.max_price,
+            min_price: msg.min_price,
             lot_size: msg.lot_size,
             tick_size,
             multiplier,
@@ -624,6 +623,8 @@ pub struct BitmexOrderMsg {
     pub text: Option<Ustr>,
     pub transact_time: DateTime<Utc>,
     pub timestamp: DateTime<Utc>,
+    pub strategy: Option<Ustr>,
+    pub pool: Option<Ustr>,
 }
 
 /// Wrapper enum for order data that can be either full or update messages.
@@ -712,6 +713,9 @@ pub struct BitmexExecutionMsg {
     pub foreign_notional: Option<f64>,
     pub transact_time: Option<DateTime<Utc>>,
     pub timestamp: Option<DateTime<Utc>>,
+    pub strategy: Option<Ustr>,
+    pub pool: Option<Ustr>,
+    pub exec_comm_ccy: Option<Ustr>,
 }
 
 /// Position status.
@@ -804,6 +808,7 @@ pub struct BitmexPositionMsg {
     pub timestamp: Option<DateTime<Utc>>,
     pub last_price: Option<f64>,
     pub last_value: Option<i64>,
+    pub strategy: Option<Ustr>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

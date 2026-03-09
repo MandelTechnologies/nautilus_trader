@@ -40,9 +40,6 @@ pub mod defi;
 ///
 /// Returns a `PyErr` if registering any module components fails.
 ///
-/// # Panics
-///
-/// Panics if inserting classes or functions into the Python module unexpectedly fails.
 #[pymodule]
 pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Types
@@ -59,6 +56,19 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Data
     m.add_function(wrap_pyfunction!(data::drop_cvec_pycapsule, m)?)?;
     m.add_class::<crate::data::DataType>()?;
+    m.add_class::<crate::data::CustomData>()?;
+    m.add_function(pyo3::wrap_pyfunction!(
+        crate::python::data::deserialize_custom_from_json,
+        m
+    )?)?;
+    m.add_function(pyo3::wrap_pyfunction!(
+        crate::python::data::register_custom_data_class,
+        m
+    )?)?;
+    m.add_function(pyo3::wrap_pyfunction!(
+        crate::python::data::custom::custom_data_backend_kind,
+        m
+    )?)?;
     m.add_class::<crate::data::bar::BarSpecification>()?;
     m.add_class::<crate::data::bar::BarType>()?;
     m.add_class::<crate::data::bar::Bar>()?;
@@ -76,6 +86,11 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::data::close::InstrumentClose>()?;
     m.add_class::<crate::data::funding::FundingRateUpdate>()?;
     m.add_class::<crate::data::greeks::BlackScholesGreeksResult>()?;
+    m.add_class::<crate::data::option_chain::OptionGreeks>()?;
+    m.add_class::<crate::data::option_chain::OptionChainSlice>()?;
+    m.add_class::<crate::data::option_chain::OptionStrikeData>()?;
+    m.add_class::<crate::python::data::option_chain::PyStrikeRange>()?;
+    m.add_class::<crate::data::forward::ForwardPrice>()?;
     m.add_function(wrap_pyfunction!(
         crate::python::data::greeks::py_black_scholes_greeks,
         m
@@ -137,6 +152,7 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::identifiers::TraderId>()?;
     m.add_class::<crate::identifiers::Venue>()?;
     m.add_class::<crate::identifiers::VenueOrderId>()?;
+    m.add_class::<crate::identifiers::OptionSeriesId>()?;
     // Orders
     m.add_class::<crate::orders::LimitOrder>()?;
     m.add_class::<crate::orders::LimitIfTouchedOrder>()?;
@@ -156,6 +172,8 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Instruments
     m.add_class::<crate::instruments::BettingInstrument>()?;
     m.add_class::<crate::instruments::BinaryOption>()?;
+    m.add_class::<crate::instruments::Cfd>()?;
+    m.add_class::<crate::instruments::Commodity>()?;
     m.add_class::<crate::instruments::CryptoFuture>()?;
     m.add_class::<crate::instruments::CryptoOption>()?;
     m.add_class::<crate::instruments::CryptoPerpetual>()?;
@@ -163,8 +181,10 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::instruments::Equity>()?;
     m.add_class::<crate::instruments::FuturesContract>()?;
     m.add_class::<crate::instruments::FuturesSpread>()?;
+    m.add_class::<crate::instruments::IndexInstrument>()?;
     m.add_class::<crate::instruments::OptionContract>()?;
     m.add_class::<crate::instruments::OptionSpread>()?;
+    m.add_class::<crate::instruments::PerpetualContract>()?;
     m.add_class::<crate::instruments::SyntheticInstrument>()?;
     // Order book
     m.add_class::<crate::orderbook::book::OrderBook>()?;
@@ -198,11 +218,16 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::events::OrderCanceled>()?;
     m.add_class::<crate::events::OrderExpired>()?;
     m.add_class::<crate::events::OrderSnapshot>()?;
+    m.add_class::<crate::events::PositionOpened>()?;
+    m.add_class::<crate::events::PositionChanged>()?;
+    m.add_class::<crate::events::PositionClosed>()?;
     m.add_class::<crate::events::PositionAdjusted>()?;
     m.add_class::<crate::events::PositionSnapshot>()?;
     // Accounts
     m.add_class::<crate::accounts::CashAccount>()?;
     m.add_class::<crate::accounts::MarginAccount>()?;
+    m.add_class::<crate::accounts::margin_model::StandardMarginModel>()?;
+    m.add_class::<crate::accounts::margin_model::LeveragedMarginModel>()?;
     m.add_function(wrap_pyfunction!(
         crate::python::account::transformer::cash_account_from_account_events,
         m

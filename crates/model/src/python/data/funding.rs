@@ -23,14 +23,13 @@ use std::{
 
 use nautilus_core::{
     UnixNanos,
-    python::{IntoPyObjectNautilusExt, to_pyvalue_err},
+    python::{IntoPyObjectNautilusExt, to_pykey_err, to_pyvalue_err},
     serialization::{
         Serializable,
         msgpack::{FromMsgPack, ToMsgPack},
     },
 };
 use pyo3::{
-    exceptions::PyKeyError,
     prelude::*,
     pyclass::CompareOp,
     types::{PyString, PyTuple},
@@ -134,7 +133,7 @@ impl FundingRateUpdate {
     }
 
     #[pyo3(name = "to_dict")]
-    fn py_to_dict(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn py_to_dict(&self, py: Python<'_>) -> Py<PyAny> {
         let mut dict = HashMap::new();
         dict.insert(
             "type".to_string(),
@@ -148,6 +147,7 @@ impl FundingRateUpdate {
             "rate".to_string(),
             self.rate.to_string().into_py_any_unwrap(py),
         );
+
         if let Some(next_funding_ns) = self.next_funding_ns {
             dict.insert(
                 "next_funding_ns".to_string(),
@@ -162,7 +162,7 @@ impl FundingRateUpdate {
             "ts_init".to_string(),
             self.ts_init.as_u64().into_py_any_unwrap(py),
         );
-        Ok(dict.into_py_any_unwrap(py))
+        dict.into_py_any_unwrap(py)
     }
 
     #[staticmethod]
@@ -172,24 +172,24 @@ impl FundingRateUpdate {
 
         let instrument_id_str: String = dict
             .get_item("instrument_id")?
-            .ok_or_else(|| PyErr::new::<PyKeyError, _>("Missing 'instrument_id' field"))?
+            .ok_or_else(|| to_pykey_err("Missing 'instrument_id' field"))?
             .extract()?;
         let instrument_id = InstrumentId::from_str(&instrument_id_str).map_err(to_pyvalue_err)?;
 
         let rate_str: String = dict
             .get_item("rate")?
-            .ok_or_else(|| PyErr::new::<PyKeyError, _>("Missing 'rate' field"))?
+            .ok_or_else(|| to_pykey_err("Missing 'rate' field"))?
             .extract()?;
         let rate = Decimal::from_str(&rate_str).map_err(to_pyvalue_err)?;
 
         let ts_event: u64 = dict
             .get_item("ts_event")?
-            .ok_or_else(|| PyErr::new::<PyKeyError, _>("Missing 'ts_event' field"))?
+            .ok_or_else(|| to_pykey_err("Missing 'ts_event' field"))?
             .extract()?;
 
         let ts_init: u64 = dict
             .get_item("ts_init")?
-            .ok_or_else(|| PyErr::new::<PyKeyError, _>("Missing 'ts_init' field"))?
+            .ok_or_else(|| to_pykey_err("Missing 'ts_init' field"))?
             .extract()?;
 
         let next_funding_ns: Option<u64> = dict
@@ -261,20 +261,20 @@ impl FundingRateUpdate {
         Ok(())
     }
 
-    fn __getstate__(&self, py: Python) -> PyResult<Py<PyAny>> {
-        Ok((
+    fn __getstate__(&self, py: Python) -> Py<PyAny> {
+        (
             self.instrument_id.to_string(),
             self.rate.to_string(),
             self.next_funding_ns.map(|ts| ts.as_u64()),
             self.ts_event.as_u64(),
             self.ts_init.as_u64(),
         )
-            .into_py_any_unwrap(py))
+            .into_py_any_unwrap(py)
     }
 
     fn __reduce__(&self, py: Python) -> PyResult<Py<PyAny>> {
         let safe_constructor = py.get_type::<Self>().getattr("_safe_constructor")?;
-        let state = self.__getstate__(py)?;
+        let state = self.__getstate__(py);
         Ok((safe_constructor, PyTuple::empty(py), state).into_py_any_unwrap(py))
     }
 

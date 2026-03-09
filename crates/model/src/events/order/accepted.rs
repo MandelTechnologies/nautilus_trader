@@ -43,7 +43,7 @@ use crate::{
 #[cfg_attr(any(test, feature = "stubs"), builder(default))]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct OrderAccepted {
     /// The trader ID associated with the event.
@@ -138,7 +138,7 @@ impl OrderEvent for OrderAccepted {
         self.event_id
     }
 
-    fn kind(&self) -> &str {
+    fn type_name(&self) -> &'static str {
         stringify!(OrderAccepted)
     }
 
@@ -323,7 +323,7 @@ mod tests {
             ClientOrderId::from("O-19700101-000000-001-001-1"),
             VenueOrderId::from("V-001"),
             AccountId::from("SIM-001"),
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_000_000_000),
             UnixNanos::from(2_000_000_000),
             false,
@@ -360,7 +360,7 @@ mod tests {
             ClientOrderId::from("O-19700101-000000-001-001-1"),
             VenueOrderId::from("V-001"),
             AccountId::from("SIM-001"),
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_000_000_000),
             UnixNanos::from(2_000_000_000),
             true,
@@ -399,7 +399,7 @@ mod tests {
         let order_accepted = create_test_order_accepted();
 
         assert_eq!(order_accepted.id(), order_accepted.event_id);
-        assert_eq!(order_accepted.kind(), "OrderAccepted");
+        assert_eq!(order_accepted.type_name(), "OrderAccepted");
         assert_eq!(order_accepted.order_type(), None);
         assert_eq!(order_accepted.order_side(), None);
         assert_eq!(order_accepted.trader_id(), TraderId::from("TRADER-001"));

@@ -30,6 +30,7 @@ from nautilus_trader.model.data cimport IndexPriceUpdate
 from nautilus_trader.model.data cimport InstrumentClose
 from nautilus_trader.model.data cimport InstrumentStatus
 from nautilus_trader.model.data cimport MarkPriceUpdate
+from nautilus_trader.model.data cimport OptionGreeks
 from nautilus_trader.model.data cimport OrderBookDelta
 from nautilus_trader.model.data cimport OrderBookDeltas
 from nautilus_trader.model.data cimport OrderBookDepth10
@@ -476,7 +477,7 @@ cdef class SubscribeOrderBook(SubscribeData):
         datetime start: datetime | None,
         datetime end: datetime | None,
         callback: Callable[[Any], None] | None,
-    ) -> RequestOrderBookDepth:
+    ) -> RequestOrderBookDepth | RequestOrderBookDeltas:
         """
         Convert this subscribe message to a request message.
 
@@ -492,32 +493,52 @@ cdef class SubscribeOrderBook(SubscribeData):
 
         Returns
         -------
-        RequestOrderBookDepth
+        RequestOrderBookDepth | RequestOrderBookDeltas
             The converted request message.
-        """
-        if self.data_type.type != OrderBookDepth10:
-            raise ValueError(
-                f"Cannot convert SubscribeOrderBook with data_type {self.data_type.type} to RequestOrderBookDepth. "
-                f"Only OrderBookDepth10 subscriptions can be converted to historical requests."
-            )
 
+        Raises
+        ------
+        ValueError
+            If the data type is neither OrderBookDepth10 nor OrderBookDelta.
+        """
         params = self.params.copy() if self.params else {}
         params["subscription_name"] = f"{self.data_type.type.__name__}.{self.instrument_id}"
+        params["book_type"] = self.book_type
 
-        return RequestOrderBookDepth(
-            instrument_id=self.instrument_id,
-            start=start,
-            end=end,
-            limit=0,
-            depth=self.depth if self.depth > 0 else 10,
-            client_id=self.client_id,
-            venue=self.venue,
-            callback=callback,
-            request_id=UUID4(),
-            ts_init=self.ts_init,
-            params=params,
-            correlation_id=self.id,
-        )
+        if self.data_type.type == OrderBookDepth10:
+            return RequestOrderBookDepth(
+                instrument_id=self.instrument_id,
+                start=start,
+                end=end,
+                limit=0,
+                depth=self.depth if self.depth > 0 else 10,
+                client_id=self.client_id,
+                venue=self.venue,
+                callback=callback,
+                request_id=UUID4(),
+                ts_init=self.ts_init,
+                params=params,
+                correlation_id=self.id,
+            )
+        elif self.data_type.type == OrderBookDelta:
+            return RequestOrderBookDeltas(
+                instrument_id=self.instrument_id,
+                start=start,
+                end=end,
+                limit=0,
+                client_id=self.client_id,
+                venue=self.venue,
+                callback=callback,
+                request_id=UUID4(),
+                ts_init=self.ts_init,
+                params=params,
+                correlation_id=self.id,
+            )
+        else:
+            raise ValueError(
+                f"Cannot convert SubscribeOrderBook with data_type {self.data_type.type} to a request. "
+                f"Only OrderBookDelta and OrderBookDepth10 subscriptions can be converted to historical requests."
+            )
 
 
 cdef class SubscribeQuoteTicks(SubscribeData):
@@ -1165,6 +1186,139 @@ cdef class SubscribeInstrumentClose(SubscribeData):
         return (
             f"{type(self).__name__}("
             f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
+cdef class SubscribeOptionGreeks(SubscribeData):
+    """
+    Represents a command to subscribe to option Greeks for an instrument.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the subscription.
+    client_id : ClientId or ``None``
+        The data client ID for the command.
+    venue : Venue or ``None``
+        The venue for the command.
+    command_id : UUID4
+        The command ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object], optional
+        Additional parameters for the subscription.
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        UUID4 command_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(OptionGreeks),
+            instrument_id,
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
+cdef class SubscribeOptionChain(SubscribeData):
+    """
+    Represents a command to subscribe to an option chain.
+
+    Parameters
+    ----------
+    series_id : object
+        The option series ID for the subscription.
+    strike_range : object
+        The strike range for filtering the chain.
+    snapshot_interval_ms : int, optional
+        The snapshot interval in milliseconds (None for raw mode).
+    client_id : ClientId or ``None``
+        The data client ID for the command.
+    venue : Venue or ``None``
+        The venue for the command.
+    command_id : UUID4
+        The command ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object], optional
+        Additional parameters for the subscription.
+
+    """
+
+    def __init__(
+        self,
+        object series_id not None,
+        object strike_range,
+        object snapshot_interval_ms,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        UUID4 command_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(Data),
+            None,  # no single instrument_id
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+        self.series_id = series_id
+        self.strike_range = strike_range
+        self.snapshot_interval_ms = snapshot_interval_ms
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"series_id={self.series_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"series_id={self.series_id}, "
+            f"strike_range={self.strike_range}, "
+            f"snapshot_interval_ms={self.snapshot_interval_ms}, "
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"id={self.id}, "
@@ -1960,6 +2114,129 @@ cdef class UnsubscribeInstrumentClose(UnsubscribeData):
         )
 
 
+cdef class UnsubscribeOptionGreeks(UnsubscribeData):
+    """
+    Represents a command to unsubscribe from option Greeks for an instrument.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the subscription.
+    client_id : ClientId or ``None``
+        The data client ID for the command.
+    venue : Venue or ``None``
+        The venue for the command.
+    command_id : UUID4
+        The command ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object], optional
+        Additional parameters for the subscription.
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        UUID4 command_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(OptionGreeks),
+            instrument_id,
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
+cdef class UnsubscribeOptionChain(UnsubscribeData):
+    """
+    Represents a command to unsubscribe from an option chain.
+
+    Parameters
+    ----------
+    series_id : object
+        The option series ID for the subscription.
+    client_id : ClientId or ``None``
+        The data client ID for the command.
+    venue : Venue or ``None``
+        The venue for the command.
+    command_id : UUID4
+        The command ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object], optional
+        Additional parameters for the subscription.
+
+    """
+
+    def __init__(
+        self,
+        object series_id not None,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        UUID4 command_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(Data),
+            None,  # no single instrument_id
+            client_id,
+            venue,
+            command_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+        self.series_id = series_id
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"series_id={self.series_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"series_id={self.series_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
 cdef class RequestData(Request):
     """
     Represents a request for data.
@@ -2445,6 +2722,112 @@ cdef class RequestOrderBookDepth(RequestData):
         )
 
 
+cdef class RequestOrderBookDeltas(RequestData):
+    """
+    Represents a request for historical `OrderBookDeltas` data.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the request.
+    start : datetime
+        The start datetime (UTC) of request time range (inclusive).
+    end : datetime
+        The end datetime (UTC) of request time range.
+        The inclusiveness depends on individual data client implementation.
+    limit : int
+        The limit on the amount of deltas received.
+    client_id : ClientId or ``None``
+        The data client ID for the request.
+    venue : Venue or ``None``
+        The venue for the request.
+    callback : Callable[[Any], None]
+        The delegate to call with the data.
+    request_id : UUID4
+        The request ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object]
+        Additional parameters for the request.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        datetime start : datetime | None,
+        datetime end : datetime | None,
+        int limit,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        callback: Callable[[Any], None] | None,
+        UUID4 request_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(OrderBookDeltas),
+            instrument_id,
+            start,
+            end,
+            limit,
+            client_id,
+            venue,
+            callback,
+            request_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
+        return RequestOrderBookDeltas(
+            instrument_id=self.instrument_id,
+            start=start,
+            end=end,
+            limit=self.limit,
+            client_id=self.client_id,
+            venue=self.venue,
+            callback=callback,
+            request_id=UUID4(),
+            ts_init=ts_init,
+            params=self.params.copy(),
+            correlation_id=self.id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"data_type={self.data_type}{form_params_str(self.params)})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"callback={self.callback}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
 cdef class RequestQuoteTicks(RequestData):
     """
     Represents a request for quote ticks.
@@ -2655,6 +3038,111 @@ cdef class RequestTradeTicks(RequestData):
             f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )
 
+cdef class RequestFundingRates(RequestData):
+    """
+    Represents a request for funding rates.
+
+    Parameters
+    ----------
+    instrument_id : InstrumentId
+        The instrument ID for the request.
+    start : datetime
+        The start datetime (UTC) of request time range (inclusive).
+    end : datetime
+        The end datetime (UTC) of request time range.
+        The inclusiveness depends on individual data client implementation.
+    limit : int
+        The limit on the amount of trade ticks received.
+    client_id : ClientId or ``None``
+        The data client ID for the request.
+    venue : Venue or ``None``
+        The venue for the request.
+    callback : Callable[[Any], None]
+        The delegate to call with the data.
+    request_id : UUID4
+        The request ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    params : dict[str, object]
+        Additional parameters for the request.
+
+    Raises
+    ------
+    ValueError
+        If both `client_id` and `venue` are both ``None`` (not enough routing info).
+
+    """
+
+    def __init__(
+        self,
+        InstrumentId instrument_id not None,
+        datetime start : datetime | None,
+        datetime end : datetime | None,
+        int limit,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        callback: Callable[[Any], None] | None,
+        UUID4 request_id not None,
+        uint64_t ts_init,
+        dict[str, object] params: dict | None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(FundingRateUpdate),
+            instrument_id,
+            start,
+            end,
+            limit,
+            client_id,
+            venue,
+            callback,
+            request_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+
+    def with_dates(self, datetime start, datetime end, uint64_t ts_init, callback: Callable[[Any], None] | None = None):
+        return RequestFundingRates(
+            instrument_id=self.instrument_id,
+            start=start,
+            end=end,
+            limit=self.limit,
+            client_id=self.client_id,
+            venue=self.venue,
+            callback=callback,
+            request_id=UUID4(),
+            ts_init=ts_init,
+            params=self.params.copy(),
+            correlation_id=self.id,
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"data_type={self.data_type}{form_params_str(self.params)})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id}, "
+            f"start={self.start}, "
+            f"end={self.end}, "
+            f"limit={self.limit}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
+            f"callback={self.callback}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
 
 cdef class RequestBars(RequestData):
     """
@@ -2758,6 +3246,83 @@ cdef class RequestBars(RequestData):
             f"client_id={self.client_id}, "
             f"venue={self.venue}, "
             f"callback={self.callback}, "
+            f"id={self.id}, "
+            f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
+        )
+
+
+cdef class RequestForwardPrices(RequestData):
+    """
+    Represents a request for forward prices for option chain ATM tracking.
+
+    Parameters
+    ----------
+    underlying : str
+        The underlying asset symbol.
+    client_id : ClientId or ``None``
+        The data client ID for the request.
+    venue : Venue or ``None``
+        The venue for the request.
+    callback : Callable, optional
+        The registered callback for the response.
+    request_id : UUID4
+        The request ID.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    sample_instrument_id : InstrumentId, optional
+        A sample instrument ID for single-instrument fast path (1 HTTP call).
+    params : dict[str, object], optional
+        Additional parameters for the request.
+    correlation_id : UUID4, optional
+        The correlation ID for the request.
+
+    """
+
+    def __init__(
+        self,
+        str underlying not None,
+        ClientId client_id: ClientId | None,
+        Venue venue: Venue | None,
+        callback: Callable[[Any], None] | None,
+        UUID4 request_id not None,
+        uint64_t ts_init,
+        object sample_instrument_id = None,
+        dict[str, object] params: dict | None = None,
+        UUID4 correlation_id = None,
+    ) -> None:
+        super().__init__(
+            DataType(Data),
+            None,  # no instrument_id
+            None,  # no start
+            None,  # no end
+            0,     # no limit
+            client_id,
+            venue,
+            callback,
+            request_id,
+            ts_init,
+            params,
+            correlation_id,
+        )
+        self.underlying = underlying
+        self.sample_instrument_id = sample_instrument_id
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"underlying={self.underlying}, "
+            f"sample_instrument_id={self.sample_instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"underlying={self.underlying}, "
+            f"sample_instrument_id={self.sample_instrument_id}, "
+            f"client_id={self.client_id}, "
+            f"venue={self.venue}, "
             f"id={self.id}, "
             f"correlation_id={self.correlation_id}{form_params_str(self.params)})"
         )

@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! [NautilusTrader](http://nautilustrader.io) adapter for the
+//! [NautilusTrader](https://nautilustrader.io) adapter for the
 //! [Bybit](https://www.bybit.com/) cryptocurrency exchange.
 //!
 //! The `nautilus-bybit` crate provides client bindings (HTTP & WebSocket), data
@@ -24,7 +24,7 @@
 //!
 //! # Platform
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, high-performance, production-grade
 //! algorithmic trading platform, providing quantitative traders with the ability to backtest
 //! portfolios of automated trading strategies on historical data with an event-driven engine,
 //! and also deploy those same strategies live, with no code changes.
@@ -40,6 +40,8 @@
 //!
 //! - `python`: Enables Python bindings via [PyO3](https://pyo3.rs).
 //! - `extension-module`: Builds as a Python extension module (used together with `python`).
+//!
+//! [High-precision mode](https://nautilustrader.io/docs/nightly/getting_started/installation#precision-mode) (128-bit value types) is enabled by default.
 //!
 //! # Documentation
 //!
@@ -58,6 +60,7 @@ pub mod config;
 pub mod data;
 pub mod error;
 pub mod execution;
+pub mod factories;
 pub mod http;
 pub mod websocket;
 

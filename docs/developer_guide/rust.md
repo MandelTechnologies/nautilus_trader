@@ -2,7 +2,7 @@
 
 The [Rust](https://www.rust-lang.org/learn) programming language is an ideal fit for implementing the mission-critical core of the platform and systems.
 Its strong type system, ownership model, and compile-time checks eliminate memory errors and data races by construction,
-while zero-cost abstractions and the absence of a garbage collector deliver C-like performance—critical for high-frequency trading workloads.
+while zero-cost abstractions and the absence of a garbage collector deliver C-like performance, important for high-frequency trading workloads.
 
 ## Cargo manifest conventions
 
@@ -26,7 +26,7 @@ while zero-cost abstractions and the absence of a garbage collector deliver C-li
 
 ## Feature flag conventions
 
-- Prefer additive feature flags—enabling a feature must not break existing functionality.
+- Prefer additive feature flags. Enabling a feature must not break existing functionality.
 - Use descriptive flag names that explain what capability is enabled.
 - Document every feature in the crate-level documentation so consumers know what they toggle.
 - Common patterns:
@@ -40,7 +40,7 @@ while zero-cost abstractions and the absence of a garbage collector deliver C-li
 ## Build configurations
 
 To avoid unnecessary rebuilds during development, align cargo features, profiles, and flags across different build targets.
-Cargo's build cache is keyed by the exact combination of features, profiles, and flags—any mismatch triggers a full rebuild.
+Cargo's build cache is keyed by the exact combination of features, profiles, and flags. Any mismatch triggers a full rebuild.
 
 ### Aligned targets (testing and linting)
 
@@ -111,7 +111,7 @@ All Rust files must include the standardized copyright header:
 // -------------------------------------------------------------------------------------------------
 ```
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_copyright_year.sh` pre-commit hook verifies copyright headers include the current year.
 :::
 
@@ -165,7 +165,7 @@ pub fn process_symbol(symbol: Symbol) -> anyhow::Result<()> {
 }
 ```
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_anyhow_usage.sh` pre-commit hook enforces these anyhow conventions automatically.
 :::
 
@@ -175,7 +175,7 @@ The `check_anyhow_usage.sh` pre-commit hook enforces these anyhow conventions au
   - Use `log::…` (`log::debug!`, `log::info!`, `log::warn!`, etc.) for all Rust components.
 - Start messages with a capitalised word, prefer complete sentences, and omit terminal periods (e.g. `"Processing batch"`, not `"Processing batch."`).
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_logging_macro_usage.sh` pre-commit hook enforces fully qualified logging macros.
 :::
 
@@ -234,7 +234,7 @@ Use structured error handling patterns consistently:
    connect().context("BitMEX websocket did not become active")?;
    ```
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_error_conventions.sh` and `check_anyhow_usage.sh` pre-commit hooks enforce these error handling patterns.
 :::
 
@@ -289,7 +289,7 @@ Adapter crates (under `crates/adapters/`) require special handling for spawning 
 
 4. **Tests are exempt**: Test code using `#[tokio::test]` creates its own runtime context, so `tokio::spawn()` works correctly. The enforcement hook skips test files and test modules.
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_tokio_usage.sh` pre-commit hook enforces these adapter runtime patterns automatically.
 :::
 
@@ -330,7 +330,14 @@ For enums with extensive derive attributes:
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(eq, eq_int, module = "nautilus_trader.model")
+    pyo3::pyclass(
+        frozen,
+        eq,
+        eq_int,
+        module = "nautilus_trader.model",
+        from_py_object,
+        rename_all = "SCREAMING_SNAKE_CASE",
+    )
 )]
 pub enum AccountType {
     /// An account with unleveraged cash assets only.
@@ -398,7 +405,7 @@ impl<T: AsRef<str>> From<T> for Symbol {
 }
 ```
 
-**Design note**: The `From` impl may panic on invalid input. This is intentional for API ergonomics—use `FromStr` / `.parse()` when error handling is needed. The `From` impl provides convenience for cases where the input is known to be valid.
+**Design note**: The `From` impl may panic on invalid input. This is intentional for API ergonomics. Use `FromStr` / `.parse()` when error handling is needed. The `From` impl provides convenience for cases where the input is known to be valid.
 
 **Constraint**: This pattern cannot be used for types that implement `AsRef<str>` themselves (e.g., string wrapper types), as it would conflict with the blanket `impl<T> From<T> for T`. For such types, provide separate `From<&str>` and `From<String>` impls instead.
 
@@ -716,9 +723,34 @@ pub fn py_do_something() -> PyResult<()> {
 }
 ```
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_pyo3_conventions.sh` pre-commit hook enforces the `py_` prefix for PyO3 functions.
 :::
+
+### PyO3 enum conventions
+
+Enums exposed to Python should use the following `pyclass` attributes:
+
+- `frozen`: enums are immutable value types.
+- `eq, eq_int`: enables equality with other enum instances and integer discriminants.
+- `rename_all = "SCREAMING_SNAKE_CASE"`: standardizes Python variant names.
+- `from_py_object`: enables conversion from Python objects.
+
+:::warning[Do not use the `hash` pyclass attribute with `eq_int` enums]
+PyO3's auto-generated `__hash__` uses Rust's `DefaultHasher`, which produces different values
+than Python's `hash()` on the equivalent integer. Since `eq_int` makes `MyEnum.VARIANT == 1`
+true, the hash contract (`a == b` implies `hash(a) == hash(b)`) would be violated. Instead,
+provide a manual `__hash__` returning the discriminant directly:
+:::
+
+```rust
+#[pymethods]
+impl MyEnum {
+    const fn __hash__(&self) -> isize {
+        *self as isize
+    }
+}
+```
 
 ### Testing conventions
 
@@ -726,7 +758,7 @@ The `check_pyo3_conventions.sh` pre-commit hook enforces the `py_` prefix for Py
 - Use `#[rstest]` attributes consistently, this standardization reduces cognitive overhead.
 - Do *not* use Arrange, Act, Assert separator comments in Rust tests.
 
-:::info Automated enforcement
+:::info[Automated enforcement]
 The `check_testing_conventions.sh` pre-commit hook enforces the use of `#[rstest]` over `#[test]`.
 :::
 
@@ -744,6 +776,58 @@ fn test_symbol_is_composite(#[case] input: &str, #[case] expected: bool) {
     assert_eq!(symbol.is_composite(), expected);
 }
 ```
+
+#### Property-based testing
+
+Use the `proptest` crate for property-based tests. Place these in a separate
+`property_tests` module (not inside `mod tests`) to keep deterministic unit
+tests separate from randomized property tests:
+
+```rust
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+    use rstest::rstest;
+
+    use super::*;
+
+    // Define strategies for generating test inputs
+    fn my_strategy() -> impl Strategy<Value = MyType> {
+        prop_oneof![
+            Just(MyType::VariantA),
+            Just(MyType::VariantB),
+        ]
+    }
+
+    fn value_strategy() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            -1000.0..1000.0,
+            Just(0.0),
+        ]
+    }
+
+    // Group all property tests inside the proptest! macro
+    proptest! {
+        #[rstest]
+        fn prop_construction_roundtrip(
+            value in value_strategy(),
+            variant in my_strategy()
+        ) {
+            // Test invariants that should hold for all generated inputs
+        }
+    }
+}
+```
+
+Conventions:
+
+- Name the module `property_tests`, separate from `mod tests`.
+- Import `proptest::prelude::*` and `rstest::rstest`.
+- Define strategy functions returning `impl Strategy<Value = T>`.
+- Combine value ranges with edge cases using `prop_oneof!`.
+- Filter invalid combinations with `prop_filter_map`.
+- Prefix test names with `prop_`.
+- Mark each test inside `proptest!` with `#[rstest]`.
 
 #### Test naming
 

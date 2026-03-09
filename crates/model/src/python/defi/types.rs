@@ -98,9 +98,7 @@ impl Chain {
     #[pyo3(name = "from_chain_name")]
     fn py_from_chain_name(chain_name: &str) -> PyResult<Self> {
         Self::from_chain_name(chain_name).cloned().ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "`chain_name` '{chain_name}' is not recognized",
-            ))
+            to_pyvalue_err(format!("`chain_name` '{chain_name}' is not recognized",))
         })
     }
 
@@ -156,8 +154,8 @@ impl Token {
 
     #[getter]
     #[pyo3(name = "chain")]
-    fn py_chain(&self) -> PyResult<Chain> {
-        Ok(self.chain.as_ref().clone())
+    fn py_chain(&self) -> Chain {
+        self.chain.as_ref().clone()
     }
 
     #[getter]
@@ -354,14 +352,14 @@ impl Pool {
 
     #[getter]
     #[pyo3(name = "chain")]
-    fn py_chain(&self) -> PyResult<Chain> {
-        Ok(self.chain.as_ref().clone())
+    fn py_chain(&self) -> Chain {
+        self.chain.as_ref().clone()
     }
 
     #[getter]
     #[pyo3(name = "dex")]
-    fn py_dex(&self) -> PyResult<Dex> {
-        Ok(self.dex.as_ref().clone())
+    fn py_dex(&self) -> Dex {
+        self.dex.as_ref().clone()
     }
 
     #[getter]

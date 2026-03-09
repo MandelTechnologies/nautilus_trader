@@ -18,7 +18,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use nautilus_core::python::IntoPyObjectNautilusExt;
+use nautilus_core::python::{IntoPyObjectNautilusExt, to_pyvalue_err};
 use pyo3::{basic::CompareOp, prelude::*};
 use rust_decimal::Decimal;
 
@@ -30,8 +30,8 @@ use crate::{
 #[pymethods]
 impl Bet {
     #[new]
-    fn py_new(price: Decimal, stake: Decimal, side: BetSide) -> PyResult<Self> {
-        Ok(Self::new(price, stake, side))
+    fn py_new(price: Decimal, stake: Decimal, side: BetSide) -> Self {
+        Self::new(price, stake, side)
     }
 
     fn __richcmp__(&self, other: &Self, op: CompareOp, py: Python<'_>) -> Py<PyAny> {
@@ -59,19 +59,15 @@ impl Bet {
     /// Create a bet from a stake or liability, depending on the bet side.
     #[staticmethod]
     #[pyo3(name = "from_stake_or_liability")]
-    fn py_from_stake_or_liability(
-        price: Decimal,
-        volume: Decimal,
-        side: BetSide,
-    ) -> PyResult<Self> {
-        Ok(Self::from_stake_or_liability(price, volume, side))
+    fn py_from_stake_or_liability(price: Decimal, volume: Decimal, side: BetSide) -> Self {
+        Self::from_stake_or_liability(price, volume, side)
     }
 
     /// Create a bet from a given stake.
     #[staticmethod]
     #[pyo3(name = "from_stake")]
-    fn py_from_stake(price: Decimal, stake: Decimal, side: BetSide) -> PyResult<Self> {
-        Ok(Self::from_stake(price, stake, side))
+    fn py_from_stake(price: Decimal, stake: Decimal, side: BetSide) -> Self {
+        Self::from_stake(price, stake, side)
     }
 
     /// Create a bet from a given liability.
@@ -79,8 +75,8 @@ impl Bet {
     /// Raises a ValueError if the bet side is not Lay.
     #[staticmethod]
     #[pyo3(name = "from_liability")]
-    fn py_from_liability(price: Decimal, liability: Decimal, side: BetSide) -> PyResult<Self> {
-        Ok(Self::from_liability(price, liability, side))
+    fn py_from_liability(price: Decimal, liability: Decimal, side: BetSide) -> Self {
+        Self::from_liability(price, liability, side)
     }
 
     /// Returns the bet's price.
@@ -250,7 +246,7 @@ pub fn py_probability_to_bet(
     volume: Decimal,
     side: OrderSide,
 ) -> PyResult<Bet> {
-    Ok(probability_to_bet(probability, volume, side.as_specified()))
+    probability_to_bet(probability, volume, side.as_specified()).map_err(to_pyvalue_err)
 }
 
 /// Creates an inverse `Bet` from a probability, volume, and side.
@@ -265,9 +261,5 @@ pub fn py_inverse_probability_to_bet(
     volume: Decimal,
     side: OrderSide,
 ) -> PyResult<Bet> {
-    Ok(inverse_probability_to_bet(
-        probability,
-        volume,
-        side.as_specified(),
-    ))
+    inverse_probability_to_bet(probability, volume, side.as_specified()).map_err(to_pyvalue_err)
 }

@@ -26,25 +26,32 @@ use std::{
 use bytes::Bytes;
 use indexmap::IndexMap;
 use log::LevelFilter;
-use nautilus_core::UnixNanos;
+use nautilus_core::{UnixNanos, python::to_pytype_err};
 use nautilus_model::{
     data::{
-        Bar, BarType, BookOrder, DataType, FundingRateUpdate, IndexPriceUpdate, InstrumentStatus,
-        MarkPriceUpdate, OrderBookDelta, OrderBookDeltas, QuoteTick, TradeTick,
-        close::InstrumentClose, stubs::*,
+        Bar, BarType, BookOrder, CustomData, DataType, FundingRateUpdate, HasTsInit,
+        IndexPriceUpdate, InstrumentStatus, MarkPriceUpdate, OrderBookDelta, OrderBookDeltas,
+        QuoteTick, TradeTick,
+        close::InstrumentClose,
+        custom::CustomDataTrait,
+        greeks::OptionGreekValues,
+        option_chain::{OptionChainSlice, OptionGreeks, StrikeRange},
+        stubs::*,
     },
     enums::{BookAction, BookType, OrderSide},
-    identifiers::{ClientId, TraderId, Venue},
+    identifiers::{ClientId, InstrumentId, OptionSeriesId, TraderId, Venue},
     instruments::{CurrencyPair, InstrumentAny, stubs::*},
     orderbook::OrderBook,
     stubs::TestDefault,
     types::{Price, Quantity},
 };
 use rstest::*;
+use rust_decimal_macros::dec;
+use serde::Serialize;
 use ustr::Ustr;
 #[cfg(feature = "defi")]
 use {
-    alloy_primitives::Address,
+    alloy_primitives::{Address, I256, U160},
     nautilus_model::defi::{
         Block, Blockchain, Dex, DexType, Pool, PoolIdentifier, PoolLiquidityUpdate, PoolSwap,
         Token, chain::chains, dex::AmmType,
@@ -63,8 +70,8 @@ use crate::{
     component::Component,
     logging::{logger::LogGuard, logging_is_initialized},
     messages::data::{
-        BarsResponse, BookResponse, CustomDataResponse, DataResponse, InstrumentResponse,
-        InstrumentsResponse, QuotesResponse, TradesResponse,
+        BarsResponse, BookResponse, CustomDataResponse, DataResponse, FundingRatesResponse,
+        InstrumentResponse, InstrumentsResponse, QuotesResponse, TradesResponse,
     },
     msgbus::{
         self, MessageBus, get_message_bus,
@@ -72,13 +79,67 @@ use crate::{
             MessagingSwitchboard, get_bars_topic, get_book_deltas_topic, get_book_snapshots_topic,
             get_custom_topic, get_funding_rate_topic, get_index_price_topic,
             get_instrument_close_topic, get_instrument_status_topic, get_instrument_topic,
-            get_instruments_topic, get_mark_price_topic, get_quotes_topic, get_trades_topic,
+            get_instruments_topic, get_mark_price_topic, get_option_chain_topic,
+            get_option_greeks_topic, get_quotes_topic, get_trades_topic,
         },
     },
     runner::{SyncDataCommandSender, set_data_cmd_sender},
     testing::init_logger_for_testing,
     timer::TimeEvent,
 };
+
+/// Minimal custom data type for actor tests.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct TestActorCustomData {
+    label: String,
+    ts_event: UnixNanos,
+    ts_init: UnixNanos,
+}
+
+impl HasTsInit for TestActorCustomData {
+    fn ts_init(&self) -> UnixNanos {
+        self.ts_init
+    }
+}
+
+impl CustomDataTrait for TestActorCustomData {
+    fn type_name(&self) -> &'static str {
+        "TestActorCustomData"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn ts_event(&self) -> UnixNanos {
+        self.ts_event
+    }
+    fn to_json(&self) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+    fn clone_arc(&self) -> Arc<dyn CustomDataTrait> {
+        Arc::new(self.clone())
+    }
+    fn eq_arc(&self, other: &dyn CustomDataTrait) -> bool {
+        if let Some(other) = other.as_any().downcast_ref::<Self>() {
+            self == other
+        } else {
+            false
+        }
+    }
+    #[cfg(feature = "python")]
+    fn to_pyobject(&self, _py: pyo3::Python<'_>) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
+        Err(to_pytype_err(
+            "to_pyobject not implemented for TestActorCustomData",
+        ))
+    }
+}
+
+pub(crate) fn make_test_custom_data(label: &str) -> CustomData {
+    CustomData::from_arc(Arc::new(TestActorCustomData {
+        label: label.to_string(),
+        ts_event: UnixNanos::default(),
+        ts_init: UnixNanos::default(),
+    }))
+}
 
 #[derive(Debug)]
 struct TestDataActor {
@@ -96,6 +157,8 @@ struct TestDataActor {
     pub received_funding_rates: Vec<FundingRateUpdate>,
     pub received_status: Vec<InstrumentStatus>,
     pub received_closes: Vec<InstrumentClose>,
+    pub received_greeks: Vec<OptionGreeks>,
+    pub received_chain_slices: Vec<OptionChainSlice>,
     #[cfg(feature = "defi")]
     pub received_blocks: Vec<Block>,
     #[cfg(feature = "defi")]
@@ -136,8 +199,8 @@ impl DataActor for TestDataActor {
         Ok(())
     }
 
-    fn on_data(&mut self, data: &dyn Any) -> anyhow::Result<()> {
-        self.received_data.push(format!("{data:?}"));
+    fn on_data(&mut self, data: &CustomData) -> anyhow::Result<()> {
+        self.received_data.push(data.data_type.to_string());
         Ok(())
     }
 
@@ -178,6 +241,14 @@ impl DataActor for TestDataActor {
         Ok(())
     }
 
+    fn on_historical_funding_rates(
+        &mut self,
+        funding_rates: &[FundingRateUpdate],
+    ) -> anyhow::Result<()> {
+        self.received_funding_rates.extend(funding_rates);
+        Ok(())
+    }
+
     fn on_historical_bars(&mut self, bars: &[Bar]) -> anyhow::Result<()> {
         // Push to common received vec
         self.received_bars.extend(bars);
@@ -211,6 +282,16 @@ impl DataActor for TestDataActor {
 
     fn on_instrument_close(&mut self, close: &InstrumentClose) -> anyhow::Result<()> {
         self.received_closes.push(*close);
+        Ok(())
+    }
+
+    fn on_option_greeks(&mut self, greeks: &OptionGreeks) -> anyhow::Result<()> {
+        self.received_greeks.push(*greeks);
+        Ok(())
+    }
+
+    fn on_option_chain(&mut self, slice: &OptionChainSlice) -> anyhow::Result<()> {
+        self.received_chain_slices.push(slice.clone());
         Ok(())
     }
 
@@ -257,6 +338,8 @@ impl TestDataActor {
             received_funding_rates: Vec::new(),
             received_status: Vec::new(),
             received_closes: Vec::new(),
+            received_greeks: Vec::new(),
+            received_chain_slices: Vec::new(),
             #[cfg(feature = "defi")]
             received_blocks: Vec::new(),
             #[cfg(feature = "defi")]
@@ -269,7 +352,7 @@ impl TestDataActor {
     }
 
     #[allow(dead_code)]
-    pub fn custom_function(&mut self) {}
+    pub fn custom_function(&self) {}
 }
 
 #[fixture]
@@ -332,8 +415,7 @@ fn register_data_actor(
     trader_id: TraderId,
 ) -> Ustr {
     // Set up sync data command sender for tests
-    let sender = SyncDataCommandSender;
-    set_data_cmd_sender(Arc::new(sender));
+    set_data_cmd_sender(Arc::new(SyncDataCommandSender));
 
     let config = DataActorConfig::default();
     // Ensure clean message bus state for this actor's subscriptions
@@ -407,13 +489,13 @@ fn test_subscribe_and_receive_custom_data(
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
 
-    let data_type = DataType::new(stringify!(String), None);
+    let data_type = DataType::new(TestActorCustomData::type_name_static(), None, None);
     actor.subscribe_data(data_type.clone(), None, None);
 
     let topic = get_custom_topic(&data_type);
-    let data = String::from("CustomData-01");
+    let data = make_test_custom_data("CustomData-01");
     msgbus::publish_any(topic, &data);
-    let data = String::from("CustomData-02");
+    let data = make_test_custom_data("CustomData-02");
     msgbus::publish_any(topic, &data);
 
     assert_eq!(actor.received_data.len(), 2);
@@ -429,21 +511,21 @@ fn test_unsubscribe_custom_data(
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
 
-    let data_type = DataType::new(stringify!(String), None);
+    let data_type = DataType::new(TestActorCustomData::type_name_static(), None, None);
     actor.subscribe_data(data_type.clone(), None, None);
 
     let topic = get_custom_topic(&data_type);
-    let data = String::from("CustomData-01");
+    let data = make_test_custom_data("CustomData-01");
     msgbus::publish_any(topic, &data);
-    let data = String::from("CustomData-02");
+    let data = make_test_custom_data("CustomData-02");
     msgbus::publish_any(topic, &data);
 
     actor.unsubscribe_data(data_type, None, None);
 
     // Publish more data
-    let data = String::from("CustomData-03");
+    let data = make_test_custom_data("CustomData-03");
     msgbus::publish_any(topic, &data);
-    let data = String::from("CustomData-04");
+    let data = make_test_custom_data("CustomData-04");
     msgbus::publish_any(topic, &data);
 
     // Actor should not receive new data
@@ -763,7 +845,7 @@ fn test_request_instrument(
         .unwrap();
 
     let client_id = ClientId::new("TestClient");
-    let instrument = InstrumentAny::CurrencyPair(audusd_sim);
+    let instrument = InstrumentAny::CurrencyPair(audusd_sim.clone());
     let data = instrument.clone();
     let ts_init = UnixNanos::default();
     let response = InstrumentResponse::new(
@@ -897,6 +979,49 @@ fn test_request_trades(
 
     assert_eq!(actor.received_trades.len(), 1);
     assert_eq!(actor.received_trades[0], trade);
+}
+
+#[rstest]
+fn test_request_funding_rates(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+    audusd_sim: CurrencyPair,
+) {
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+
+    let request_id = actor
+        .request_funding_rates(audusd_sim.id, None, None, None, None, None)
+        .unwrap();
+
+    let client_id = ClientId::new("TestClient");
+    let funding_rate = FundingRateUpdate::new(
+        audusd_sim.id,
+        dec!(0.0001),
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    );
+    let data = vec![funding_rate];
+    let ts_init = UnixNanos::default();
+    let response = FundingRatesResponse::new(
+        request_id,
+        client_id,
+        audusd_sim.id,
+        data,
+        Some(UnixNanos::from(1_695_000_000_000_000_000)),
+        Some(UnixNanos::from(1_699_000_000_000_000_000)),
+        ts_init,
+        None,
+    );
+
+    let data_response = DataResponse::FundingRates(response);
+    msgbus::send_response(&request_id, data_response);
+
+    assert_eq!(actor.received_funding_rates.len(), 1);
+    assert_eq!(actor.received_funding_rates[0], funding_rate);
 }
 
 #[rstest]
@@ -1128,6 +1253,82 @@ fn test_subscribe_and_receive_instrument_close(
 }
 
 #[rstest]
+fn test_subscribe_and_receive_option_greeks(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+) {
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+
+    let instrument_id = InstrumentId::from("AAPL-20250321-200C.OPRA");
+    actor.subscribe_option_greeks(instrument_id, None, None);
+
+    let greeks = OptionGreeks {
+        instrument_id,
+        greeks: OptionGreekValues {
+            delta: 0.55,
+            gamma: 0.03,
+            vega: 0.12,
+            theta: -0.05,
+            rho: 0.01,
+        },
+        mark_iv: Some(0.25),
+        bid_iv: Some(0.24),
+        ask_iv: Some(0.26),
+        underlying_price: Some(195.0),
+        open_interest: Some(1000.0),
+        ts_event: UnixNanos::default(),
+        ts_init: UnixNanos::default(),
+    };
+
+    let topic = get_option_greeks_topic(instrument_id);
+    msgbus::publish_option_greeks(topic, &greeks);
+
+    assert_eq!(actor.received_greeks.len(), 1);
+    assert_eq!(actor.received_greeks[0], greeks);
+}
+
+#[rstest]
+fn test_subscribe_and_receive_option_chain(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+) {
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+
+    let series_id = OptionSeriesId::new(
+        Venue::from("OPRA"),
+        Ustr::from("AAPL"),
+        Ustr::from("USD"),
+        UnixNanos::from(1_711_036_800_000_000_000),
+    );
+    let strike_range = StrikeRange::AtmRelative {
+        strikes_above: 5,
+        strikes_below: 5,
+    };
+    actor.subscribe_option_chain(series_id, strike_range, None, None);
+
+    let slice = OptionChainSlice {
+        series_id,
+        atm_strike: Some(Price::from("200.00")),
+        calls: Default::default(),
+        puts: Default::default(),
+        ts_event: UnixNanos::default(),
+        ts_init: UnixNanos::default(),
+    };
+
+    let topic = get_option_chain_topic(series_id);
+    msgbus::publish_option_chain(topic, &slice);
+
+    assert_eq!(actor.received_chain_slices.len(), 1);
+    assert_eq!(actor.received_chain_slices[0].series_id, series_id);
+}
+
+#[rstest]
 fn test_unsubscribe_instruments(
     clock: Rc<RefCell<TestClock>>,
     cache: Rc<RefCell<Cache>>,
@@ -1143,9 +1344,9 @@ fn test_unsubscribe_instruments(
     actor.subscribe_instruments(venue, None, None);
 
     let topic = get_instruments_topic(venue);
-    let inst1 = InstrumentAny::CurrencyPair(audusd_sim);
+    let inst1 = InstrumentAny::CurrencyPair(audusd_sim.clone());
     msgbus::publish_any(topic, &inst1);
-    let inst2 = InstrumentAny::CurrencyPair(gbpusd_sim);
+    let inst2 = InstrumentAny::CurrencyPair(gbpusd_sim.clone());
     msgbus::publish_any(topic, &inst2);
 
     assert_eq!(actor.received_instruments.len(), 2);
@@ -1171,14 +1372,13 @@ fn test_unsubscribe_instrument(
     let actor_id = register_data_actor(clock, cache, trader_id);
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
-
     actor.subscribe_instrument(audusd_sim.id, None, None);
 
     let topic = get_instrument_topic(audusd_sim.id);
-    let inst1 = InstrumentAny::CurrencyPair(audusd_sim);
-    msgbus::publish_any(topic, &inst1);
-    let inst2 = InstrumentAny::CurrencyPair(gbpusd_sim);
-    msgbus::publish_any(topic, &inst2);
+    let inst3 = InstrumentAny::CurrencyPair(audusd_sim.clone());
+    msgbus::publish_any(topic, &inst3);
+    let inst4 = InstrumentAny::CurrencyPair(gbpusd_sim.clone());
+    msgbus::publish_any(topic, &inst4);
 
     assert_eq!(actor.received_instruments.len(), 2);
 
@@ -1374,6 +1574,92 @@ fn test_unsubscribe_instrument_close(
 }
 
 #[rstest]
+fn test_unsubscribe_option_greeks(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+) {
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+
+    let instrument_id = InstrumentId::from("AAPL-20250321-200C.OPRA");
+    actor.subscribe_option_greeks(instrument_id, None, None);
+
+    let greeks = OptionGreeks {
+        instrument_id,
+        greeks: OptionGreekValues {
+            delta: 0.55,
+            gamma: 0.03,
+            vega: 0.12,
+            theta: -0.05,
+            rho: 0.01,
+        },
+        mark_iv: Some(0.25),
+        bid_iv: None,
+        ask_iv: None,
+        underlying_price: None,
+        open_interest: None,
+        ts_event: UnixNanos::default(),
+        ts_init: UnixNanos::default(),
+    };
+
+    let topic = get_option_greeks_topic(instrument_id);
+    msgbus::publish_option_greeks(topic, &greeks);
+
+    assert_eq!(actor.received_greeks.len(), 1);
+
+    actor.unsubscribe_option_greeks(instrument_id, None, None);
+
+    msgbus::publish_option_greeks(topic, &greeks);
+
+    assert_eq!(actor.received_greeks.len(), 1);
+}
+
+#[rstest]
+fn test_unsubscribe_option_chain(
+    clock: Rc<RefCell<TestClock>>,
+    cache: Rc<RefCell<Cache>>,
+    trader_id: TraderId,
+) {
+    let actor_id = register_data_actor(clock, cache, trader_id);
+    let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
+    actor.start().unwrap();
+
+    let series_id = OptionSeriesId::new(
+        Venue::from("OPRA"),
+        Ustr::from("AAPL"),
+        Ustr::from("USD"),
+        UnixNanos::from(1_711_036_800_000_000_000),
+    );
+    let strike_range = StrikeRange::AtmRelative {
+        strikes_above: 5,
+        strikes_below: 5,
+    };
+    actor.subscribe_option_chain(series_id, strike_range, None, None);
+
+    let slice = OptionChainSlice {
+        series_id,
+        atm_strike: None,
+        calls: Default::default(),
+        puts: Default::default(),
+        ts_event: UnixNanos::default(),
+        ts_init: UnixNanos::default(),
+    };
+
+    let topic = get_option_chain_topic(series_id);
+    msgbus::publish_option_chain(topic, &slice);
+
+    assert_eq!(actor.received_chain_slices.len(), 1);
+
+    actor.unsubscribe_option_chain(series_id, None);
+
+    msgbus::publish_option_chain(topic, &slice);
+
+    assert_eq!(actor.received_chain_slices.len(), 1);
+}
+
+#[rstest]
 fn test_request_book_snapshot(
     clock: Rc<RefCell<TestClock>>,
     cache: Rc<RefCell<Cache>>,
@@ -1426,7 +1712,7 @@ fn test_request_data(
     actor.start().unwrap();
 
     // Request custom data
-    let data_type = DataType::new("TestData", None);
+    let data_type = DataType::new("TestData", None, None);
     let client_id = ClientId::new("TestClient");
     let request_id = actor
         .request_data(data_type.clone(), client_id, None, None, None, None)
@@ -1457,10 +1743,6 @@ fn test_request_data(
     assert_eq!(actor.received_data.len(), 1);
     assert_eq!(actor.received_data[0], "Any { .. }");
 }
-
-// ------------------------------------------------------------------------------------------------
-// DeFi Tests
-// ------------------------------------------------------------------------------------------------
 
 #[cfg(feature = "defi")]
 #[rstest]
@@ -1610,12 +1892,6 @@ fn test_subscribe_and_receive_pool_swaps(
     cache: Rc<RefCell<Cache>>,
     trader_id: TraderId,
 ) {
-    use alloy_primitives::{I256, U160};
-    use nautilus_model::{
-        defi::{AmmType, Dex, DexType, chain::chains},
-        identifiers::InstrumentId,
-    };
-
     let actor_id = register_data_actor(clock, cache, trader_id);
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
@@ -1674,9 +1950,6 @@ fn test_unsubscribe_pool_swaps(
     cache: Rc<RefCell<Cache>>,
     trader_id: TraderId,
 ) {
-    use alloy_primitives::{I256, U160};
-    use nautilus_model::defi::{Dex, DexType, Pool, chain::chains, dex::AmmType};
-
     let actor_id = register_data_actor(clock, cache, trader_id);
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
@@ -1762,13 +2035,13 @@ fn test_duplicate_subscribe_custom_data(
     actor.start().unwrap();
 
     // Subscribe twice to the same DataType
-    let data_type = DataType::new(stringify!(String), None);
+    let data_type = DataType::new(TestActorCustomData::type_name_static(), None, None);
     actor.subscribe_data(data_type.clone(), None, None);
     actor.subscribe_data(data_type.clone(), None, None);
 
     // Publish a single message
     let topic = get_custom_topic(&data_type);
-    let payload = String::from("Custom-XYZ");
+    let payload = make_test_custom_data("Custom-XYZ");
     msgbus::publish_any(topic, &payload);
 
     // Only a single handler should be active despite duplicate subscribe attempt
@@ -1785,21 +2058,17 @@ fn test_unsubscribe_before_subscribe_custom_data(
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
 
-    let data_type = DataType::new(stringify!(String), None);
+    let data_type = DataType::new(TestActorCustomData::type_name_static(), None, None);
 
     // Unsubscribe without prior subscription: should not panic and no data received
     actor.unsubscribe_data(data_type.clone(), None, None);
 
     let topic = get_custom_topic(&data_type);
-    let payload = String::from("Custom-ABC");
+    let payload = make_test_custom_data("Custom-ABC");
     msgbus::publish_any(topic, &payload);
 
     assert!(actor.received_data.is_empty());
 }
-
-// ---------------------------------------------------------------------------------------------
-// save / load round-trip
-// ---------------------------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct SaveLoadActor {

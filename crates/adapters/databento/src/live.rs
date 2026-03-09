@@ -29,7 +29,7 @@ use nautilus_model::{
     data::{Data, InstrumentStatus, OrderBookDelta, OrderBookDeltas, OrderBookDeltas_API},
     enums::RecordFlag,
     identifiers::{InstrumentId, Symbol, Venue},
-    instruments::InstrumentAny,
+    instruments::{Instrument, InstrumentAny},
 };
 use nautilus_network::backoff::ExponentialBackoff;
 use tokio::{
@@ -127,9 +127,8 @@ impl DatabentoFeedHandler {
             Duration::from_secs(600)
         };
 
-        // SAFETY: Hardcoded parameters are all valid
-        let backoff =
-            ExponentialBackoff::new(Duration::from_secs(1), delay_max, 2.0, 1000, false).unwrap();
+        let backoff = ExponentialBackoff::new(Duration::from_secs(1), delay_max, 2.0, 1000, false)
+            .expect("hardcoded backoff parameters are valid");
 
         Self {
             key,
@@ -177,7 +176,6 @@ impl DatabentoFeedHandler {
                         reconnect_start = None;
                         attempt = 0;
                         self.backoff.reset();
-                        continue;
                     } else {
                         log::info!("Session ended normally");
                         break Ok(());
@@ -250,6 +248,7 @@ impl DatabentoFeedHandler {
         let clock = get_atomic_clock_realtime();
         let mut symbol_map = PitSymbolMap::new();
         let mut instrument_id_map: AHashMap<u32, InstrumentId> = AHashMap::new();
+        let mut price_precision_map: AHashMap<u32, u8> = AHashMap::new();
 
         let mut buffering_start = None;
         let mut buffered_deltas: AHashMap<InstrumentId, Vec<OrderBookDelta>> = AHashMap::new();
@@ -282,6 +281,7 @@ impl DatabentoFeedHandler {
 
         // Process any commands buffered during reconnection backoff
         let mut start_buffered = false;
+
         if !self.buffered_commands.is_empty() {
             log::info!(
                 "Processing {} buffered commands",
@@ -367,6 +367,7 @@ impl DatabentoFeedHandler {
                         }
                         LiveCommand::Close => {
                             self.msg_tx.send(LiveMessage::Close).await?;
+
                             if running {
                                 client.close().await?;
                                 log::debug!("Closed inner client");
@@ -450,6 +451,7 @@ impl DatabentoFeedHandler {
                         ts_init,
                     )?
                 };
+                price_precision_map.insert(msg.hd.instrument_id, data.price_precision());
                 self.send_msg(LiveMessage::Instrument(data)).await;
             } else if let Some(msg) = record.get::<dbn::StatusMsg>() {
                 let data = {
@@ -475,6 +477,7 @@ impl DatabentoFeedHandler {
                         &self.publisher_venue_map,
                         &sym_map,
                         &mut instrument_id_map,
+                        &price_precision_map,
                         ts_init,
                     )?
                 };
@@ -489,6 +492,7 @@ impl DatabentoFeedHandler {
                         &self.publisher_venue_map,
                         &sym_map,
                         &mut instrument_id_map,
+                        &price_precision_map,
                         ts_init,
                     )?
                 };
@@ -503,6 +507,7 @@ impl DatabentoFeedHandler {
                         &self.publisher_venue_map,
                         &sym_map,
                         &mut instrument_id_map,
+                        &price_precision_map,
                         ts_init,
                         &initialized_books,
                         self.bars_timestamp_on_close,
@@ -552,7 +557,7 @@ impl DatabentoFeedHandler {
                             buffering_start = None;
                         }
 
-                        // SAFETY: We can guarantee a deltas vec exists
+                        // We can guarantee a deltas vec exists
                         let buffer =
                             buffered_deltas
                                 .remove(&delta.instrument_id)
@@ -580,7 +585,7 @@ impl DatabentoFeedHandler {
     }
 
     /// Sends a message to the message processing task.
-    async fn send_msg(&mut self, msg: LiveMessage) {
+    async fn send_msg(&self, msg: LiveMessage) {
         log::trace!("Sending {msg:?}");
         match self.msg_tx.send(msg).await {
             Ok(()) => {}
@@ -811,6 +816,7 @@ fn handle_status_msg(
     decode_status_msg(msg, instrument_id, Some(ts_init))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_imbalance_msg(
     msg: &dbn::ImbalanceMsg,
     record: &dbn::RecordRef,
@@ -818,6 +824,7 @@ fn handle_imbalance_msg(
     publisher_venue_map: &IndexMap<PublisherId, Venue>,
     symbol_venue_map: &AHashMap<Symbol, Venue>,
     instrument_id_map: &mut AHashMap<u32, InstrumentId>,
+    price_precision_map: &AHashMap<u32, u8>,
     ts_init: UnixNanos,
 ) -> anyhow::Result<DatabentoImbalance> {
     let instrument_id = update_instrument_id_map(
@@ -828,11 +835,15 @@ fn handle_imbalance_msg(
         instrument_id_map,
     )?;
 
-    let price_precision = 2; // Hardcoded for now
+    let price_precision = price_precision_map
+        .get(&msg.hd.instrument_id)
+        .copied()
+        .unwrap_or(2);
 
     decode_imbalance_msg(msg, instrument_id, price_precision, Some(ts_init))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_statistics_msg(
     msg: &dbn::StatMsg,
     record: &dbn::RecordRef,
@@ -840,6 +851,7 @@ fn handle_statistics_msg(
     publisher_venue_map: &IndexMap<PublisherId, Venue>,
     symbol_venue_map: &AHashMap<Symbol, Venue>,
     instrument_id_map: &mut AHashMap<u32, InstrumentId>,
+    price_precision_map: &AHashMap<u32, u8>,
     ts_init: UnixNanos,
 ) -> anyhow::Result<DatabentoStatistics> {
     let instrument_id = update_instrument_id_map(
@@ -850,7 +862,10 @@ fn handle_statistics_msg(
         instrument_id_map,
     )?;
 
-    let price_precision = 2; // Hardcoded for now
+    let price_precision = price_precision_map
+        .get(&msg.hd.instrument_id)
+        .copied()
+        .unwrap_or(2);
 
     decode_statistics_msg(msg, instrument_id, price_precision, Some(ts_init))
 }
@@ -862,6 +877,7 @@ fn handle_record(
     publisher_venue_map: &IndexMap<PublisherId, Venue>,
     symbol_venue_map: &AHashMap<Symbol, Venue>,
     instrument_id_map: &mut AHashMap<u32, InstrumentId>,
+    price_precision_map: &AHashMap<u32, u8>,
     ts_init: UnixNanos,
     initialized_books: &HashSet<InstrumentId>,
     bars_timestamp_on_close: bool,
@@ -874,7 +890,10 @@ fn handle_record(
         instrument_id_map,
     )?;
 
-    let price_precision = 2; // Hardcoded for now
+    let price_precision = price_precision_map
+        .get(&record.header().instrument_id)
+        .copied()
+        .unwrap_or(2);
 
     // For MBP-1 and quote-based schemas, always include trades since they're integral to the data
     // For MBO, only include trades after the book is initialized to maintain consistency

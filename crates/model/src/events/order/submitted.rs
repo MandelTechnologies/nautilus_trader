@@ -42,7 +42,7 @@ use crate::{
 #[cfg_attr(any(test, feature = "stubs"), builder(default))]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct OrderSubmitted {
     /// The trader ID associated with the event.
@@ -126,7 +126,7 @@ impl OrderEvent for OrderSubmitted {
         self.event_id
     }
 
-    fn kind(&self) -> &str {
+    fn type_name(&self) -> &'static str {
         stringify!(OrderSubmitted)
     }
 
@@ -310,7 +310,7 @@ mod tests {
             InstrumentId::from("EURUSD.SIM"),
             ClientOrderId::from("O-19700101-000000-001-001-1"),
             AccountId::from("SIM-001"),
-            Default::default(),
+            UUID4::default(),
             UnixNanos::from(1_000_000_000),
             UnixNanos::from(2_000_000_000),
         )
@@ -395,7 +395,7 @@ mod tests {
         let order_submitted = create_test_order_submitted();
 
         assert_eq!(order_submitted.id(), order_submitted.event_id);
-        assert_eq!(order_submitted.kind(), "OrderSubmitted");
+        assert_eq!(order_submitted.type_name(), "OrderSubmitted");
         assert_eq!(order_submitted.order_type(), None);
         assert_eq!(order_submitted.order_side(), None);
         assert_eq!(order_submitted.trader_id(), TraderId::from("TRADER-001"));

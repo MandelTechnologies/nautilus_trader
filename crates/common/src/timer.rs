@@ -33,10 +33,9 @@ use ustr::Ustr;
 
 /// Creates a valid nanoseconds interval that is guaranteed to be positive.
 ///
-/// # Panics
-///
-/// Panics if `interval_ns` is zero.
+/// Coerces zero to one to ensure a valid `NonZeroU64`.
 #[must_use]
+#[allow(clippy::missing_panics_doc)] // Value is coerced to >= 1
 pub fn create_valid_interval(interval_ns: u64) -> NonZeroU64 {
     NonZeroU64::new(std::cmp::max(interval_ns, 1)).expect("`interval_ns` must be positive")
 }
@@ -45,7 +44,7 @@ pub fn create_valid_interval(interval_ns: u64) -> NonZeroU64 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.common", from_py_object)
 )]
 /// Represents a time event occurring at the event timestamp.
 ///
@@ -64,10 +63,6 @@ pub struct TimeEvent {
 
 impl TimeEvent {
     /// Creates a new [`TimeEvent`] instance.
-    ///
-    /// # Safety
-    ///
-    /// Assumes `name` is a valid string.
     #[must_use]
     pub const fn new(name: Ustr, event_id: UUID4, ts_event: UnixNanos, ts_init: UnixNanos) -> Self {
         Self {
@@ -292,10 +287,6 @@ impl TimeEventHandler {
     }
 
     /// Executes the handler by invoking its callback for the associated event.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the underlying callback invocation fails (e.g., a Python callback raises an exception).
     pub fn run(self) {
         let Self { event, callback } = self;
         callback.call(event);
@@ -322,6 +313,11 @@ impl Ord for TimeEventHandler {
     }
 }
 
+pub(crate) trait Timer {
+    fn is_expired(&self) -> bool;
+    fn cancel(&mut self);
+}
+
 /// A test timer for user with a `TestClock`.
 ///
 /// `TestTimer` simulates time progression in a controlled environment,
@@ -330,7 +326,7 @@ impl Ord for TimeEventHandler {
 /// # Threading
 ///
 /// The timer mutates its internal state and should only be used from its owning thread.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TestTimer {
     /// The name of the timer.
     pub name: Ustr,
@@ -421,6 +417,16 @@ impl TestTimer {
     ///
     /// Used to stop the timer before its scheduled stop time.
     pub const fn cancel(&mut self) {
+        self.is_expired = true;
+    }
+}
+
+impl Timer for TestTimer {
+    fn is_expired(&self) -> bool {
+        self.is_expired
+    }
+
+    fn cancel(&mut self) {
         self.is_expired = true;
     }
 }
@@ -741,7 +747,7 @@ mod tests {
                     && timer.next_time_ns().as_u64() > stop_time_ns
                 {
                     // The timer should expire on the next advance/iteration
-                    let mut test_timer = timer;
+                    let mut test_timer = timer.clone();
                     let events: Vec<TimeEvent> = test_timer
                         .advance(UnixNanos::from(stop_time_ns + 1))
                         .collect();

@@ -20,7 +20,7 @@
 //! and system control messages.
 
 use nautilus_model::{
-    data::{Data, FundingRateUpdate},
+    data::{Data, FundingRateUpdate, InstrumentStatus, option_chain::OptionGreeks},
     events::{AccountState, OrderEventAny},
     instruments::InstrumentAny,
 };
@@ -45,6 +45,8 @@ pub enum DataEvent {
     Data(Data),
     Instrument(InstrumentAny), // TODO: Eventually this can be `Data` once Cython is gone
     FundingRate(FundingRateUpdate),
+    InstrumentStatus(InstrumentStatus),
+    OptionGreeks(OptionGreeks),
     // nautilus-import-ok: conditional compilation import
     #[cfg(feature = "defi")]
     DeFi(nautilus_model::defi::data::DefiData),

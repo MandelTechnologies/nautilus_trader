@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-//! Core foundational types and utilities for [NautilusTrader](http://nautilustrader.io).
+//! Core foundational types and utilities for [NautilusTrader](https://nautilustrader.io).
 //!
 //! The `nautilus-core` crate is designed to be lightweight, efficient, and to provide zero-cost abstractions
 //! wherever possible. It supplies the essential building blocks used across the NautilusTrader
@@ -29,7 +29,7 @@
 //!
 //! # Platform
 //!
-//! [NautilusTrader](http://nautilustrader.io) is an open-source, high-performance, production-grade
+//! [NautilusTrader](https://nautilustrader.io) is an open-source, high-performance, production-grade
 //! algorithmic trading platform, providing quantitative traders with the ability to backtest
 //! portfolios of automated trading strategies on historical data with an event-driven engine,
 //! and also deploy those same strategies live, with no code changes.
@@ -66,6 +66,7 @@ pub mod formatting;
 pub mod math;
 pub mod message;
 pub mod nanos;
+pub mod params;
 pub mod stack_str;
 
 pub mod parsing;
@@ -86,10 +87,12 @@ pub mod python;
 compile_error!("Unsupported platform: Nautilus supports only Linux, macOS, and Windows");
 
 // Re-exports
+#[cfg(feature = "python")]
+pub use crate::params::from_pydict;
 pub use crate::{
     drop::CleanDrop,
-    message::Params,
     nanos::UnixNanos,
+    params::Params,
     shared::{SharedCell, WeakCell},
     stack_str::{STACKSTR_CAPACITY, StackStr},
     time::AtomicTime,

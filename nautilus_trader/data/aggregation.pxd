@@ -26,6 +26,8 @@ from nautilus_trader.common.component cimport TimeEvent
 from nautilus_trader.common.data_topics cimport TopicCache
 from nautilus_trader.core.rust.model cimport AggressorSide
 from nautilus_trader.core.rust.model cimport InstrumentClass
+from nautilus_trader.core.rust.model cimport PriceRaw
+from nautilus_trader.core.rust.model cimport QuantityRaw
 from nautilus_trader.model.data cimport Bar
 from nautilus_trader.model.data cimport BarType
 from nautilus_trader.model.data cimport QuoteTick
@@ -85,6 +87,7 @@ cdef class BarAggregator:
     cpdef void handle_bar(self, Bar bar)
     cdef void _apply_update(self, Price price, Quantity size, uint64_t ts_init)
     cdef void _apply_update_bar(self, Bar bar, Quantity volume, uint64_t ts_init)
+    cdef bint _is_below_min_size(self, double size, int precision)
     cdef void _build_now_and_send(self)
     cdef void _build_and_send(self, uint64_t ts_event, uint64_t ts_init)
 
@@ -108,15 +111,15 @@ cdef class VolumeBarAggregator(BarAggregator):
 
 
 cdef class VolumeImbalanceBarAggregator(BarAggregator):
-    cdef long long _imbalance_raw
-    cdef long long _raw_step
+    cdef PriceRaw _imbalance_raw
+    cdef PriceRaw _raw_step
 
 
 cdef class VolumeRunsBarAggregator(BarAggregator):
     cdef AggressorSide _current_run_side
     cdef bint _has_run_side
-    cdef long long _run_volume_raw
-    cdef long long _raw_step
+    cdef QuantityRaw _run_volume_raw
+    cdef QuantityRaw _raw_step
 
 
 cdef class ValueBarAggregator(BarAggregator):

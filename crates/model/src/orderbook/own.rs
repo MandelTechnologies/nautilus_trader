@@ -29,7 +29,7 @@ use indexmap::IndexMap;
 use nautilus_core::{UnixNanos, time::nanos_since_unix_epoch};
 use rust_decimal::Decimal;
 
-use super::display::pprint_own_book;
+use super::{BookViewError, display::pprint_own_book};
 use crate::{
     enums::{OrderSideSpecified, OrderStatus, OrderType, TimeInForce},
     identifiers::{ClientOrderId, InstrumentId, TraderId, VenueOrderId},
@@ -46,7 +46,7 @@ use crate::{
 #[derive(Clone, Copy, Eq)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct OwnBookOrder {
     /// The trader ID.
@@ -137,8 +137,9 @@ impl OwnBookOrder {
 
 impl Ord for OwnBookOrder {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Compare solely based on ts_init.
-        self.ts_init.cmp(&other.ts_init)
+        self.ts_init
+            .cmp(&other.ts_init)
+            .then_with(|| self.client_order_id.cmp(&other.client_order_id))
     }
 }
 
@@ -151,8 +152,6 @@ impl PartialOrd for OwnBookOrder {
 impl PartialEq for OwnBookOrder {
     fn eq(&self, other: &Self) -> bool {
         self.client_order_id == other.client_order_id
-            && self.status == other.status
-            && self.ts_last == other.ts_last
     }
 }
 
@@ -207,10 +206,10 @@ impl Display for OwnBookOrder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.model", from_py_object)
 )]
 pub struct OwnOrderBook {
     /// The instrument ID for the order book.
@@ -436,6 +435,40 @@ impl OwnOrderBook {
         }
     }
 
+    /// Returns a new own book containing this books orders plus parity-transformed opposite orders.
+    ///
+    /// Opposite asks are transformed into bids with price `1 - price`.
+    /// Opposite bids are transformed into asks with price `1 - price`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BookViewError::OppositeInstrumentMatch`] if `self` and `opposite` have the
+    /// same instrument ID.
+    pub fn combined_with_opposite(&self, opposite: &Self) -> Result<Self, BookViewError> {
+        if self.instrument_id == opposite.instrument_id {
+            return Err(BookViewError::OppositeInstrumentMatch(
+                self.instrument_id,
+                opposite.instrument_id,
+            ));
+        }
+
+        let mut combined = self.clone();
+
+        for level in opposite.asks() {
+            for order in level.iter() {
+                combined.add(transform_opposite_order(*order, OrderSideSpecified::Buy));
+            }
+        }
+
+        for level in opposite.bids() {
+            for order in level.iter() {
+                combined.add(transform_opposite_order(*order, OrderSideSpecified::Sell));
+            }
+        }
+
+        Ok(combined)
+    }
+
     /// Return a formatted string representation of the order book.
     #[must_use]
     pub fn pprint(&self, num_levels: usize, group_size: Option<Decimal>) -> String {
@@ -483,6 +516,27 @@ fn log_audit_error(client_order_id: &ClientOrderId) {
     log::error!(
         "Audit error - {client_order_id} cached order already closed, deleting from own book"
     );
+}
+
+fn transform_opposite_order(order: OwnBookOrder, side: OrderSideSpecified) -> OwnBookOrder {
+    let parity_price = Price::from_decimal(Decimal::ONE - order.price.as_decimal())
+        .expect("Invalid parity transformed price for OwnOrderBook::combined_with_opposite");
+
+    OwnBookOrder::new(
+        order.trader_id,
+        order.client_order_id,
+        order.venue_order_id,
+        side,
+        parity_price,
+        order.size,
+        order.order_type,
+        order.time_in_force,
+        order.status,
+        order.ts_last,
+        order.ts_accepted,
+        order.ts_submitted,
+        order.ts_init,
+    )
 }
 
 /// Filters orders by status and accepted timestamp.
@@ -573,6 +627,7 @@ where
 }
 
 /// Represents a ladder of price levels for one side of an order book.
+#[derive(Clone)]
 pub(crate) struct OwnBookLadder {
     pub side: OrderSideSpecified,
     pub levels: BTreeMap<BookPrice, OwnBookLevel>,
@@ -656,6 +711,13 @@ impl OwnBookLadder {
 
         if order.price == level.price.value {
             level.update(order);
+            if order.size.is_zero() {
+                self.cache.remove(&order.client_order_id);
+
+                if level.is_empty() {
+                    self.levels.remove(&price);
+                }
+            }
             return Ok(());
         }
 
@@ -847,7 +909,11 @@ impl OwnBookLevel {
     pub fn update(&mut self, order: OwnBookOrder) {
         debug_assert_eq!(order.price, self.price.value);
 
-        self.orders[&order.client_order_id] = order;
+        if order.size.is_zero() {
+            self.orders.shift_remove(&order.client_order_id);
+        } else {
+            self.orders[&order.client_order_id] = order;
+        }
     }
 
     /// Deletes an order from this price level.
@@ -859,7 +925,7 @@ impl OwnBookLevel {
         if self.orders.shift_remove(client_order_id).is_none() {
             // TODO: Use a generic anyhow result for now pending specific error types
             anyhow::bail!("Order {client_order_id} not found for delete");
-        };
+        }
         Ok(())
     }
 }

@@ -1139,7 +1139,7 @@ async fn test_rate_limiting_returns_error() {
             )
             .await
         {
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(e) => {
                 last_error = Some(e);
                 break;
@@ -2012,6 +2012,7 @@ async fn test_spot_position_report_short_from_borrowed_balance() {
         5,
         Price::from("0.01"),
         Quantity::from("0.00001"),
+        None,
         None,
         None,
         None,
