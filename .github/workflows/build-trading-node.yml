@@ -1,10 +1,44 @@
 name: Build Trading Node Image
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch' &&
+    github.event.inputs.request_id != '' &&
+    format('Build Trading Node Image ({0})', github.event.inputs.request_id) ||
+    'Build Trading Node Image'
+  }}
 
 on:
   push:
     branches:
       - develop
+    paths:
+      - '.github/workflows/build-trading-node.yml'
+      - '.docker/nautilus_trader.dockerfile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'README.md'
+      - 'build.py'
+      - 'pyproject.toml'
+      - 'rust-toolchain.toml'
+      - 'uv.lock'
+      - 'uv-version'
+      - 'crates/**'
+      - 'nautilus_trader/**'
+      - 'python/**'
   workflow_dispatch:
+    inputs:
+      request_id:
+        description: Optional coordination id from an upstream deploy workflow.
+        required: false
+        type: string
+      requesting_repository:
+        description: Optional source repository dispatching this build.
+        required: false
+        type: string
+      requesting_sha:
+        description: Optional source commit requesting this build.
+        required: false
+        type: string
 
 jobs:
   build-and-push:

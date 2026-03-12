@@ -8,16 +8,19 @@ All output is captured and persisted to Redis before exit so logs are always ava
 even after the container is removed.
 
 """
+
+from datetime import UTC
+from datetime import datetime
 import io
 import json
 import os
 import sys
 import time
 import traceback
-from datetime import UTC
-from datetime import datetime
 
 import redis
+
+from nautilus_trader.quantchat.strategy_loader import execute_strategy_module
 
 
 class TeeWriter:
@@ -53,11 +56,13 @@ def _persist_logs():
     try:
         logs = _log_buffer.getvalue()
         timestamp = datetime.now(UTC).isoformat()
-        log_entry = json.dumps({
-            "logs": logs,
-            "timestamp": timestamp,
-            "exitedAt": timestamp,
-        })
+        log_entry = json.dumps(
+            {
+                "logs": logs,
+                "timestamp": timestamp,
+                "exitedAt": timestamp,
+            },
+        )
         # Persist to Redis with 24h TTL so logs are available after container dies
         _redis_client.setex(f"bot:{_bot_id}:logs", 86400, log_entry)
     except Exception as e:
@@ -221,12 +226,10 @@ def main():
         log("Executing strategy...")
         sys.stdout.flush()
 
-        # 6. Execute strategy using exec() so we can catch errors
-        # S102: exec is intentional - this is a strategy runner that loads user code
+        # 6. Execute strategy inside a real module namespace so deferred
+        # annotations resolve like they would for a normal Python module.
         try:
-            with open(script_path) as f:
-                code = f.read()
-            exec(compile(code, script_path, "exec"), {"__name__": "__main__", "__file__": script_path})  # noqa: S102
+            execute_strategy_module(script_path)
         except Exception as e:
             log(f"FATAL: Strategy execution failed: {type(e).__name__}: {e}")
             traceback.print_exc()

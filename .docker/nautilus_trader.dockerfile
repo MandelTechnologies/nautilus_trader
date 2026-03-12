@@ -49,6 +49,7 @@ RUN find /usr/local/lib/python3.13/site-packages -name "*.pyc" -exec rm -f {} \;
 # Copy QuantChat custom modules into installed package
 COPY python/nautilus_trader/quantchat /usr/local/lib/python3.13/site-packages/nautilus_trader/quantchat
 COPY python/nautilus_trader/adapters/alpaca /usr/local/lib/python3.13/site-packages/nautilus_trader/adapters/alpaca
+COPY python/nautilus_trader/adapters/quantchat /usr/local/lib/python3.13/site-packages/nautilus_trader/adapters/quantchat
 
 # Final application image
 FROM base AS application
