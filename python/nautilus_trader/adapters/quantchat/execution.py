@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from decimal import Decimal
+import json
 
 import redis.asyncio as aioredis
 
@@ -117,18 +117,11 @@ class QuantChatExecutionClient(LiveExecutionClient):
         # Track subscribed symbols
         self._subscribed_symbols: set[str] = set()
 
-        # Generate a unique account ID
-        self._account_id = AccountId(f"QUANTCHAT-PAPER-{UUID4().value[:8]}")
+        # Register a paper account before emitting any account events.
+        self._set_account_id(AccountId(f"QUANTCHAT-PAPER-{UUID4().value[:8]}"))
 
         # Pending orders (for limit/stop orders - future enhancement)
         self._pending_orders: dict[str, SubmitOrder] = {}
-
-    @property
-    def account_id(self) -> AccountId:
-        """
-        Return the account ID.
-        """
-        return self._account_id
 
     def _parse_starting_balance(self) -> list[AccountBalance]:
         """
@@ -185,7 +178,7 @@ class QuantChatExecutionClient(LiveExecutionClient):
             self._log.info(f"Initialized account with balances: {self._config.starting_balance}")
 
         self._log.info(
-            f"QuantChat execution client connected (account: {self._account_id})",
+            f"QuantChat execution client connected (account: {self.account_id})",
             LogColor.GREEN,
         )
 
@@ -242,7 +235,7 @@ class QuantChatExecutionClient(LiveExecutionClient):
             payload = json.loads(data)
 
             if channel.startswith(REDIS_BAR_CHANNEL_PREFIX):
-                symbol = channel[len(REDIS_BAR_CHANNEL_PREFIX):]
+                symbol = channel[len(REDIS_BAR_CHANNEL_PREFIX) :]
                 close_price = payload.get("close")
                 if close_price is not None:
                     self._latest_prices[symbol] = Decimal(str(close_price))
