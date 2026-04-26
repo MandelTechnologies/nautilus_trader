@@ -55,7 +55,10 @@ jobs:
 
       - name: Set image name (lowercase)
         id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/trading-node" >> "$GITHUB_OUTPUT"
+        run: |
+          image_name="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/trading-node"
+          echo "name=${image_name}" >> "$GITHUB_OUTPUT"
+          echo "cache=${image_name}:buildcache" >> "$GITHUB_OUTPUT"
 
       - name: Free disk space
         # https://github.com/jlumbroso/free-disk-space
@@ -86,11 +89,15 @@ jobs:
           file: .docker/nautilus_trader.dockerfile
           push: true
           platforms: linux/amd64
+          provenance: false
+          sbom: false
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.sha }}
             ${{ steps.image.outputs.name }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=registry,ref=${{ steps.image.outputs.cache }}
+            type=gha
+          cache-to: type=registry,ref=${{ steps.image.outputs.cache }},mode=max
 
       - name: Image details
         run: |

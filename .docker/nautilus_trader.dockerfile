@@ -38,7 +38,6 @@ RUN uv sync --no-install-package nautilus_trader
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --lib --release --all-features
 
 COPY nautilus_trader ./nautilus_trader
 COPY README.md ./
