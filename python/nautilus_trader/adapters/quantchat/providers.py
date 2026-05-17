@@ -90,7 +90,12 @@ class QuantChatInstrumentProvider(InstrumentProvider):
             if self._log_warnings:
                 self._log.warning(f"Failed to create instrument {symbol_str}: {e}")
 
-    def _create_instrument(self, symbol_str: str) -> Equity | CurrencyPair:
+    def _create_instrument(
+        self,
+        symbol_str: str,
+        maker_fee: Decimal = Decimal("0"),
+        taker_fee: Decimal = Decimal("0"),
+    ) -> Equity | CurrencyPair:
         """
         Create an instrument based on symbol naming conventions.
 
@@ -98,6 +103,10 @@ class QuantChatInstrumentProvider(InstrumentProvider):
         ----------
         symbol_str : str
             The symbol string.
+        maker_fee : Decimal, default Decimal("0")
+            Maker fee applied to the created instrument.
+        taker_fee : Decimal, default Decimal("0")
+            Taker fee applied to the created instrument.
 
         Returns
         -------
@@ -113,15 +122,21 @@ class QuantChatInstrumentProvider(InstrumentProvider):
         # Determine instrument type based on symbol
         if "/" in symbol_str:
             # Currency pair (e.g., BTC/USD, EUR/USD)
-            return self._create_currency_pair(instrument_id, symbol_str)
+            return self._create_currency_pair(instrument_id, symbol_str, maker_fee, taker_fee)
         elif symbol_str.endswith(("-USD", "-USDT")):
             # Crypto (e.g., BTC-USD, ETH-USDT)
-            return self._create_currency_pair(instrument_id, symbol_str)
+            return self._create_currency_pair(instrument_id, symbol_str, maker_fee, taker_fee)
         else:
             # Default to equity
-            return self._create_equity(instrument_id, symbol_str)
+            return self._create_equity(instrument_id, symbol_str, maker_fee, taker_fee)
 
-    def _create_equity(self, instrument_id: InstrumentId, symbol_str: str) -> Equity:
+    def _create_equity(
+        self,
+        instrument_id: InstrumentId,
+        symbol_str: str,
+        maker_fee: Decimal = Decimal("0"),
+        taker_fee: Decimal = Decimal("0"),
+    ) -> Equity:
         """
         Create an equity instrument.
         """
@@ -138,15 +153,19 @@ class QuantChatInstrumentProvider(InstrumentProvider):
             min_price=Price.from_str("0.01"),
             margin_init=Decimal("0"),
             margin_maint=Decimal("0"),
-            maker_fee=Decimal("0"),
-            taker_fee=Decimal("0"),
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
             info={},
         )
 
     def _create_currency_pair(
-        self, instrument_id: InstrumentId, symbol_str: str,
+        self,
+        instrument_id: InstrumentId,
+        symbol_str: str,
+        maker_fee: Decimal = Decimal("0"),
+        taker_fee: Decimal = Decimal("0"),
     ) -> CurrencyPair:
         """
         Create a currency pair instrument (crypto or forex).
@@ -194,8 +213,8 @@ class QuantChatInstrumentProvider(InstrumentProvider):
             min_price=Price.from_str(f"0.{'0' * (price_precision - 1)}1"),
             margin_init=Decimal("0"),
             margin_maint=Decimal("0"),
-            maker_fee=Decimal("0"),
-            taker_fee=Decimal("0"),
+            maker_fee=maker_fee,
+            taker_fee=taker_fee,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
             info={},
