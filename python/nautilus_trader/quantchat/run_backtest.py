@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
+from decimal import ROUND_DOWN
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -111,6 +112,17 @@ def _summary_from_reports(
     }
 
 
+def _make_bar_volume(instrument: Any, value: Any) -> Quantity:
+    precision = int(instrument.size_precision)
+    decimal_value = Decimal(str(value))
+    if decimal_value <= 0:
+        return Quantity(0, precision=precision)
+
+    quantum = Decimal(1).scaleb(-precision)
+    rounded = decimal_value.quantize(quantum, rounding=ROUND_DOWN)
+    return Quantity(rounded, precision=precision)
+
+
 def run_backtest_module(strategy_path: str | Path, config: dict[str, Any]) -> dict[str, Any]:
     runtime_config = config["runtimeBindings"]
     simulation = config["simulationSettings"]
@@ -173,7 +185,7 @@ def run_backtest_module(strategy_path: str | Path, config: dict[str, Any]) -> di
                 high=instrument.make_price(item["high"]),
                 low=instrument.make_price(item["low"]),
                 close=instrument.make_price(item["close"]),
-                volume=Quantity.from_str(str(item["volume"])),
+                volume=_make_bar_volume(instrument, item["volume"]),
                 ts_event=ts,
                 ts_init=ts,
             ),
