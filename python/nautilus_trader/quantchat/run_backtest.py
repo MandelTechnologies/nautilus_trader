@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 from decimal import ROUND_DOWN
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
@@ -27,18 +25,8 @@ from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Quantity
-from nautilus_trader.quantchat.strategy_loader import execute_strategy_module
-
-
-@dataclass(frozen=True)
-class QuantChatBacktestRuntime:
-    instrument_id: Any
-    bar_type: BarType
-    symbol: str
-    timeframe: str
-
-    def __getitem__(self, key: str) -> Any:
-        return getattr(self, key)
+from nautilus_trader.quantchat.intent_strategy import QuantChatRuntime
+from nautilus_trader.quantchat.intent_strategy import build_intent_strategy
 
 
 def _parse_time(value: str) -> datetime:
@@ -123,11 +111,14 @@ def _make_bar_volume(instrument: Any, value: Any) -> Quantity:
     return Quantity(rounded, precision=precision)
 
 
-def run_backtest_module(strategy_path: str | Path, config: dict[str, Any]) -> dict[str, Any]:
+def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
     runtime_config = config["runtimeBindings"]
     simulation = config["simulationSettings"]
     bars_payload = config["bars"]
     parameters = config.get("effectiveParameters", {})
+    compiled_plan = config.get("compiledPlan")
+    if not isinstance(compiled_plan, dict) or not compiled_plan:
+        raise ValueError("compiledPlan is required for backtesting")
 
     provider = QuantChatInstrumentProvider(
         clock=LiveClock(),
@@ -192,18 +183,15 @@ def run_backtest_module(strategy_path: str | Path, config: dict[str, Any]) -> di
         )
     engine.add_data(bars)
 
-    module = execute_strategy_module(strategy_path, module_name="quantchat_generated_strategy")
-    build_strategy = getattr(module, "build_strategy", None)
-    if build_strategy is None:
-        raise ValueError("Strategy module is missing build_strategy(runtime, parameters)")
-
-    runtime = QuantChatBacktestRuntime(
+    runtime = QuantChatRuntime(
         instrument_id=instrument.id,
         bar_type=bar_type,
         symbol=symbol,
         timeframe=timeframe,
+        base_currency=runtime_config.get("baseCurrency", "USD"),
+        start_time=runtime_config.get("startTime", ""),
     )
-    strategy = build_strategy(runtime, parameters)
+    strategy = build_intent_strategy(runtime, compiled_plan, parameters)
     engine.add_strategy(strategy)
     engine.run()
 

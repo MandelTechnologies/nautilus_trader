@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from nautilus_trader.adapters.quantchat import QUANTCHAT
@@ -18,24 +16,17 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.quantchat.event_emitter import EventEmitter
 from nautilus_trader.quantchat.event_emitter import EventEmitterConfig
+from nautilus_trader.quantchat.intent_strategy import QuantChatRuntime
+from nautilus_trader.quantchat.intent_strategy import build_intent_strategy
 from nautilus_trader.quantchat.run_backtest import _timeframe_to_bar_type_suffix
-from nautilus_trader.quantchat.strategy_loader import execute_strategy_module
 
 
-@dataclass(frozen=True)
-class QuantChatLiveRuntime:
-    instrument_id: Any
-    bar_type: BarType
-    symbol: str
-    timeframe: str
-
-    def __getitem__(self, key: str) -> Any:
-        return getattr(self, key)
-
-
-def run_live_strategy_module(strategy_path: str | Path, config: dict[str, Any]) -> None:
+def run_live_strategy_plan(config: dict[str, Any]) -> None:
     runtime_config = config.get("runtimeBindings", {})
     parameters = config.get("effectiveParameters", config.get("parameters", {}))
+    compiled_plan = config.get("compiledPlan")
+    if not isinstance(compiled_plan, dict) or not compiled_plan:
+        raise ValueError("compiledPlan is required for live strategy execution")
     symbol = runtime_config.get("instrumentSymbol") or runtime_config.get("symbol")
     if not symbol:
         raise ValueError("Live runtime is missing instrumentSymbol")
@@ -51,19 +42,16 @@ def run_live_strategy_module(strategy_path: str | Path, config: dict[str, Any]) 
     bar_type = BarType.from_str(
         f"{instrument.id}-{_timeframe_to_bar_type_suffix(timeframe)}-LAST-EXTERNAL",
     )
-    runtime = QuantChatLiveRuntime(
+    runtime = QuantChatRuntime(
         instrument_id=instrument.id,
         bar_type=bar_type,
         symbol=symbol,
         timeframe=timeframe,
+        base_currency=runtime_config.get("baseCurrency", "USD"),
+        start_time=runtime_config.get("startTime", ""),
     )
 
-    module = execute_strategy_module(strategy_path, module_name="quantchat_generated_strategy")
-    build_strategy = getattr(module, "build_strategy", None)
-    if build_strategy is None:
-        raise ValueError("Strategy module is missing build_strategy(runtime, parameters)")
-
-    strategy = build_strategy(runtime, parameters)
+    strategy = build_intent_strategy(runtime, compiled_plan, parameters)
     virtual_cash = config.get("virtualCash", config.get("initialCapital", 100000))
     bot_id = str(config.get("botId", "BOT")).replace("-", "")[:12]
 

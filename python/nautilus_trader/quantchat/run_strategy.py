@@ -1,8 +1,8 @@
 """
 Trading Engine entry point for quantchat.
 
-Fetches strategy code and config from Redis, sets up credentials as environment
-variables, then executes the strategy using Nautilus Trader.
+Fetches the compiled strategy plan and config from Redis, sets up credentials as
+environment variables, then executes the plan using Nautilus Trader.
 
 All output is captured and persisted to Redis before exit so logs are always available
 even after the container is removed.
@@ -21,8 +21,8 @@ import traceback
 
 import redis
 
-from nautilus_trader.quantchat.run_backtest import run_backtest_module
-from nautilus_trader.quantchat.run_live import run_live_strategy_module
+from nautilus_trader.quantchat.run_backtest import run_backtest_plan
+from nautilus_trader.quantchat.run_live import run_live_strategy_plan
 
 
 class TeeWriter:
@@ -235,18 +235,9 @@ def _load_runtime_config(r: redis.Redis, launch: LaunchConfig) -> dict:
     return loaded
 
 
-def _write_strategy(strategy_code: str) -> str:
-    script_path = "/tmp/strategy.py"  # noqa: S108
-    with open(script_path, "w") as f:
-        f.write(strategy_code)
-    log(f"Code written to {script_path}")
-    return script_path
-
-
 def _execute_strategy(
     r: redis.Redis,
     launch: LaunchConfig,
-    script_path: str,
     config: dict,
 ) -> int:
     log("Executing strategy...")
@@ -254,7 +245,7 @@ def _execute_strategy(
 
     try:
         if launch.run_mode == "backtest":
-            result = run_backtest_module(script_path, config)
+            result = run_backtest_plan(config)
             result_key = f"backtest:{launch.backtest_id}:result"
             r.setex(result_key, 86400, json.dumps(result))
             log(f"Backtest result persisted to {result_key}")
@@ -264,7 +255,7 @@ def _execute_strategy(
         config["redisUrl"] = os.environ.get("REDIS_URL", "redis://localhost:6379")
         if launch.bot_id:
             config["botId"] = launch.bot_id
-        run_live_strategy_module(script_path, config)
+        run_live_strategy_plan(config)
         return 0
     except Exception as e:
         log(f"FATAL: Strategy execution failed: {type(e).__name__}: {e}")
@@ -289,15 +280,11 @@ def _run() -> int:
         log(f"Error: Redis connection failed: {e}")
         return 1
 
-    log("Fetching code from Redis...")
-    strategy_code = fetch_from_redis(_redis_client, _redis_key(launch, "code"))
-    if not strategy_code:
-        log("Error: No strategy code found")
-        return 1
-
     config = _load_runtime_config(_redis_client, launch)
-    script_path = _write_strategy(strategy_code)
-    return _execute_strategy(_redis_client, launch, script_path, config)
+    if not config.get("compiledPlan"):
+        log("Error: compiledPlan missing from runtime config")
+        return 1
+    return _execute_strategy(_redis_client, launch, config)
 
 
 def main():
