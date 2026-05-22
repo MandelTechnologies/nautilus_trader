@@ -47,6 +47,7 @@ class QuantChatRuntime:
     base_currency: str = "USD"
     start_time: str = ""
     end_time: str = ""
+    market_calendar: dict[str, Any] | None = None
 
 
 class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
@@ -57,6 +58,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     base_currency: str
     start_time: str
     end_time: str
+    market_calendar: dict[str, Any]
     compiled_plan: dict[str, Any]
     parameters: dict[str, Any]
 
@@ -75,6 +77,7 @@ def build_intent_strategy(
             base_currency=runtime.base_currency,
             start_time=runtime.start_time,
             end_time=runtime.end_time,
+            market_calendar=runtime.market_calendar or {},
             compiled_plan=compiled_plan,
             parameters=parameters,
         ),
@@ -91,6 +94,7 @@ class QuantChatIntentStrategy(Strategy):
         self._last_event_ts_ns: int | None = None
 
     def on_start(self) -> None:
+        self._validate_wall_clock_calendars()
         self.subscribe_bars(self.config.bar_type)
         self._setup_wall_clock_triggers()
         self.log.info("QuantChat intent strategy started")
@@ -200,8 +204,6 @@ class QuantChatIntentStrategy(Strategy):
             candidate_day = start_day + timedelta(days=day_offset)
             if not self._date_matches_trigger(candidate_day, trigger, recurrence):
                 continue
-            if self._is_closed_market_day(candidate_day, trigger):
-                continue
             candidate_local = datetime(
                 candidate_day.year,
                 candidate_day.month,
@@ -211,6 +213,8 @@ class QuantChatIntentStrategy(Strategy):
                 tzinfo=tz,
             )
             candidate_utc = candidate_local.astimezone(UTC)
+            if not self._wall_clock_calendar_allows(candidate_day, candidate_utc, trigger):
+                continue
             if candidate_utc > after_utc:
                 return candidate_utc
         return None
@@ -231,11 +235,96 @@ class QuantChatIntentStrategy(Strategy):
             return candidate_day.day in days
         return False
 
-    def _is_closed_market_day(self, candidate_day, trigger: dict[str, Any]) -> bool:
+    def _validate_wall_clock_calendars(self) -> None:
+        calendars = {
+            str(rule.get("trigger", {}).get("calendar", "24/7")).upper()
+            for rule in self._plan_list("rules")
+            if self._trigger_kind(rule) == "wall_clock"
+        }
+        for calendar in calendars:
+            if calendar == "24/7":
+                continue
+            if calendar != "XNYS":
+                raise ValueError(f"Unsupported runtime market calendar: {calendar}")
+            sessions = self._calendar_sessions(calendar)
+            if not sessions:
+                raise ValueError(f"Missing runtime market calendar sessions for {calendar}")
+
+    def _wall_clock_calendar_allows(
+        self,
+        candidate_day,
+        candidate_utc: datetime,
+        trigger: dict[str, Any],
+    ) -> bool:
         calendar = str(trigger.get("calendar", "24/7")).upper()
-        if calendar == "XNYS":
-            return candidate_day.weekday() >= 5
-        return False
+        if calendar == "24/7":
+            return True
+        if calendar != "XNYS":
+            raise ValueError(f"Unsupported runtime market calendar: {calendar}")
+
+        closed_market_policy = str(trigger.get("closedMarketPolicy", "skip")).lower()
+        if closed_market_policy != "skip":
+            raise ValueError(f"Unsupported closedMarketPolicy: {closed_market_policy}")
+
+        day_key = candidate_day.isoformat()
+        session = self._calendar_session(calendar, day_key)
+        if session is None:
+            return False
+
+        status = str(session.get("status", "")).upper()
+        if status == "MARKET_CLOSED":
+            return False
+        if status not in {"OPEN", "EARLY_CLOSE"}:
+            raise ValueError(f"Unsupported {calendar} calendar status for {day_key}: {status}")
+
+        opens_at = self._calendar_timestamp(session.get("opensAt"), calendar, day_key, "opensAt")
+        closes_at = self._calendar_timestamp(
+            session.get("closesAt"),
+            calendar,
+            day_key,
+            "closesAt",
+        )
+        return opens_at <= candidate_utc <= closes_at
+
+    def _calendar_sessions(self, calendar: str) -> dict[str, Any]:
+        market_calendar = self.config.market_calendar
+        if not isinstance(market_calendar, dict):
+            raise ValueError("runtimeBindings.marketCalendar must be an object")
+        payload = market_calendar.get(calendar)
+        if not isinstance(payload, dict):
+            raise ValueError(f"Missing runtime market calendar for {calendar}")
+        sessions = payload.get("sessions")
+        if not isinstance(sessions, dict):
+            raise ValueError(
+                f"runtimeBindings.marketCalendar.{calendar}.sessions must be an object",
+            )
+        return sessions
+
+    def _calendar_session(self, calendar: str, day_key: str) -> dict[str, Any] | None:
+        session = self._calendar_sessions(calendar).get(day_key)
+        if session is None:
+            return None
+        if not isinstance(session, dict):
+            raise ValueError(
+                f"runtimeBindings.marketCalendar.{calendar}.sessions.{day_key} must be an object",
+            )
+        return session
+
+    def _calendar_timestamp(
+        self,
+        value: Any,
+        calendar: str,
+        day_key: str,
+        field: str,
+    ) -> datetime:
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{calendar} calendar session {day_key} is missing {field}")
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+        except ValueError as exc:
+            raise ValueError(
+                f"{calendar} calendar session {day_key} has invalid {field}: {value}",
+            ) from exc
 
     def _plan_list(self, key: str) -> list[dict[str, Any]]:
         value = self.config.compiled_plan.get(key, [])

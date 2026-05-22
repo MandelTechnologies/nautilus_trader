@@ -50,6 +50,7 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
         base_currency=runtime_config.get("baseCurrency", "USD"),
         start_time=runtime_config.get("startTime", ""),
         end_time=runtime_config.get("endTime", ""),
+        market_calendar=runtime_config.get("marketCalendar", {}),
     )
 
     strategy = build_intent_strategy(runtime, compiled_plan, parameters)
