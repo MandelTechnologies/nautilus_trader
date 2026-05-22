@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC
 from datetime import datetime
+from datetime import timedelta
 from decimal import Decimal
 from itertools import pairwise
 from math import isfinite
@@ -13,7 +15,10 @@ from operator import lt
 from operator import ne
 from statistics import pstdev
 from typing import Any
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
+from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
@@ -41,6 +46,7 @@ class QuantChatRuntime:
     timeframe: str
     base_currency: str = "USD"
     start_time: str = ""
+    end_time: str = ""
 
 
 class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
@@ -50,6 +56,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     timeframe: str
     base_currency: str
     start_time: str
+    end_time: str
     compiled_plan: dict[str, Any]
     parameters: dict[str, Any]
 
@@ -67,6 +74,7 @@ def build_intent_strategy(
             timeframe=runtime.timeframe,
             base_currency=runtime.base_currency,
             start_time=runtime.start_time,
+            end_time=runtime.end_time,
             compiled_plan=compiled_plan,
             parameters=parameters,
         ),
@@ -80,9 +88,11 @@ class QuantChatIntentStrategy(Strategy):
         self._startup_done = False
         self._feature_cache: dict[tuple[str, int], float | None] = {}
         self._trades_today: dict[str, int] = {}
+        self._last_event_ts_ns: int | None = None
 
     def on_start(self) -> None:
         self.subscribe_bars(self.config.bar_type)
+        self._setup_wall_clock_triggers()
         self.log.info("QuantChat intent strategy started")
 
     def on_bar(self, bar: Bar) -> None:
@@ -96,6 +106,7 @@ class QuantChatIntentStrategy(Strategy):
                 "ts_event": float(bar.ts_event),
             },
         )
+        self._last_event_ts_ns = None
         self._feature_cache.clear()
 
         if not self._in_run_window():
@@ -106,20 +117,125 @@ class QuantChatIntentStrategy(Strategy):
             for action in self._plan_list("startupActions"):
                 self._execute_action(action, "startup")
 
-        warmup_bars = int(
-            self.config.compiled_plan.get("runtimeRequirements", {}).get("warmupBars", 0) or 0,
-        )
-        if len(self._bars) <= warmup_bars:
-            self._decision("warmup", False, f"{len(self._bars)}/{warmup_bars} bars")
-            return
-
         for rule in self._plan_list("rules"):
-            result = self._condition(rule.get("condition", {}), offset=0)
-            self._decision(str(rule.get("id", "rule")), result, "condition")
-            if not result:
+            if self._trigger_kind(rule) == "bar_close":
+                self._evaluate_rule(rule, "bar_close")
+
+    def _setup_wall_clock_triggers(self) -> None:
+        after = self._run_start_utc()
+        if not self.config.end_time:
+            after = max(after, self.clock.utc_now().astimezone(UTC))
+        after -= timedelta(microseconds=1)
+        for rule in self._plan_list("rules"):
+            if self._trigger_kind(rule) == "wall_clock":
+                self._schedule_next_wall_clock(rule, after)
+
+    def _on_wall_clock_rule(self, rule_id: str, event: TimeEvent) -> None:
+        self._last_event_ts_ns = int(event.ts_event)
+        rule = next((item for item in self._plan_list("rules") if item.get("id") == rule_id), None)
+        if rule is None:
+            self.log.warning(f"Wall-clock rule not found: {rule_id}")
+            return
+        if self._in_run_window():
+            self._evaluate_rule(rule, "wall_clock")
+        self._schedule_next_wall_clock(rule, self._event_datetime_utc(event))
+
+    def _evaluate_rule(self, rule: dict[str, Any], source: str) -> None:
+        rule_id = str(rule.get("id", "rule"))
+        conditions = rule.get("conditions", []) or []
+        result = all(self._condition(condition, offset=0) for condition in conditions)
+        self._decision(rule_id, result, source)
+        if not result:
+            return
+        for action in rule.get("actions", []) or []:
+            self._execute_action(action, rule_id)
+
+    def _trigger_kind(self, rule: dict[str, Any]) -> str:
+        trigger = rule.get("trigger")
+        if not isinstance(trigger, dict):
+            return ""
+        return str(trigger.get("kind", "")).lower()
+
+    def _schedule_next_wall_clock(self, rule: dict[str, Any], after_utc: datetime) -> None:
+        trigger = rule.get("trigger")
+        if not isinstance(trigger, dict):
+            return
+        next_time = self._next_wall_clock_time(trigger, after_utc)
+        if next_time is None or not self._within_end_time(next_time):
+            return
+        rule_id = str(rule.get("id", "rule"))
+        alert_name = f"quantchat:{rule_id}:{int(next_time.timestamp())}"
+        self.clock.set_time_alert(
+            alert_name,
+            next_time,
+            lambda event, rule_id=rule_id: self._on_wall_clock_rule(rule_id, event),
+            allow_past=False,
+        )
+
+    def _next_wall_clock_time(
+        self,
+        trigger: dict[str, Any],
+        after_utc: datetime,
+    ) -> datetime | None:
+        timezone_name = str(trigger.get("timezone", "UTC"))
+        try:
+            tz = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            self.log.error(f"Unsupported trigger timezone: {timezone_name}")
+            return None
+
+        time_text = str(trigger.get("time", ""))
+        try:
+            hour_text, minute_text = time_text.split(":", 1)
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except ValueError:
+            self.log.error(f"Unsupported trigger time: {time_text}")
+            return None
+
+        recurrence = str(trigger.get("recurrence", "")).lower()
+        after_local = after_utc.astimezone(tz)
+        start_day = after_local.date()
+        for day_offset in range(400):
+            candidate_day = start_day + timedelta(days=day_offset)
+            if not self._date_matches_trigger(candidate_day, trigger, recurrence):
                 continue
-            for action in rule.get("actions", []) or []:
-                self._execute_action(action, str(rule.get("id", "rule")))
+            if self._is_closed_market_day(candidate_day, trigger):
+                continue
+            candidate_local = datetime(
+                candidate_day.year,
+                candidate_day.month,
+                candidate_day.day,
+                hour,
+                minute,
+                tzinfo=tz,
+            )
+            candidate_utc = candidate_local.astimezone(UTC)
+            if candidate_utc > after_utc:
+                return candidate_utc
+        return None
+
+    def _date_matches_trigger(
+        self,
+        candidate_day,
+        trigger: dict[str, Any],
+        recurrence: str,
+    ) -> bool:
+        if recurrence == "daily":
+            return True
+        if recurrence == "weekly":
+            days = {str(day).lower() for day in trigger.get("daysOfWeek", []) or []}
+            return candidate_day.strftime("%A").lower() in days
+        if recurrence == "monthly":
+            days = {int(day) for day in trigger.get("daysOfMonth", []) or []}
+            return candidate_day.day in days
+        return False
+
+    def _is_closed_market_day(self, candidate_day, trigger: dict[str, Any]) -> bool:
+        calendar = str(trigger.get("calendar", "24/7")).upper()
+        if calendar == "XNYS":
+            return candidate_day.weekday() >= 5
+        return False
 
     def _plan_list(self, key: str) -> list[dict[str, Any]]:
         value = self.config.compiled_plan.get(key, [])
@@ -155,8 +271,6 @@ class QuantChatIntentStrategy(Strategy):
         }
         if handler := handlers.get(kind):
             return handler(condition, offset)
-        if kind == "schedule":
-            return self._schedule_matches(condition)
         return False
 
     def _condition_all(self, condition: dict[str, Any], offset: int) -> bool:
@@ -312,21 +426,6 @@ class QuantChatIntentStrategy(Strategy):
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
 
-    def _schedule_matches(self, condition: dict[str, Any]) -> bool:
-        if not self._bars:
-            return False
-        ts_ns = int(self._bars[-1]["ts_event"])
-        dt = datetime.utcfromtimestamp(ts_ns / 1_000_000_000)
-        time_str = condition.get("time")
-        if isinstance(time_str, str) and len(time_str) >= 5:
-            if dt.strftime("%H:%M") != time_str[:5]:
-                return False
-        frequency = str(condition.get("frequency", "")).lower()
-        if frequency == "weekly":
-            expected = str(condition.get("dayOfWeek", "")).lower()
-            return not expected or dt.strftime("%A").lower() == expected
-        return frequency in {"daily", "monthly"}
-
     def _execute_action(self, action: dict[str, Any], source: str) -> None:
         kind = str(action.get("kind", "")).lower()
         if not self._can_trade_today():
@@ -443,21 +542,54 @@ class QuantChatIntentStrategy(Strategy):
         self._trades_today[day] = self._trades_today.get(day, 0) + 1
 
     def _current_day(self) -> str:
-        if not self._bars:
+        ts_ns = self._current_ts_ns()
+        if ts_ns is None:
             return "unknown"
-        ts_ns = int(self._bars[-1]["ts_event"])
-        return datetime.utcfromtimestamp(ts_ns / 1_000_000_000).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(ts_ns / 1_000_000_000, UTC).strftime("%Y-%m-%d")
 
     def _in_run_window(self) -> bool:
-        if not self.config.start_time or not self._bars:
+        current = self._current_datetime_utc()
+        if current is None:
             return True
+        return current >= self._run_start_utc() and self._within_end_time(current)
+
+    def _current_ts_ns(self) -> int | None:
+        if self._last_event_ts_ns is not None:
+            return self._last_event_ts_ns
+        if self._bars:
+            return int(self._bars[-1]["ts_event"])
+        return None
+
+    def _current_datetime_utc(self) -> datetime | None:
+        ts_ns = self._current_ts_ns()
+        if ts_ns is None:
+            return None
+        return datetime.fromtimestamp(ts_ns / 1_000_000_000, UTC)
+
+    def _run_start_utc(self) -> datetime:
         try:
-            start = datetime.fromisoformat(self.config.start_time.replace("Z", "+00:00"))
+            return datetime.fromisoformat(self.config.start_time.replace("Z", "+00:00")).astimezone(
+                UTC,
+            )
         except ValueError:
-            return True
-        ts_ns = int(self._bars[-1]["ts_event"])
-        current = datetime.utcfromtimestamp(ts_ns / 1_000_000_000).replace(tzinfo=start.tzinfo)
-        return current >= start
+            return self.clock.utc_now().astimezone(UTC)
+
+    def _run_end_utc(self) -> datetime | None:
+        if not self.config.end_time:
+            return None
+        try:
+            return datetime.fromisoformat(self.config.end_time.replace("Z", "+00:00")).astimezone(
+                UTC,
+            )
+        except ValueError:
+            return None
+
+    def _within_end_time(self, current: datetime) -> bool:
+        end = self._run_end_utc()
+        return end is None or current <= end
+
+    def _event_datetime_utc(self, event: TimeEvent) -> datetime:
+        return datetime.fromtimestamp(int(event.ts_event) / 1_000_000_000, UTC)
 
     def _decision(self, rule_id: str, result: bool, detail: str) -> None:
         self.log.info(f"decision rule={rule_id} result={result} detail={detail}")
