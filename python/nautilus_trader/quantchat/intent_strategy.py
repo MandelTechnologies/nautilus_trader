@@ -36,6 +36,16 @@ _COMPARE_OPERATORS = {
     "==": eq,
     "!=": ne,
 }
+_UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _parse_utc_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -656,22 +666,10 @@ class QuantChatIntentStrategy(Strategy):
         return datetime.fromtimestamp(ts_ns / 1_000_000_000, UTC)
 
     def _run_start_utc(self) -> datetime:
-        try:
-            return datetime.fromisoformat(self.config.start_time.replace("Z", "+00:00")).astimezone(
-                UTC,
-            )
-        except ValueError:
-            return self.clock.utc_now().astimezone(UTC)
+        return _parse_utc_datetime(self.config.start_time) or _UNBOUNDED_START_UTC
 
     def _run_end_utc(self) -> datetime | None:
-        if not self.config.end_time:
-            return None
-        try:
-            return datetime.fromisoformat(self.config.end_time.replace("Z", "+00:00")).astimezone(
-                UTC,
-            )
-        except ValueError:
-            return None
+        return _parse_utc_datetime(self.config.end_time)
 
     def _within_end_time(self, current: datetime) -> bool:
         end = self._run_end_utc()
