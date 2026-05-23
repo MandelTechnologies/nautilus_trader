@@ -39,13 +39,13 @@ _COMPARE_OPERATORS = {
 _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-def _parse_utc_datetime(value: str) -> datetime | None:
+def _parse_utc_datetime(value: str, field_name: str) -> datetime | None:
     if not value:
         return None
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise ValueError(f"runtimeBindings.{field_name} must be an ISO-8601 timestamp") from exc
 
 
 @dataclass(frozen=True)
@@ -102,12 +102,28 @@ class QuantChatIntentStrategy(Strategy):
         self._feature_cache: dict[tuple[str, int], float | None] = {}
         self._trades_today: dict[str, int] = {}
         self._last_event_ts_ns: int | None = None
+        self._run_start_utc_value = (
+            _parse_utc_datetime(config.start_time, "startTime") or _UNBOUNDED_START_UTC
+        )
+        self._run_end_utc_value = _parse_utc_datetime(config.end_time, "endTime")
+        if (
+            config.start_time
+            and self._run_end_utc_value is not None
+            and self._run_end_utc_value < self._run_start_utc_value
+        ):
+            raise ValueError("runtimeBindings.endTime must be greater than or equal to startTime")
+        self._last_wall_clock_fire_at: dict[str, datetime] = {}
+        self._next_wall_clock_fire_at: dict[str, datetime] = {}
 
     def on_start(self) -> None:
         self._validate_wall_clock_calendars()
         self.subscribe_bars(self.config.bar_type)
         self._setup_wall_clock_triggers()
-        self.log.info("QuantChat intent strategy started")
+        self.log.info(
+            "QuantChat intent strategy started "
+            f"start_time={self._run_start_utc().isoformat()} "
+            f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+        )
 
     def on_bar(self, bar: Bar) -> None:
         self._bars.append(
@@ -146,12 +162,32 @@ class QuantChatIntentStrategy(Strategy):
 
     def _on_wall_clock_rule(self, rule_id: str, event: TimeEvent) -> None:
         self._last_event_ts_ns = int(event.ts_event)
+        fired_at = self._event_datetime_utc(event)
+        self._last_wall_clock_fire_at[rule_id] = fired_at
+        self.log.info(f"wall_clock fired rule={rule_id} event_time={fired_at.isoformat()}")
+        self._emit_runtime_event(
+            "wall_clock_fired",
+            {
+                "rule_id": rule_id,
+                "fired_at": fired_at.isoformat(),
+            },
+            fired_at,
+        )
         rule = next((item for item in self._plan_list("rules") if item.get("id") == rule_id), None)
         if rule is None:
             self.log.warning(f"Wall-clock rule not found: {rule_id}")
             return
         if self._in_run_window():
             self._evaluate_rule(rule, "wall_clock")
+        else:
+            self._decision(
+                rule_id,
+                False,
+                "outside run window "
+                f"event_time={fired_at.isoformat()} "
+                f"start_time={self._run_start_utc().isoformat()} "
+                f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            )
         self._schedule_next_wall_clock(rule, self._event_datetime_utc(event))
 
     def _evaluate_rule(self, rule: dict[str, Any], source: str) -> None:
@@ -175,9 +211,38 @@ class QuantChatIntentStrategy(Strategy):
         if not isinstance(trigger, dict):
             return
         next_time = self._next_wall_clock_time(trigger, after_utc)
-        if next_time is None or not self._within_end_time(next_time):
-            return
         rule_id = str(rule.get("id", "rule"))
+        if next_time is None:
+            self._next_wall_clock_fire_at.pop(rule_id, None)
+            self.log.info(
+                f"wall_clock exhausted rule={rule_id} after={after_utc.isoformat()} reason=no_next_fire",
+            )
+            return
+        if not self._within_end_time(next_time):
+            self._next_wall_clock_fire_at.pop(rule_id, None)
+            self.log.info(
+                "wall_clock exhausted "
+                f"rule={rule_id} next_fire_at={next_time.isoformat()} "
+                f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            )
+            return
+        self._next_wall_clock_fire_at[rule_id] = next_time
+        timezone_name = str(trigger.get("timezone", "UTC"))
+        local_time = next_time.astimezone(ZoneInfo(timezone_name)).isoformat()
+        self.log.info(
+            "wall_clock scheduled "
+            f"rule={rule_id} next_fire_at={next_time.isoformat()} "
+            f"timezone={timezone_name} local_time={local_time}",
+        )
+        self._emit_runtime_event(
+            "wall_clock_scheduled",
+            {
+                "rule_id": rule_id,
+                "next_fire_at": next_time.isoformat(),
+                "local_fire_at": local_time,
+                "timezone": timezone_name,
+            },
+        )
         alert_name = f"quantchat:{rule_id}:{int(next_time.timestamp())}"
         self.clock.set_time_alert(
             alert_name,
@@ -543,6 +608,7 @@ class QuantChatIntentStrategy(Strategy):
         weight = max(0.0, min(weight, self._max_position_weight()))
         price = self._last_price()
         if price <= 0:
+            self._decision(source, False, "no last price")
             return
         current_qty = self._position_qty()
         current_notional = current_qty * price
@@ -555,14 +621,22 @@ class QuantChatIntentStrategy(Strategy):
 
     def _buy_notional(self, notional: float, source: str) -> None:
         cash = max(0.0, self._available_cash() - self._cash_reserve())
-        notional = min(max(0.0, notional), cash)
         price = self._last_price()
-        if notional <= 0 or price <= 0:
+        if price <= 0:
+            self._decision(source, False, "no last price")
             return
+        if notional <= 0:
+            self._decision(source, False, "requested buy notional is zero")
+            return
+        if cash <= 0:
+            self._decision(source, False, "no available cash after reserve")
+            return
+        notional = min(notional, cash)
         max_notional = self._equity_estimate() * self._max_position_weight()
         current_notional = self._position_qty() * price
         notional = min(notional, max(0.0, max_notional - current_notional))
         if notional <= 0:
+            self._decision(source, False, "max position weight reached")
             return
         self._submit_market(OrderSide.BUY, notional / price, source)
 
@@ -572,6 +646,7 @@ class QuantChatIntentStrategy(Strategy):
     def _sell_quantity(self, quantity: float, source: str) -> None:
         quantity = min(max(0.0, quantity), self._position_qty())
         if quantity <= 0:
+            self._decision(source, False, "no position to sell")
             return
         self._submit_market(OrderSide.SELL, quantity, source)
 
@@ -579,6 +654,7 @@ class QuantChatIntentStrategy(Strategy):
         instrument = self.cache.instrument(self.config.instrument_id)
         if instrument is None:
             self.log.warning("No instrument in cache; skipping order")
+            self._decision(source, False, "no instrument in cache")
             return
         quantity = instrument.make_qty(Decimal(str(quantity_value)), round_down=True)
         if quantity.is_zero():
@@ -666,10 +742,10 @@ class QuantChatIntentStrategy(Strategy):
         return datetime.fromtimestamp(ts_ns / 1_000_000_000, UTC)
 
     def _run_start_utc(self) -> datetime:
-        return _parse_utc_datetime(self.config.start_time) or _UNBOUNDED_START_UTC
+        return self._run_start_utc_value
 
     def _run_end_utc(self) -> datetime | None:
-        return _parse_utc_datetime(self.config.end_time)
+        return self._run_end_utc_value
 
     def _within_end_time(self, current: datetime) -> bool:
         end = self._run_end_utc()
@@ -678,5 +754,32 @@ class QuantChatIntentStrategy(Strategy):
     def _event_datetime_utc(self, event: TimeEvent) -> datetime:
         return datetime.fromtimestamp(int(event.ts_event) / 1_000_000_000, UTC)
 
+    def _emit_runtime_event(
+        self,
+        event_type: str,
+        data: dict[str, Any],
+        event_time: datetime | None = None,
+    ) -> None:
+        timestamp = (
+            event_time or self._current_datetime_utc() or self.clock.utc_now().astimezone(UTC)
+        )
+        payload = {
+            "type": event_type,
+            "ts_event": int(timestamp.timestamp() * 1_000_000_000),
+            **data,
+        }
+        try:
+            self.msgbus.publish("events.quantchat.runtime", payload, external_pub=False)
+        except Exception as exc:
+            self.log.warning(f"Failed to emit runtime event {event_type}: {exc}")
+
     def _decision(self, rule_id: str, result: bool, detail: str) -> None:
         self.log.info(f"decision rule={rule_id} result={result} detail={detail}")
+        self._emit_runtime_event(
+            "decision_evaluated",
+            {
+                "rule_id": rule_id,
+                "result": result,
+                "detail": detail,
+            },
+        )

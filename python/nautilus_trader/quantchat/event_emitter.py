@@ -5,11 +5,12 @@ Subscribes to trading events within Nautilus and publishes them to Redis for the
 to persist orders, fills, and positions.
 
 """
-import json
-import os
+
 from datetime import UTC
 from datetime import datetime
 from decimal import Decimal
+import json
+import os
 from typing import Any
 
 import redis
@@ -75,8 +76,9 @@ class EventEmitter(Actor):
         # Subscribe to all order and position events via message bus
         self.msgbus.subscribe(topic="events.order.*", handler=self._handle_order_event)
         self.msgbus.subscribe(topic="events.position.*", handler=self._handle_position_event)
+        self.msgbus.subscribe(topic="events.quantchat.*", handler=self._handle_runtime_event)
 
-        self._log.info("EventEmitter started, subscribed to order and position events")
+        self._log.info("EventEmitter started, subscribed to order, position, and runtime events")
 
     def on_stop(self) -> None:
         """
@@ -148,18 +150,45 @@ class EventEmitter(Actor):
         if isinstance(event, (PositionOpened, PositionChanged, PositionClosed)):
             self._on_position_event(event)
 
+    def _handle_runtime_event(self, event: Any) -> None:
+        """
+        Handle QuantChat runtime audit events from strategies.
+        """
+        if not isinstance(event, dict):
+            self._log.warning(f"Ignoring unsupported runtime event: {type(event).__name__}")
+            return
+
+        event_type = str(event.get("type", ""))
+        if event_type not in {
+            "wall_clock_scheduled",
+            "wall_clock_fired",
+            "decision_evaluated",
+        }:
+            self._log.warning(f"Ignoring unsupported runtime event type: {event_type}")
+            return
+
+        self._publish(event_type, {key: value for key, value in event.items() if key != "type"})
+
     def _on_order_accepted(self, event: OrderAccepted) -> None:
         """
         Handle order accepted event.
         """
+        order = self.cache.order(event.client_order_id)
+        if order is None:
+            self._log.warning(
+                f"Order not found in cache for accepted event: {event.client_order_id}",
+            )
+            return
+
         self._publish(
-            "order_accepted", {
+            "order_accepted",
+            {
                 "client_order_id": str(event.client_order_id),
                 "venue_order_id": str(event.venue_order_id) if event.venue_order_id else None,
                 "instrument_id": str(event.instrument_id),
-                "strategy_id": str(event.strategy_id),
-                "account_id": str(event.account_id),
-                "event_id": str(event.id),
+                "side": order.side.name,
+                "qty": str(order.quantity),
+                "price": str(order.price) if order.has_price else None,
                 "ts_event": event.ts_event,
             },
         )
@@ -169,22 +198,16 @@ class EventEmitter(Actor):
         Handle order filled event.
         """
         self._publish(
-            "order_filled", {
+            "order_filled",
+            {
                 "client_order_id": str(event.client_order_id),
                 "venue_order_id": str(event.venue_order_id),
-                "trade_id": str(event.trade_id),
+                "execution_id": str(event.trade_id),
                 "instrument_id": str(event.instrument_id),
-                "strategy_id": str(event.strategy_id),
-                "account_id": str(event.account_id),
-                "order_side": event.order_side.name,
-                "order_type": event.order_type.name,
-                "last_qty": str(event.last_qty),
-                "last_px": str(event.last_px),
-                "currency": str(event.currency),
-                "liquidity_side": event.liquidity_side.name,
+                "side": event.order_side.name,
+                "qty": str(event.last_qty),
+                "price": str(event.last_px),
                 "commission": str(event.commission) if event.commission else None,
-                "position_id": str(event.position_id) if event.position_id else None,
-                "event_id": str(event.id),
                 "ts_event": event.ts_event,
             },
         )
@@ -194,7 +217,8 @@ class EventEmitter(Actor):
         Handle order rejected event.
         """
         self._publish(
-            "order_rejected", {
+            "order_rejected",
+            {
                 "client_order_id": str(event.client_order_id),
                 "instrument_id": str(event.instrument_id),
                 "strategy_id": str(event.strategy_id),
@@ -210,7 +234,8 @@ class EventEmitter(Actor):
         Handle order canceled event.
         """
         self._publish(
-            "order_canceled", {
+            "order_canceled",
+            {
                 "client_order_id": str(event.client_order_id),
                 "venue_order_id": str(event.venue_order_id) if event.venue_order_id else None,
                 "instrument_id": str(event.instrument_id),
@@ -236,20 +261,20 @@ class EventEmitter(Actor):
         }.get(type(event), "position")
 
         self._publish(
-            event_type, {
+            event_type,
+            {
                 "position_id": str(event.position_id),
                 "instrument_id": str(event.instrument_id),
-                "strategy_id": str(event.strategy_id),
-                "account_id": str(position.account_id),
                 "side": position.side.name,
-                "quantity": str(position.quantity),
+                "signed_qty": str(position.signed_qty),
                 "avg_px_open": str(position.avg_px_open),
-                "avg_px_close": str(position.avg_px_close) if position.avg_px_close else None,
+                "avg_px_close": str(position.avg_px_close) if position.avg_px_close > 0 else None,
                 "realized_pnl": str(position.realized_pnl) if position.realized_pnl else None,
-                "unrealized_pnl": str(position.unrealized_pnl(Price(position.avg_px_open, position.price_precision))) if position.is_open else None,
-                "ts_opened": position.ts_opened,
-                "ts_closed": position.ts_closed if position.is_closed else None,
-                "event_id": str(event.id),
+                "unrealized_pnl": str(
+                    position.unrealized_pnl(Price(position.avg_px_open, position.price_precision)),
+                )
+                if position.is_open
+                else None,
                 "ts_event": event.ts_event,
             },
         )

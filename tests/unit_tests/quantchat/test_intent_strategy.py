@@ -16,21 +16,24 @@
 from datetime import UTC
 from datetime import datetime
 
+import pytest
+
 from nautilus_trader.quantchat.intent_strategy import _parse_utc_datetime
 
 
 class TestIntentStrategyTimeParsing:
     def test_parse_utc_datetime_with_empty_value_returns_none(self):
         # Arrange, Act, Assert
-        assert _parse_utc_datetime("") is None
+        assert _parse_utc_datetime("", "startTime") is None
 
-    def test_parse_utc_datetime_with_invalid_value_returns_none(self):
+    def test_parse_utc_datetime_with_invalid_value_fails_fast(self):
         # Arrange, Act, Assert
-        assert _parse_utc_datetime("not-a-timestamp") is None
+        with pytest.raises(ValueError, match=r"runtimeBindings\.startTime"):
+            _parse_utc_datetime("not-a-timestamp", "startTime")
 
     def test_parse_utc_datetime_with_z_suffix_returns_utc_datetime(self):
         # Arrange, Act
-        result = _parse_utc_datetime("2026-05-23T03:30:00Z")
+        result = _parse_utc_datetime("2026-05-23T03:30:00Z", "startTime")
 
         # Assert
         assert result == datetime(2026, 5, 23, 3, 30, tzinfo=UTC)
