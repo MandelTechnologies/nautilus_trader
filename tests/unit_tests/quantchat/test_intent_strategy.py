@@ -18,6 +18,7 @@ from datetime import datetime
 
 import pytest
 
+from nautilus_trader.quantchat.intent_strategy import _extract_model_signal_value
 from nautilus_trader.quantchat.intent_strategy import _parse_utc_datetime
 
 
@@ -37,3 +38,17 @@ class TestIntentStrategyTimeParsing:
 
         # Assert
         assert result == datetime(2026, 5, 23, 3, 30, tzinfo=UTC)
+
+
+class TestIntentStrategyModelSignals:
+    def test_extract_model_signal_value_accepts_scalar_payload(self):
+        # Arrange, Act, Assert
+        assert _extract_model_signal_value({"value": 0.73}, "prob_up") == 0.73
+
+    def test_extract_model_signal_value_accepts_output_map_payload(self):
+        # Arrange, Act, Assert
+        assert _extract_model_signal_value({"value": {"prob_up": 0.61}}, "prob_up") == 0.61
+
+    def test_extract_model_signal_value_rejects_missing_output(self):
+        # Arrange, Act, Assert
+        assert _extract_model_signal_value({"value": {"other": 0.61}}, "prob_up") is None

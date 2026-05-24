@@ -167,8 +167,11 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
     engine.add_instrument(instrument)
 
     bars: list[Bar] = []
+    model_signals: dict[str, Any] = {}
     for item in bars_payload:
         ts = dt_to_unix_nanos(_parse_time(item["timestamp"]))
+        if isinstance(item.get("modelSignals"), dict):
+            model_signals[str(ts)] = item["modelSignals"]
         bars.append(
             Bar(
                 bar_type=bar_type,
@@ -192,6 +195,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         start_time=runtime_config.get("startTime", ""),
         end_time=runtime_config.get("endTime", ""),
         market_calendar=runtime_config.get("marketCalendar", {}),
+        model_signals=model_signals,
     )
     strategy = build_intent_strategy(runtime, compiled_plan, parameters)
     engine.add_strategy(strategy)

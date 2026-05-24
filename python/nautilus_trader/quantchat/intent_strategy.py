@@ -39,6 +39,19 @@ _COMPARE_OPERATORS = {
 _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def _extract_model_signal_value(payload: Any, output: str) -> float | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("value")
+    if isinstance(value, dict):
+        value = value.get(output)
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if isfinite(numeric) else None
+
+
 def _parse_utc_datetime(value: str, field_name: str) -> datetime | None:
     if not value:
         return None
@@ -58,6 +71,7 @@ class QuantChatRuntime:
     start_time: str = ""
     end_time: str = ""
     market_calendar: dict[str, Any] | None = None
+    model_signals: dict[str, Any] | None = None
 
 
 class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
@@ -69,6 +83,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     start_time: str
     end_time: str
     market_calendar: dict[str, Any]
+    model_signals: dict[str, Any]
     compiled_plan: dict[str, Any]
     parameters: dict[str, Any]
 
@@ -88,6 +103,7 @@ def build_intent_strategy(
             start_time=runtime.start_time,
             end_time=runtime.end_time,
             market_calendar=runtime.market_calendar or {},
+            model_signals=runtime.model_signals or {},
             compiled_plan=compiled_plan,
             parameters=parameters,
         ),
@@ -134,6 +150,7 @@ class QuantChatIntentStrategy(Strategy):
                 "close": float(bar.close),
                 "volume": float(bar.volume),
                 "ts_event": float(bar.ts_event),
+                "modelSignals": self._model_signals_for_ts(int(bar.ts_event)),
             },
         )
         self._last_event_ts_ns = None
@@ -515,6 +532,9 @@ class QuantChatIntentStrategy(Strategy):
 
     def _compute_feature(self, feature: dict[str, Any], offset: int) -> float | None:
         kind = str(feature.get("kind", "")).lower()
+        if kind == "model_signal":
+            return self._model_signal_value(feature, offset)
+
         field = str(feature.get("field", "close")).lower()
         if kind == "price":
             return self._bar_field(field, offset)
@@ -537,6 +557,25 @@ class QuantChatIntentStrategy(Strategy):
         if kind == "rolling_low":
             return min(values[-period:])
         return None
+
+    def _model_signals_for_ts(self, ts_event: int) -> dict[str, Any]:
+        signals = self.config.model_signals
+        if not isinstance(signals, dict):
+            return {}
+        return signals.get(str(ts_event), {})
+
+    def _model_signal_value(self, feature: dict[str, Any], offset: int) -> float | None:
+        lag = int(self._number(feature.get("lag"), 0.0))
+        idx = len(self._bars) - 1 - offset - max(0, lag)
+        if idx < 0:
+            return None
+        signals = self._bars[idx].get("modelSignals")
+        if not isinstance(signals, dict):
+            return None
+        feature_id = str(feature.get("id", ""))
+        payload = signals.get(feature_id)
+        output = str(feature.get("output", "prob_up"))
+        return _extract_model_signal_value(payload, output)
 
     def _bollinger(
         self,
