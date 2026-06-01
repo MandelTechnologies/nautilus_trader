@@ -16,7 +16,6 @@ from operator import ne
 from statistics import pstdev
 from typing import Any
 from zoneinfo import ZoneInfo
-from zoneinfo import ZoneInfoNotFoundError
 
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
@@ -25,6 +24,7 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.quantchat.wall_clock_schedule import next_wall_clock_fire_time
 from nautilus_trader.trading.strategy import Strategy
 
 
@@ -37,6 +37,11 @@ _COMPARE_OPERATORS = {
     "!=": ne,
 }
 _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
+_SUPPORTED_RUNTIME_CONTRACTS = {
+    "",
+    "quantchat_strategy_intent_v3",
+    "quantchat_strategy_intent_v4",
+}
 
 
 def _extract_model_signal_value(payload: Any, output: str) -> float | None:
@@ -59,6 +64,13 @@ def _parse_utc_datetime(value: str, field_name: str) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
     except ValueError as exc:
         raise ValueError(f"runtimeBindings.{field_name} must be an ISO-8601 timestamp") from exc
+
+
+def _validate_runtime_contract(compiled_plan: dict[str, Any]) -> None:
+    contract = str(compiled_plan.get("runtimeContractVersion", ""))
+    if contract not in _SUPPORTED_RUNTIME_CONTRACTS:
+        supported = ", ".join(sorted(value for value in _SUPPORTED_RUNTIME_CONTRACTS if value))
+        raise ValueError(f"Unsupported runtime contract {contract}; supported: {supported}")
 
 
 @dataclass(frozen=True)
@@ -93,6 +105,7 @@ def build_intent_strategy(
     compiled_plan: dict[str, Any],
     parameters: dict[str, Any],
 ) -> Strategy:
+    _validate_runtime_contract(compiled_plan)
     return QuantChatIntentStrategy(
         QuantChatIntentStrategyConfig(
             instrument_id=runtime.instrument_id,
@@ -232,7 +245,9 @@ class QuantChatIntentStrategy(Strategy):
         if next_time is None:
             self._next_wall_clock_fire_at.pop(rule_id, None)
             self.log.info(
-                f"wall_clock exhausted rule={rule_id} after={after_utc.isoformat()} reason=no_next_fire",
+                "wall_clock exhausted "
+                f"rule={rule_id} after={after_utc.isoformat()} "
+                f"reason=no_next_fire trigger={trigger}",
             )
             return
         if not self._within_end_time(next_time):
@@ -273,59 +288,11 @@ class QuantChatIntentStrategy(Strategy):
         trigger: dict[str, Any],
         after_utc: datetime,
     ) -> datetime | None:
-        timezone_name = str(trigger.get("timezone", "UTC"))
-        try:
-            tz = ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError:
-            self.log.error(f"Unsupported trigger timezone: {timezone_name}")
-            return None
-
-        time_text = str(trigger.get("time", ""))
-        try:
-            hour_text, minute_text = time_text.split(":", 1)
-            hour = int(hour_text)
-            minute = int(minute_text)
-        except ValueError:
-            self.log.error(f"Unsupported trigger time: {time_text}")
-            return None
-
-        recurrence = str(trigger.get("recurrence", "")).lower()
-        after_local = after_utc.astimezone(tz)
-        start_day = after_local.date()
-        for day_offset in range(400):
-            candidate_day = start_day + timedelta(days=day_offset)
-            if not self._date_matches_trigger(candidate_day, trigger, recurrence):
-                continue
-            candidate_local = datetime(
-                candidate_day.year,
-                candidate_day.month,
-                candidate_day.day,
-                hour,
-                minute,
-                tzinfo=tz,
-            )
-            candidate_utc = candidate_local.astimezone(UTC)
-            if not self._wall_clock_calendar_allows(candidate_day, candidate_utc, trigger):
-                continue
-            if candidate_utc > after_utc:
-                return candidate_utc
-        return None
-
-    def _date_matches_trigger(
-        self,
-        candidate_day,
-        trigger: dict[str, Any],
-        recurrence: str,
-    ) -> bool:
-        if recurrence == "daily":
-            return True
-        if recurrence == "weekly":
-            days = {str(day).lower() for day in trigger.get("daysOfWeek", []) or []}
-            return candidate_day.strftime("%A").lower() in days
-        if recurrence == "monthly":
-            days = {int(day) for day in trigger.get("daysOfMonth", []) or []}
-            return candidate_day.day in days
-        return False
+        return next_wall_clock_fire_time(
+            trigger,
+            after_utc,
+            self._wall_clock_calendar_allows,
+        )
 
     def _validate_wall_clock_calendars(self) -> None:
         calendars = {
