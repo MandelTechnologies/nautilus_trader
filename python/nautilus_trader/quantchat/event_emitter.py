@@ -207,7 +207,9 @@ class EventEmitter(Actor):
                 "side": event.order_side.name,
                 "qty": str(event.last_qty),
                 "price": str(event.last_px),
-                "commission": str(event.commission) if event.commission else None,
+                "commission": str(event.commission.as_decimal())
+                if event.commission is not None
+                else None,
                 "ts_event": event.ts_event,
             },
         )
@@ -269,9 +271,13 @@ class EventEmitter(Actor):
                 "signed_qty": str(position.signed_qty),
                 "avg_px_open": str(position.avg_px_open),
                 "avg_px_close": str(position.avg_px_close) if position.avg_px_close > 0 else None,
-                "realized_pnl": str(position.realized_pnl) if position.realized_pnl else None,
+                "realized_pnl": str(position.realized_pnl.as_decimal())
+                if position.realized_pnl is not None
+                else None,
                 "unrealized_pnl": str(
-                    position.unrealized_pnl(Price(position.avg_px_open, position.price_precision)),
+                    position.unrealized_pnl(
+                        Price(position.avg_px_open, position.price_precision),
+                    ).as_decimal(),
                 )
                 if position.is_open
                 else None,
