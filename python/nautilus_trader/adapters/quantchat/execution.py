@@ -11,6 +11,7 @@ from decimal import Decimal
 import json
 
 from nautilus_trader.adapters.quantchat.config import QuantChatExecClientConfig
+from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_PAPER_ACCOUNT_ID
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
 from nautilus_trader.adapters.quantchat.constants import REDIS_BAR_CHANNEL_PREFIX
 from nautilus_trader.adapters.quantchat.constants import bar_channel
@@ -35,8 +36,8 @@ from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderType
-from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TradeId
@@ -118,8 +119,8 @@ class QuantChatExecutionClient(LiveExecutionClient):
         # Track subscribed symbols
         self._subscribed_symbols: set[str] = set()
 
-        # Register a paper account before emitting any account events.
-        self._set_account_id(AccountId(f"QUANTCHAT-PAPER-{UUID4().value[:8]}"))
+        # Register the deterministic paper account before emitting any account events.
+        self._set_account_id(QUANTCHAT_PAPER_ACCOUNT_ID)
 
         # Pending orders (for limit/stop orders - future enhancement)
         self._pending_orders: dict[str, SubmitOrder] = {}
@@ -249,6 +250,28 @@ class QuantChatExecutionClient(LiveExecutionClient):
 
         return None
 
+    def _affordable_buy_qty(
+        self,
+        instrument_id: InstrumentId,
+        fill_price: Price,
+    ) -> Quantity | None:
+        """
+        Return the maximum quantity the account's free USD balance can pay for at the
+        given fill price, rounded down to the instrument's size precision.
+
+        Returns ``None`` (no cap) when the account or instrument is unavailable.
+
+        """
+        account = self._cache.account(self.account_id)
+        instrument = self._instrument_provider.find(instrument_id)
+        if account is None or instrument is None:
+            return None
+        free = account.balances_free().get(Currency.from_str("USD"))
+        if free is None:
+            return None
+        cash = max(Decimal(0), free.as_decimal())
+        return instrument.make_qty(cash / fill_price.as_decimal(), round_down=True)
+
     # -- Order submission ----
 
     async def _submit_order(self, command: SubmitOrder) -> None:
@@ -299,6 +322,27 @@ class QuantChatExecutionClient(LiveExecutionClient):
                 market_price=market_price,
             )
 
+            # A CASH account cannot overdraw: cap the buy at what the free balance
+            # affords at the slipped fill price. Sizing uses the last close, so a
+            # full-cash buy would otherwise overdraw by the slippage amount.
+            fill_qty = fill_result.fill_qty
+            if order.side == OrderSide.BUY:
+                affordable = self._affordable_buy_qty(order.instrument_id, fill_result.fill_price)
+                if affordable is not None and affordable < fill_qty:
+                    fill_qty = affordable
+            if fill_qty.as_double() == 0.0:
+                self._log.warning(
+                    f"Insufficient cash for any fill of {order.client_order_id}, canceling",
+                )
+                self.generate_order_canceled(
+                    strategy_id=order.strategy_id,
+                    instrument_id=order.instrument_id,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=venue_order_id,
+                    ts_event=self._clock.timestamp_ns(),
+                )
+                return
+
             # Schedule the fill after simulated latency
             await asyncio.sleep(fill_result.latency_ms / 1000.0)
 
@@ -312,7 +356,7 @@ class QuantChatExecutionClient(LiveExecutionClient):
                 trade_id=TradeId(f"BF-{UUID4().value[:12]}"),
                 order_side=order.side,
                 order_type=order.order_type,
-                last_qty=fill_result.fill_qty,
+                last_qty=fill_qty,
                 last_px=fill_result.fill_price,
                 quote_currency=Currency.from_str("USD"),
                 commission=Money(0, Currency.from_str("USD")),
@@ -322,17 +366,23 @@ class QuantChatExecutionClient(LiveExecutionClient):
 
             self._log.info(
                 f"Order filled: {order.client_order_id} "
-                f"@ {fill_result.fill_price} (qty: {fill_result.fill_qty})",
+                f"@ {fill_result.fill_price} (qty: {fill_qty})",
             )
 
-            # Handle partial fill if applicable
-            if fill_result.is_partial:
-                remaining_qty = Quantity.from_str(
-                    str(Decimal(str(order.quantity)) - Decimal(str(fill_result.fill_qty))),
+            # Cancel any unaffordable (or partial-fill) remainder so the order
+            # reaches a terminal state instead of hanging partially filled.
+            if fill_qty < order.quantity:
+                self._log.info(
+                    f"Canceling remainder of {order.client_order_id}: "
+                    f"filled {fill_qty} of {order.quantity}",
                 )
-                self._log.info(f"Partial fill, remaining qty: {remaining_qty}")
-                # For simplicity, we'll fill the rest immediately
-                # In a more realistic model, this could be delayed or left open
+                self.generate_order_canceled(
+                    strategy_id=order.strategy_id,
+                    instrument_id=order.instrument_id,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=venue_order_id,
+                    ts_event=self._clock.timestamp_ns(),
+                )
 
         else:
             # For limit/stop orders, store as pending (future enhancement)

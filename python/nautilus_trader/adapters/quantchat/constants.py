@@ -7,11 +7,16 @@ from __future__ import annotations
 
 from nautilus_trader.model.data import BarSpecification
 from nautilus_trader.model.enums import BarAggregation
+from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import Venue
 
 
 # Venue identifier for local paper trading
 QUANTCHAT_VENUE = Venue("QUANTCHAT")
+
+# Paper account identifier. Deterministic so positions restored at boot reference
+# the same account the execution client registers on every container (re)start.
+QUANTCHAT_PAPER_ACCOUNT_ID = AccountId("QUANTCHAT-PAPER-001")
 
 # Default Redis channel prefixes
 REDIS_BAR_CHANNEL_PREFIX = "market:bar:"

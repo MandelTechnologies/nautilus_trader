@@ -160,12 +160,9 @@ def setup_credentials_env(config: dict) -> None:
     else:
         log("Tick data access: disabled (HOBBYIST membership - upgrade for tick data)")
 
-    # Position isolation: Store bot's positions for restoration on startup
-    # This ensures each bot only sees its own positions, even when sharing an Alpaca account
     positions = config.get("positions", [])
-    os.environ["QUANTCHAT_POSITIONS"] = json.dumps(positions)
     if positions:
-        log(f"Position isolation: {len(positions)} position(s) to restore")
+        log(f"Restart state: {len(positions)} position(s) to restore into the engine")
 
 
 def _read_launch_config() -> LaunchConfig | None:

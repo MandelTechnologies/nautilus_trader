@@ -84,6 +84,11 @@ class QuantChatRuntime:
     end_time: str = ""
     market_calendar: dict[str, Any] | None = None
     model_signals: dict[str, Any] | None = None
+    # Restart state (live only): startup actions already ran for this bot, trades
+    # already executed today (UTC), and historical bars to warm indicators with.
+    startup_actions_completed: bool = False
+    trades_today: int = 0
+    warmup_bars: list[dict[str, float]] | None = None
 
 
 class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
@@ -98,6 +103,9 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     model_signals: dict[str, Any]
     compiled_plan: dict[str, Any]
     parameters: dict[str, Any]
+    startup_actions_completed: bool
+    trades_today: int
+    warmup_bars: list[dict[str, float]]
 
 
 def build_intent_strategy(
@@ -119,6 +127,9 @@ def build_intent_strategy(
             model_signals=runtime.model_signals or {},
             compiled_plan=compiled_plan,
             parameters=parameters,
+            startup_actions_completed=runtime.startup_actions_completed,
+            trades_today=runtime.trades_today,
+            warmup_bars=runtime.warmup_bars or [],
         ),
     )
 
@@ -127,7 +138,7 @@ class QuantChatIntentStrategy(Strategy):
     def __init__(self, config: QuantChatIntentStrategyConfig) -> None:
         super().__init__(config)
         self._bars: list[dict[str, float]] = []
-        self._startup_done = False
+        self._startup_done = bool(config.startup_actions_completed)
         self._feature_cache: dict[tuple[str, int], float | None] = {}
         self._trades_today: dict[str, int] = {}
         self._last_event_ts_ns: int | None = None
@@ -146,13 +157,36 @@ class QuantChatIntentStrategy(Strategy):
 
     def on_start(self) -> None:
         self._validate_wall_clock_calendars()
+        self._seed_warmup_bars()
+        self._seed_trades_today()
         self.subscribe_bars(self.config.bar_type)
         self._setup_wall_clock_triggers()
         self.log.info(
             "QuantChat intent strategy started "
             f"start_time={self._run_start_utc().isoformat()} "
-            f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'} "
+            f"warmup_bars={len(self._bars)} "
+            f"startup_done={self._startup_done}",
         )
+
+    def _seed_warmup_bars(self) -> None:
+        """
+        Seed bar history from the deploy config so indicators are warm from the first
+        live bar.
+
+        Warmup bars are history: they never trigger startup actions or rules.
+
+        """
+        for bar in self.config.warmup_bars:
+            self._bars.append({**bar, "modelSignals": {}})
+
+    def _seed_trades_today(self) -> None:
+        """
+        Resume today's (UTC) trade count so maxTradesPerDay survives restarts.
+        """
+        if self.config.trades_today > 0:
+            day = self.clock.utc_now().astimezone(UTC).strftime("%Y-%m-%d")
+            self._trades_today[day] = self.config.trades_today
 
     def on_bar(self, bar: Bar) -> None:
         self._bars.append(
@@ -174,8 +208,13 @@ class QuantChatIntentStrategy(Strategy):
 
         if not self._startup_done:
             self._startup_done = True
-            for action in self._plan_list("startupActions"):
+            actions = self._plan_list("startupActions")
+            for action in actions:
                 self._execute_action(action, "startup")
+            self._emit_runtime_event(
+                "startup_actions_completed",
+                {"action_count": len(actions)},
+            )
 
         for rule in self._plan_list("rules"):
             if self._trigger_kind(rule) == "bar_close":

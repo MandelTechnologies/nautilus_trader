@@ -163,6 +163,7 @@ class EventEmitter(Actor):
             "wall_clock_scheduled",
             "wall_clock_fired",
             "decision_evaluated",
+            "startup_actions_completed",
         }:
             self._log.warning(f"Ignoring unsupported runtime event type: {event_type}")
             return
