@@ -166,6 +166,11 @@ class QuantChatExecutionClient(LiveExecutionClient):
         self._pubsub = ResilientPubSub(self._redis_url, self._handle_price_update, self._log)
         await self._pubsub.start()
 
+        # Prime the price feed for every configured instrument now, so the first order
+        # already has a market price instead of subscribing at submit time.
+        for instrument in self._instrument_provider.get_all().values():
+            await self._subscribe_to_symbol(instrument.id.symbol.value)
+
         # Initialize account state with starting balance
         balances = self._parse_starting_balance()
         if balances:
@@ -241,11 +246,6 @@ class QuantChatExecutionClient(LiveExecutionClient):
         price_decimal = self._latest_prices.get(symbol)
         if price_decimal is not None:
             return Price.from_str(str(price_decimal))
-
-        # Try to get from cache
-        bar = self._cache.bar(instrument_id)
-        if bar is not None:
-            return bar.close
 
         return None
 
