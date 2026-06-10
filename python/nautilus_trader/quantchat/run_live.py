@@ -80,6 +80,15 @@ def _restore_positions(
 
     """
     positions = config.get("positions") or []
+    if not positions:
+        return
+
+    # Portfolio initialization computes exposures for cached positions as soon as the
+    # node starts; the data client only delivers the instrument asynchronously via the
+    # DataEngine, which is too late. Without this, portfolio init fails ("no instrument
+    # found") and the trader — including the strategy — never starts.
+    node.kernel.cache.add_instrument(instrument)
+
     for item in positions:
         quantity = Decimal(str(item.get("quantity", "0")))
         average_cost = Decimal(str(item.get("averageCost", "0")))
