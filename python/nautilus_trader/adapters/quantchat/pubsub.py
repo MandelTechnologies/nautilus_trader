@@ -13,6 +13,7 @@ import redis.asyncio as aioredis
 
 _INITIAL_BACKOFF_SECS = 1.0
 _MAX_BACKOFF_SECS = 30.0
+_POLL_TIMEOUT_SECS = 2.0
 
 
 class ResilientPubSub:
@@ -52,7 +53,14 @@ class ResilientPubSub:
         self._channels_changed = asyncio.Event()
 
     async def start(self) -> None:
-        self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
+        # Explicit socket_timeout=None: a pub/sub read blocks for as long as the channel
+        # is quiet (bars arrive once per minute), so any client-level read timeout would
+        # poison the subscription with spurious reconnects.
+        self._redis = aioredis.from_url(
+            self._redis_url,
+            decode_responses=True,
+            socket_timeout=None,
+        )
         self._listen_task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -111,8 +119,12 @@ class ResilientPubSub:
                 self._log.info(f"Redis pub/sub subscribed: {sorted(self._channels)}")
                 backoff = _INITIAL_BACKOFF_SECS
 
-                async for message in pubsub.listen():
-                    if message["type"] != "message":
+                while True:
+                    # Bounded poll instead of a blocking listen() so a quiet channel is
+                    # indistinguishable from a healthy one regardless of socket timeouts;
+                    # get_message returns None when the poll window elapses.
+                    message = await pubsub.get_message(timeout=_POLL_TIMEOUT_SECS)
+                    if message is None or message["type"] != "message":
                         continue
                     try:
                         self._handler(message["channel"], message["data"])
