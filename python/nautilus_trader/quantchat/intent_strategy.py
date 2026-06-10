@@ -84,6 +84,9 @@ class QuantChatRuntime:
     end_time: str = ""
     market_calendar: dict[str, Any] | None = None
     model_signals: dict[str, Any] | None = None
+    # Total transaction cost in basis points the runtime charges on fills (paper:
+    # price slippage; backtest: taker commission). Sizing reserves this headroom.
+    cost_bps: float = 0.0
     # Restart state (live only): startup actions already ran for this bot, trades
     # already executed today (UTC), and historical bars to warm indicators with.
     startup_actions_completed: bool = False
@@ -103,6 +106,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     model_signals: dict[str, Any]
     compiled_plan: dict[str, Any]
     parameters: dict[str, Any]
+    cost_bps: float
     startup_actions_completed: bool
     trades_today: int
     warmup_bars: list[dict[str, float]]
@@ -127,6 +131,7 @@ def build_intent_strategy(
             model_signals=runtime.model_signals or {},
             compiled_plan=compiled_plan,
             parameters=parameters,
+            cost_bps=runtime.cost_bps,
             startup_actions_completed=runtime.startup_actions_completed,
             trades_today=runtime.trades_today,
             warmup_bars=runtime.warmup_bars or [],
@@ -676,7 +681,14 @@ class QuantChatIntentStrategy(Strategy):
         if cash <= 0:
             self._decision(source, False, "no available cash after reserve")
             return
-        notional = min(notional, cash)
+        # Reserve headroom for transaction costs so a full-cash buy stays affordable
+        # at the worst-case fill: the backtest venue's L1 ask sits one tick above the
+        # bar close, and both runtimes charge cost_bps on the fill notional, so size
+        # such that qty * (px + tick) * (1 + cost) <= cash.
+        instrument = self.cache.instrument(self.config.instrument_id)
+        tick = float(instrument.price_increment) if instrument is not None else 0.0
+        cost_rate = max(0.0, self.config.cost_bps) / 10_000.0
+        notional = min(notional, cash * price / ((price + tick) * (1.0 + cost_rate)))
         max_notional = self._equity_estimate() * self._max_position_weight()
         current_notional = self._position_qty() * price
         notional = min(notional, max(0.0, max_notional - current_notional))

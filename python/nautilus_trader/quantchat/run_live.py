@@ -8,6 +8,7 @@ from nautilus_trader.adapters.quantchat import QuantChatDataClientConfig
 from nautilus_trader.adapters.quantchat import QuantChatExecClientConfig
 from nautilus_trader.adapters.quantchat import QuantChatLiveDataClientFactory
 from nautilus_trader.adapters.quantchat import QuantChatLiveExecClientFactory
+from nautilus_trader.adapters.quantchat.constants import DEFAULT_SLIPPAGE_BPS
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_PAPER_ACCOUNT_ID
 from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
 from nautilus_trader.common.component import LiveClock
@@ -170,6 +171,8 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
         start_time=runtime_config.get("startTime", ""),
         end_time=runtime_config.get("endTime", ""),
         market_calendar=runtime_config.get("marketCalendar", {}),
+        # The paper venue slips fill prices by this; sizing reserves the headroom.
+        cost_bps=DEFAULT_SLIPPAGE_BPS,
         startup_actions_completed=bool(runtime_config.get("startupActionsCompleted", False)),
         trades_today=int(runtime_config.get("tradesToday", 0)),
         warmup_bars=_parse_warmup_bars(config.get("warmupBars")),

@@ -52,9 +52,7 @@ class QuantChatExecClientConfig(LiveExecClientConfig, frozen=True):
     base_latency_ms : PositiveInt, default 50
         Base execution latency in milliseconds.
     slippage_bps : float, default 5.0
-        Slippage in basis points per $10K notional.
-    partial_fill_prob : float, default 0.0
-        Probability of partial fill (0.0 to 1.0).
+        Price slippage in basis points of the market price.
 
     """
 
@@ -63,4 +61,3 @@ class QuantChatExecClientConfig(LiveExecClientConfig, frozen=True):
     starting_balance: str = DEFAULT_STARTING_BALANCE
     base_latency_ms: PositiveInt = DEFAULT_BASE_LATENCY_MS
     slippage_bps: float = DEFAULT_SLIPPAGE_BPS
-    partial_fill_prob: float = 0.0

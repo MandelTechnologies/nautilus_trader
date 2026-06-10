@@ -105,7 +105,6 @@ class QuantChatExecutionClient(LiveExecutionClient):
         self._fill_model = QuantChatFillModel(
             base_latency_ms=config.base_latency_ms,
             slippage_bps=config.slippage_bps,
-            partial_fill_prob=config.partial_fill_prob,
         )
 
         # Redis pub/sub for price data
@@ -369,8 +368,8 @@ class QuantChatExecutionClient(LiveExecutionClient):
                 f"@ {fill_result.fill_price} (qty: {fill_qty})",
             )
 
-            # Cancel any unaffordable (or partial-fill) remainder so the order
-            # reaches a terminal state instead of hanging partially filled.
+            # Cancel any unaffordable remainder so the order reaches a terminal
+            # state instead of hanging partially filled.
             if fill_qty < order.quantity:
                 self._log.info(
                     f"Canceling remainder of {order.client_order_id}: "
