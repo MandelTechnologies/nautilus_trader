@@ -3,6 +3,10 @@
 #  https://github.com/mandeltechnologies/quantchat.com
 # -------------------------------------------------------------------------------------------------
 
+from __future__ import annotations
+
+from nautilus_trader.model.data import BarSpecification
+from nautilus_trader.model.enums import BarAggregation
 from nautilus_trader.model.identifiers import Venue
 
 
@@ -18,3 +22,31 @@ DEFAULT_REDIS_URL = "redis://localhost:6379"
 DEFAULT_STARTING_BALANCE = "100000 USD"
 DEFAULT_BASE_LATENCY_MS = 50
 DEFAULT_SLIPPAGE_BPS = 5.0
+
+# Platform timeframe strings keyed by (step, aggregation).
+_TIMEFRAME_BY_SPEC = {
+    (1, BarAggregation.MINUTE): "1m",
+    (5, BarAggregation.MINUTE): "5m",
+    (15, BarAggregation.MINUTE): "15m",
+    (30, BarAggregation.MINUTE): "30m",
+    (1, BarAggregation.HOUR): "1h",
+    (1, BarAggregation.DAY): "1d",
+}
+
+
+def bar_spec_timeframe(spec: BarSpecification) -> str | None:
+    """
+    Map a Nautilus bar specification to the platform timeframe string ("1m", "5m", ...).
+    """
+    return _TIMEFRAME_BY_SPEC.get((spec.step, spec.aggregation))
+
+
+def bar_channel(symbol: str, timeframe: str) -> str:
+    """
+    Redis pub/sub channel carrying finalized bars for a symbol and timeframe.
+
+    Must match the channel format published by the backend market-data writer
+    (backend-rs `publish_bars_to_redis`).
+
+    """
+    return f"{REDIS_BAR_CHANNEL_PREFIX}{symbol}:{timeframe}"

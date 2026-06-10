@@ -6,16 +6,17 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from decimal import Decimal
 import json
-
-import redis.asyncio as aioredis
 
 from nautilus_trader.adapters.quantchat.config import QuantChatExecClientConfig
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
 from nautilus_trader.adapters.quantchat.constants import REDIS_BAR_CHANNEL_PREFIX
+from nautilus_trader.adapters.quantchat.constants import bar_channel
 from nautilus_trader.adapters.quantchat.fill_model import QuantChatFillModel
 from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
+from nautilus_trader.adapters.quantchat.pubsub import ResilientPubSub
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -106,13 +107,13 @@ class QuantChatExecutionClient(LiveExecutionClient):
             partial_fill_prob=config.partial_fill_prob,
         )
 
-        # Redis client for price data
-        self._redis: aioredis.Redis | None = None
-        self._pubsub: aioredis.client.PubSub | None = None
-        self._listen_task: asyncio.Task | None = None
+        # Redis pub/sub for price data
+        self._pubsub: ResilientPubSub | None = None
 
-        # Track latest prices for fill simulation
+        # Latest close per symbol for fill simulation, with the bar timestamp it came
+        # from so a slower aggregate channel never overwrites a fresher price.
         self._latest_prices: dict[str, Decimal] = {}
+        self._latest_price_ts: dict[str, int] = {}
 
         # Track subscribed symbols
         self._subscribed_symbols: set[str] = set()
@@ -160,11 +161,8 @@ class QuantChatExecutionClient(LiveExecutionClient):
         """
         Connect the execution client.
         """
-        self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
-        self._pubsub = self._redis.pubsub()
-
-        # Start listening for price updates
-        self._listen_task = asyncio.create_task(self._listen_loop())
+        self._pubsub = ResilientPubSub(self._redis_url, self._handle_price_update, self._log)
+        await self._pubsub.start()
 
         # Initialize account state with starting balance
         balances = self._parse_starting_balance()
@@ -186,75 +184,52 @@ class QuantChatExecutionClient(LiveExecutionClient):
         """
         Disconnect the execution client.
         """
-        if self._listen_task:
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
-            self._listen_task = None
-
         if self._pubsub:
-            await self._pubsub.unsubscribe()
-            await self._pubsub.close()
+            await self._pubsub.stop()
             self._pubsub = None
 
-        if self._redis:
-            await self._redis.close()
-            self._redis = None
-
         self._latest_prices.clear()
+        self._latest_price_ts.clear()
         self._subscribed_symbols.clear()
         self._pending_orders.clear()
 
         self._log.info("QuantChat execution client disconnected")
 
-    async def _listen_loop(self) -> None:
-        """
-        Listen for Redis pub/sub messages for price updates.
-        """
-        if not self._pubsub:
-            return
-
-        try:
-            async for message in self._pubsub.listen():
-                if message["type"] == "message":
-                    channel = message["channel"]
-                    data = message["data"]
-                    self._handle_price_update(channel, data)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self._log.error(f"Error in Redis listen loop: {e}")
-
     def _handle_price_update(self, channel: str, data: str) -> None:
         """
-        Handle incoming price update from Redis.
+        Handle an incoming bar payload, keeping the freshest close per symbol.
         """
-        try:
-            payload = json.loads(data)
+        if not channel.startswith(REDIS_BAR_CHANNEL_PREFIX):
+            return
 
-            if channel.startswith(REDIS_BAR_CHANNEL_PREFIX):
-                symbol = channel[len(REDIS_BAR_CHANNEL_PREFIX) :]
-                close_price = payload.get("close")
-                if close_price is not None:
-                    self._latest_prices[symbol] = Decimal(str(close_price))
+        payload = json.loads(data)
+        # Channel format: market:bar:{symbol}:{timeframe}
+        symbol = channel[len(REDIS_BAR_CHANNEL_PREFIX) :].rsplit(":", 1)[0]
+        close_price = payload.get("close")
+        timestamp = payload.get("timestamp")
+        if close_price is None or timestamp is None:
+            return
 
-        except Exception as e:
-            self._log.error(f"Error handling price update: {e}")
+        ts = int(datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")).timestamp())
+        if ts < self._latest_price_ts.get(symbol, 0):
+            return
+        self._latest_price_ts[symbol] = ts
+        self._latest_prices[symbol] = Decimal(str(close_price))
 
     async def _subscribe_to_symbol(self, symbol: str) -> None:
         """
         Subscribe to price updates for a symbol.
+
+        Subscribes both published feed timeframes; whichever the instrument actually
+        ingests at supplies the price, and `_handle_price_update` keeps the freshest.
+
         """
         if symbol in self._subscribed_symbols:
             return
 
-        channel = f"{REDIS_BAR_CHANNEL_PREFIX}{symbol}"
         if self._pubsub:
-            await self._pubsub.subscribe(channel)
+            await self._pubsub.subscribe(bar_channel(symbol, "1m"), bar_channel(symbol, "5m"))
             self._subscribed_symbols.add(symbol)
-            self._log.debug(f"Subscribed to price updates for {symbol}")
 
     def _get_latest_price(self, instrument_id: InstrumentId) -> Price | None:
         """

@@ -6,17 +6,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime
+import json
 from typing import Any
-
-import redis.asyncio as aioredis
 
 from nautilus_trader.adapters.quantchat.config import QuantChatDataClientConfig
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
-from nautilus_trader.adapters.quantchat.constants import REDIS_BAR_CHANNEL_PREFIX
 from nautilus_trader.adapters.quantchat.constants import REDIS_QUOTE_CHANNEL_PREFIX
+from nautilus_trader.adapters.quantchat.constants import bar_channel
+from nautilus_trader.adapters.quantchat.constants import bar_spec_timeframe
 from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
+from nautilus_trader.adapters.quantchat.pubsub import ResilientPubSub
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -47,8 +47,8 @@ class QuantChatDataClient(LiveMarketDataClient):
     """
     Provides a data client for QuantChat local paper trading.
 
-    Subscribes to Redis pub/sub channels for market data published by the
-    quantchat backend (from EODHD).
+    Receives finalized bars over Redis pub/sub channels published by the quantchat
+    backend market-data writer (`market:bar:{symbol}:{timeframe}`).
 
     Parameters
     ----------
@@ -94,125 +94,68 @@ class QuantChatDataClient(LiveMarketDataClient):
         self._redis_url = config.redis_url
         self._can_access_tick_data = config.can_access_tick_data
 
-        # Redis pub/sub client
-        self._redis: aioredis.Redis | None = None
-        self._pubsub: aioredis.client.PubSub | None = None
-        self._listen_task: asyncio.Task | None = None
+        self._pubsub: ResilientPubSub | None = None
 
-        # Track subscriptions
-        self._subscribed_bar_symbols: set[str] = set()
+        # Bar subscriptions keyed by channel, plus the last delivered bar timestamp per
+        # channel so duplicate or out-of-order publishes never reach the strategy.
+        self._bar_types: dict[str, BarType] = {}
+        self._last_bar_ts: dict[str, int] = {}
         self._subscribed_quote_symbols: set[str] = set()
-        self._bar_types: dict[str, BarType] = {}  # symbol -> BarType mapping
 
     async def _connect(self) -> None:
-        """
-        Connect the data client.
-        """
-        self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
-        self._pubsub = self._redis.pubsub()
-
-        # Start listening task
-        self._listen_task = asyncio.create_task(self._listen_loop())
-
+        self._pubsub = ResilientPubSub(self._redis_url, self._on_message, self._log)
+        await self._pubsub.start()
         self._log.info("QuantChat data client connected", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
-        """
-        Disconnect the data client.
-        """
-        if self._listen_task:
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
-            self._listen_task = None
-
         if self._pubsub:
-            await self._pubsub.unsubscribe()
-            await self._pubsub.close()
+            await self._pubsub.stop()
             self._pubsub = None
 
-        if self._redis:
-            await self._redis.close()
-            self._redis = None
-
-        self._subscribed_bar_symbols.clear()
-        self._subscribed_quote_symbols.clear()
         self._bar_types.clear()
+        self._last_bar_ts.clear()
+        self._subscribed_quote_symbols.clear()
 
         self._log.info("QuantChat data client disconnected")
 
-    async def _listen_loop(self) -> None:
-        """
-        Listen for Redis pub/sub messages.
-        """
-        if not self._pubsub:
+    def _on_message(self, channel: str, data: str) -> None:
+        payload = json.loads(data)
+        if channel in self._bar_types:
+            self._handle_bar_message(channel, payload)
+        elif channel.startswith(REDIS_QUOTE_CHANNEL_PREFIX):
+            symbol = channel[len(REDIS_QUOTE_CHANNEL_PREFIX) :]
+            self._handle_quote_message(symbol, payload)
+
+    def _handle_bar_message(self, channel: str, data: dict[str, Any]) -> None:
+        bar_type = self._bar_types.get(channel)
+        if bar_type is None:
             return
 
         try:
-            async for message in self._pubsub.listen():
-                if message["type"] == "message":
-                    channel = message["channel"]
-                    data = message["data"]
-                    await self._handle_message(channel, data)
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self._log.error(f"Error in Redis listen loop: {e}")
-
-    async def _handle_message(self, channel: str, data: str) -> None:
-        """
-        Handle incoming Redis message.
-        """
-        try:
-            payload = json.loads(data)
-
-            if channel.startswith(REDIS_BAR_CHANNEL_PREFIX):
-                symbol = channel[len(REDIS_BAR_CHANNEL_PREFIX):]
-                self._handle_bar_message(symbol, payload)
-            elif channel.startswith(REDIS_QUOTE_CHANNEL_PREFIX):
-                symbol = channel[len(REDIS_QUOTE_CHANNEL_PREFIX):]
-                self._handle_quote_message(symbol, payload)
-
-        except Exception as e:
-            self._log.error(f"Error handling message from {channel}: {e}")
-
-    def _handle_bar_message(self, symbol: str, data: dict[str, Any]) -> None:
-        """
-        Handle incoming bar message from Redis.
-        """
-        bar_type = self._bar_types.get(symbol)
-        if not bar_type:
-            # Create default 1-minute bar type for this symbol
-            instrument_id = InstrumentId(
-                symbol=Symbol(symbol),
-                venue=QUANTCHAT_VENUE,
+            ts_event = _parse_bar_timestamp(data["timestamp"])
+            bar = Bar(
+                bar_type=bar_type,
+                open=Price.from_str(str(data["open"])),
+                high=Price.from_str(str(data["high"])),
+                low=Price.from_str(str(data["low"])),
+                close=Price.from_str(str(data["close"])),
+                volume=Quantity.from_str(str(data["volume"])),
+                ts_event=ts_event,
+                ts_init=self._clock.timestamp_ns(),
             )
-            bar_type = BarType.from_str(f"{instrument_id}-1-MINUTE-LAST-EXTERNAL")
-            self._bar_types[symbol] = bar_type
+        except (KeyError, ValueError) as e:
+            self._log.error(f"Dropping malformed bar payload on {channel}: {e}")
+            return
 
-        # Parse timestamp
-        ts_str = data.get("timestamp")
-        ts_event = self._parse_timestamp(ts_str)
-
-        bar = Bar(
-            bar_type=bar_type,
-            open=Price.from_str(str(data.get("open", 0))),
-            high=Price.from_str(str(data.get("high", 0))),
-            low=Price.from_str(str(data.get("low", 0))),
-            close=Price.from_str(str(data.get("close", 0))),
-            volume=Quantity.from_str(str(data.get("volume", 0))),
-            ts_event=ts_event,
-            ts_init=self._clock.timestamp_ns(),
-        )
+        # The backend re-publishes recent buckets when fetch windows overlap; the strategy
+        # must only ever see each bucket once, in order.
+        if ts_event <= self._last_bar_ts.get(channel, 0):
+            return
+        self._last_bar_ts[channel] = ts_event
 
         self._handle_data(bar)
 
     def _handle_quote_message(self, symbol: str, data: dict[str, Any]) -> None:
-        """
-        Handle incoming quote message from Redis.
-        """
         instrument_id = InstrumentId(
             symbol=Symbol(symbol),
             venue=QUANTCHAT_VENUE,
@@ -248,23 +191,7 @@ class QuantChatDataClient(LiveMarketDataClient):
 
         self._handle_data(trade)
 
-    def _parse_timestamp(self, ts_str: str | None) -> int:
-        """
-        Parse ISO timestamp string to nanoseconds.
-        """
-        if not ts_str:
-            return self._clock.timestamp_ns()
-
-        try:
-            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            return dt_to_unix_nanos(dt)
-        except Exception:
-            return self._clock.timestamp_ns()
-
     def _parse_timestamp_ms(self, ts_ms: float) -> int:
-        """
-        Parse millisecond timestamp to nanoseconds.
-        """
         if not ts_ms:
             return self._clock.timestamp_ns()
         return int(ts_ms * 1_000_000)  # ms to ns
@@ -287,14 +214,11 @@ class QuantChatDataClient(LiveMarketDataClient):
             return
 
         symbol = command.instrument_id.symbol.value
-        if symbol in self._subscribed_quote_symbols:
+        if symbol in self._subscribed_quote_symbols or not self._pubsub:
             return
 
-        channel = f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}"
-        if self._pubsub:
-            await self._pubsub.subscribe(channel)
-            self._subscribed_quote_symbols.add(symbol)
-            self._log.debug(f"Subscribed to quotes for {symbol}")
+        await self._pubsub.subscribe(f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}")
+        self._subscribed_quote_symbols.add(symbol)
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
         """
@@ -313,68 +237,62 @@ class QuantChatDataClient(LiveMarketDataClient):
 
         # Trade ticks come from the same quote channel
         symbol = command.instrument_id.symbol.value
-        if symbol in self._subscribed_quote_symbols:
+        if symbol in self._subscribed_quote_symbols or not self._pubsub:
             return
 
-        channel = f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}"
-        if self._pubsub:
-            await self._pubsub.subscribe(channel)
-            self._subscribed_quote_symbols.add(symbol)
-            self._log.debug(f"Subscribed to trades for {symbol}")
+        await self._pubsub.subscribe(f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}")
+        self._subscribed_quote_symbols.add(symbol)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
-        """
-        Subscribe to bars for an instrument.
-        """
-        symbol = command.bar_type.instrument_id.symbol.value
-        if symbol in self._subscribed_bar_symbols:
+        bar_type = command.bar_type
+        timeframe = bar_spec_timeframe(bar_type.spec)
+        if timeframe is None:
+            self._log.error(f"Unsupported bar specification: {bar_type}")
             return
 
-        # Store the bar type for this symbol
-        self._bar_types[symbol] = command.bar_type
+        channel = bar_channel(bar_type.instrument_id.symbol.value, timeframe)
+        if channel in self._bar_types or not self._pubsub:
+            return
 
-        channel = f"{REDIS_BAR_CHANNEL_PREFIX}{symbol}"
-        if self._pubsub:
-            await self._pubsub.subscribe(channel)
-            self._subscribed_bar_symbols.add(symbol)
-            self._log.debug(f"Subscribed to bars for {symbol}")
+        self._bar_types[channel] = bar_type
+        await self._pubsub.subscribe(channel)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
-        """
-        Unsubscribe from quote ticks for an instrument.
-        """
         symbol = command.instrument_id.symbol.value
-        if symbol not in self._subscribed_quote_symbols:
+        if symbol not in self._subscribed_quote_symbols or not self._pubsub:
             return
 
-        channel = f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}"
-        if self._pubsub:
-            await self._pubsub.unsubscribe(channel)
-            self._subscribed_quote_symbols.discard(symbol)
+        await self._pubsub.unsubscribe(f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}")
+        self._subscribed_quote_symbols.discard(symbol)
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
-        """
-        Unsubscribe from trade ticks for an instrument.
-        """
         symbol = command.instrument_id.symbol.value
-        if symbol not in self._subscribed_quote_symbols:
+        if symbol not in self._subscribed_quote_symbols or not self._pubsub:
             return
 
-        channel = f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}"
-        if self._pubsub:
-            await self._pubsub.unsubscribe(channel)
-            self._subscribed_quote_symbols.discard(symbol)
+        await self._pubsub.unsubscribe(f"{REDIS_QUOTE_CHANNEL_PREFIX}{symbol}")
+        self._subscribed_quote_symbols.discard(symbol)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
-        """
-        Unsubscribe from bars for an instrument.
-        """
-        symbol = command.bar_type.instrument_id.symbol.value
-        if symbol not in self._subscribed_bar_symbols:
+        timeframe = bar_spec_timeframe(command.bar_type.spec)
+        if timeframe is None:
             return
 
-        channel = f"{REDIS_BAR_CHANNEL_PREFIX}{symbol}"
-        if self._pubsub:
-            await self._pubsub.unsubscribe(channel)
-            self._subscribed_bar_symbols.discard(symbol)
-            self._bar_types.pop(symbol, None)
+        channel = bar_channel(command.bar_type.instrument_id.symbol.value, timeframe)
+        if channel not in self._bar_types or not self._pubsub:
+            return
+
+        await self._pubsub.unsubscribe(channel)
+        self._bar_types.pop(channel, None)
+        self._last_bar_ts.pop(channel, None)
+
+
+def _parse_bar_timestamp(value: str) -> int:
+    """
+    Parse an ISO-8601 bar timestamp to UNIX nanoseconds.
+
+    Raises ``ValueError`` for malformed input; bar payloads without a valid timestamp
+    must be dropped rather than stamped with the local clock.
+
+    """
+    return dt_to_unix_nanos(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
