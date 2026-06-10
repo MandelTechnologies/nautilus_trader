@@ -87,12 +87,18 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
                 redis_url=redis_url,
                 symbols=[symbol],
                 can_access_tick_data=bool(config.get("canAccessTickData", False)),
+                instrument_provider=InstrumentProviderConfig(
+                    load_ids=frozenset([instrument.id]),
+                ),
             ),
         },
         exec_clients={
             QUANTCHAT: QuantChatExecClientConfig(
                 redis_url=redis_url,
                 starting_balance=f"{virtual_cash} USD",
+                instrument_provider=InstrumentProviderConfig(
+                    load_ids=frozenset([instrument.id]),
+                ),
             ),
         },
     )

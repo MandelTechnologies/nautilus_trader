@@ -103,6 +103,14 @@ class QuantChatDataClient(LiveMarketDataClient):
         self._subscribed_quote_symbols: set[str] = set()
 
     async def _connect(self) -> None:
+        # Load configured instruments and hand them to the DataEngine so they reach the
+        # shared cache - order submission requires the instrument to be cached.
+        await self._instrument_provider.initialize()
+        for instrument in self._instrument_provider.get_all().values():
+            self._handle_data(instrument)
+        for currency in self._instrument_provider.currencies().values():
+            self._cache.add_currency(currency)
+
         self._pubsub = ResilientPubSub(self._redis_url, self._on_message, self._log)
         await self._pubsub.start()
         self._log.info("QuantChat data client connected", LogColor.GREEN)

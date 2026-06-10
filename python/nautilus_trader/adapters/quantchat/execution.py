@@ -161,6 +161,8 @@ class QuantChatExecutionClient(LiveExecutionClient):
         """
         Connect the execution client.
         """
+        await self._instrument_provider.initialize()
+
         self._pubsub = ResilientPubSub(self._redis_url, self._handle_price_update, self._log)
         await self._pubsub.start()
 
