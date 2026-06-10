@@ -663,7 +663,7 @@ class QuantChatIntentStrategy(Strategy):
             self._decision(source, False, "no instrument in cache")
             return
         quantity = instrument.make_qty(Decimal(str(quantity_value)), round_down=True)
-        if quantity.is_zero():
+        if quantity.as_double() == 0.0:
             self._decision(source, False, "quantity rounded to zero")
             return
         order = self.order_factory.market(
