@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import time
 
 import redis.asyncio as aioredis
 
@@ -148,3 +149,115 @@ class ResilientPubSub:
             except Exception as e:
                 self._log.debug(f"Error closing pub/sub connection: {e}")
             self._pubsub = None
+
+
+class ResilientStreamReader:
+    """
+    Redis stream reader that survives connection loss without losing entries.
+
+    Unlike pub/sub, a stream read resumes from the last delivered entry id after a
+    reconnect, so anything appended while the connection was down is delivered on
+    recovery instead of silently lost. Used for model signals, where a skipped
+    message would make a strategy evaluate a condition as false.
+
+    Parameters
+    ----------
+    redis_url : str
+        The Redis connection URL.
+    handler : Callable[[str, str], None]
+        Callback invoked with (stream_key, payload) for every entry's ``payload`` field.
+    log
+        A Nautilus logger adapter (``self._log`` of the owning client).
+    lookback_ms : int
+        How far before reader start the first read reaches. The deploy preload
+        already covers history, so this only needs to bridge the gap between the
+        preload snapshot and the reader coming up; replayed entries are idempotent.
+
+    """
+
+    def __init__(
+        self,
+        redis_url: str,
+        handler: Callable[[str, str], None],
+        log,
+        lookback_ms: int = 300_000,
+    ) -> None:
+        self._redis_url = redis_url
+        self._handler = handler
+        self._log = log
+        self._lookback_ms = lookback_ms
+
+        self._redis: aioredis.Redis | None = None
+        self._read_task: asyncio.Task | None = None
+        self._last_ids: dict[str, str] = {}
+        self._streams_changed = asyncio.Event()
+
+    async def start(self) -> None:
+        self._redis = aioredis.from_url(
+            self._redis_url,
+            decode_responses=True,
+            socket_timeout=None,
+        )
+        self._read_task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        if self._read_task:
+            self._read_task.cancel()
+            try:
+                await self._read_task
+            except asyncio.CancelledError:
+                pass
+            self._read_task = None
+
+        if self._redis:
+            await self._redis.close()
+            self._redis = None
+
+        self._last_ids.clear()
+
+    def add_streams(self, *keys: str) -> None:
+        start_id = f"{max(int(time.time() * 1000) - self._lookback_ms, 0)}-0"
+        new = [key for key in keys if key not in self._last_ids]
+        if not new:
+            return
+        for key in new:
+            self._last_ids[key] = start_id
+        self._streams_changed.set()
+
+    async def _run(self) -> None:
+        backoff = _INITIAL_BACKOFF_SECS
+        while True:
+            if not self._last_ids:
+                self._streams_changed.clear()
+                await self._streams_changed.wait()
+                continue
+
+            self._streams_changed.clear()
+            try:
+                # Bounded block so stream-set changes are picked up promptly and a
+                # quiet stream never looks like a dead connection.
+                response = await self._redis.xread(
+                    dict(self._last_ids),
+                    block=int(_POLL_TIMEOUT_SECS * 1000),
+                )
+                backoff = _INITIAL_BACKOFF_SECS
+                for stream_key, entries in response or []:
+                    for entry_id, fields in entries:
+                        self._last_ids[stream_key] = entry_id
+                        payload = fields.get("payload")
+                        if payload is None:
+                            continue
+                        try:
+                            self._handler(stream_key, payload)
+                        except Exception as e:
+                            self._log.error(
+                                f"Error handling stream entry {entry_id} on {stream_key}: {e}",
+                            )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._log.error(
+                    f"Redis stream read failed: {e}; retrying in {backoff:.0f}s",
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2.0, _MAX_BACKOFF_SECS)

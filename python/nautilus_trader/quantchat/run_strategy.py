@@ -242,6 +242,17 @@ def _execute_strategy(
 
     try:
         if launch.run_mode == "backtest":
+            # The bar series (and model signals) ride a separate Redis key so the
+            # backend never materializes them into per-trial configs; optimization
+            # trials all reference one shared payload.
+            bars_key = config.pop("barsKey", None)
+            if bars_key:
+                blob = fetch_from_redis(r, bars_key)
+                if blob is None:
+                    raise ValueError(f"Bars payload missing at {bars_key}")
+                side_channel = json.loads(blob)
+                config["bars"] = side_channel["bars"]
+                config["modelSignals"] = side_channel.get("modelSignals", {})
             result = run_backtest_plan(config)
             result_key = f"backtest:{launch.backtest_id}:result"
             # allow_nan=False: a stray NaN/Infinity would serialize as a bare

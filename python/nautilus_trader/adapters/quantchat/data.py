@@ -19,6 +19,7 @@ from nautilus_trader.adapters.quantchat.constants import bar_channel
 from nautilus_trader.adapters.quantchat.constants import bar_spec_timeframe
 from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
 from nautilus_trader.adapters.quantchat.pubsub import ResilientPubSub
+from nautilus_trader.adapters.quantchat.pubsub import ResilientStreamReader
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
@@ -97,6 +98,7 @@ class QuantChatDataClient(LiveMarketDataClient):
         self._can_access_tick_data = config.can_access_tick_data
 
         self._pubsub: ResilientPubSub | None = None
+        self._signal_reader: ResilientStreamReader | None = None
 
         # Bar subscriptions keyed by channel, plus the last delivered bar timestamp per
         # channel so duplicate or out-of-order publishes never reach the strategy.
@@ -115,16 +117,31 @@ class QuantChatDataClient(LiveMarketDataClient):
 
         self._pubsub = ResilientPubSub(self._redis_url, self._on_message, self._log)
         await self._pubsub.start()
-        for model_version_id in self._config.model_version_ids or []:
-            channel = f"{REDIS_MODEL_SIGNAL_CHANNEL_PREFIX}{model_version_id}"
-            await self._pubsub.subscribe(channel)
-            self._log.info(f"Subscribed to model signals on {channel}")
+        # Model signals ride a stream, not pub/sub: the reader resumes from the
+        # last delivered id after a reconnect, so a Redis blip can't silently
+        # drop a prediction (a dropped signal evaluates as condition-false).
+        if self._config.model_version_ids:
+            self._signal_reader = ResilientStreamReader(
+                self._redis_url,
+                self._on_message,
+                self._log,
+            )
+            streams = [
+                f"{REDIS_MODEL_SIGNAL_CHANNEL_PREFIX}{model_version_id}"
+                for model_version_id in self._config.model_version_ids
+            ]
+            self._signal_reader.add_streams(*streams)
+            await self._signal_reader.start()
+            self._log.info(f"Reading model signals from streams {streams}")
         self._log.info("QuantChat data client connected", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
         if self._pubsub:
             await self._pubsub.stop()
             self._pubsub = None
+        if self._signal_reader:
+            await self._signal_reader.stop()
+            self._signal_reader = None
 
         self._bar_types.clear()
         self._last_bar_ts.clear()

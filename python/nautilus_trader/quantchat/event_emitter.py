@@ -6,6 +6,7 @@ to persist orders, fills, and positions.
 
 """
 
+from collections import deque
 from datetime import UTC
 from datetime import datetime
 from decimal import Decimal
@@ -28,6 +29,14 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.position import Position
 
 
+# Stream cap bounds Redis memory; at typical bot event rates this is months of
+# history, and the backend consumer group acks within seconds.
+_STREAM_MAXLEN = 100_000
+# Events buffered in-process while Redis is unreachable. Flushed in order on the
+# next emission; beyond this the oldest are dropped (bounded memory beats OOM).
+_PENDING_MAXLEN = 10_000
+
+
 class EventEmitterConfig(ActorConfig, frozen=True):
     """
     Configuration for the EventEmitter actor.
@@ -45,7 +54,9 @@ class EventEmitter(Actor):
     - Order events (filled, rejected, canceled)
     - Position events (opened, changed, closed)
 
-    Publishes to Redis channel: engine:events:{bot_id}
+    Appends to the Redis stream ``engine:events`` (the envelope carries bot_id).
+    A stream entry survives until the backend consumer group acks it, so a
+    backend restart can never lose a fill the way a pub/sub publish could.
 
     """
 
@@ -54,7 +65,8 @@ class EventEmitter(Actor):
         self._bot_id = config.bot_id or os.environ.get("QUANTCHAT_BOT_ID", "")
         self._redis_url = config.redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
         self._redis: redis.Redis | None = None
-        self._channel = f"engine:events:{self._bot_id}"
+        self._stream = "engine:events"
+        self._pending: deque[str] = deque(maxlen=_PENDING_MAXLEN)
 
     def on_start(self) -> None:
         """
@@ -67,7 +79,7 @@ class EventEmitter(Actor):
         try:
             self._redis = redis.from_url(self._redis_url, decode_responses=True)
             self._redis.ping()
-            self._log.info(f"Connected to Redis, publishing to {self._channel}")
+            self._log.info(f"Connected to Redis, appending events to {self._stream}")
         except Exception as e:
             self._log.error(f"Failed to connect to Redis: {e}")
             self._redis = None
@@ -82,8 +94,11 @@ class EventEmitter(Actor):
 
     def on_stop(self) -> None:
         """
-        Clean up Redis connection.
+        Flush anything still pending, then clean up the Redis connection.
         """
+        self._flush_pending()
+        if self._pending:
+            self._log.error(f"Stopping with {len(self._pending)} unflushed engine events")
         if self._redis:
             try:
                 self._redis.close()
@@ -94,7 +109,7 @@ class EventEmitter(Actor):
 
     def _publish(self, event_type: str, data: dict[str, Any]) -> None:
         """
-        Publish an event to Redis.
+        Append an event to the Redis stream, flushing any buffered backlog first.
         """
         if not self._redis:
             return
@@ -110,11 +125,32 @@ class EventEmitter(Actor):
             "data": data,
         }
 
-        try:
-            self._redis.publish(self._channel, json.dumps(envelope, default=self._json_default))
-            self._log.info(f"Published {event_type} event to {self._channel}")
-        except Exception as e:
-            self._log.error(f"Failed to publish event: {e}")
+        self._pending.append(json.dumps(envelope, default=self._json_default))
+        self._flush_pending()
+
+    def _flush_pending(self) -> None:
+        """
+        Append buffered events in order; stop at the first failure so a Redis outage
+        delays delivery instead of dropping or reordering it.
+        """
+        if not self._redis:
+            return
+        while self._pending:
+            payload = self._pending[0]
+            try:
+                self._redis.xadd(
+                    self._stream,
+                    {"payload": payload},
+                    maxlen=_STREAM_MAXLEN,
+                    approximate=True,
+                )
+            except Exception as e:
+                self._log.error(
+                    f"Failed to append engine event ({len(self._pending)} pending): {e}",
+                )
+                return
+            self._pending.popleft()
+            self._log.info(f"Appended engine event to {self._stream}")
 
     @staticmethod
     def _json_default(obj: Any) -> Any:
