@@ -619,6 +619,7 @@ class QuantChatIntentStrategy(Strategy):
         self._model_signals.setdefault(ts_event, {})[model_version_id] = outputs
         while len(self._model_signals) > _MODEL_SIGNAL_STORE_MAXLEN:
             del self._model_signals[min(self._model_signals)]
+        self.log.info(f"Model signal stored: version={model_version_id} ts_event={ts_event}")
 
     def _model_signal_value(self, feature: dict[str, Any], offset: int) -> float | None:
         # The signal for bar T only exists after T closes, so evaluation reads the

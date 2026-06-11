@@ -164,6 +164,9 @@ class QuantChatDataClient(LiveMarketDataClient):
                 "outputs": outputs,
             },
         )
+        self._log.info(
+            f"Model signal republished: version={model_version_id} ts_event={ts_event}",
+        )
 
     def _handle_bar_message(self, channel: str, data: dict[str, Any]) -> None:
         bar_type = self._bar_types.get(channel)
