@@ -553,6 +553,7 @@ class QuantChatIntentStrategy(Strategy):
         left = self._value(condition.get("left"), offset)
         right = self._value(condition.get("right"), offset)
         if left is None or right is None:
+            self.log.info(f"compare not evaluable: left={left!r} right={right!r} cond={condition}")
             return False
         operator = _COMPARE_OPERATORS.get(str(condition.get("op")))
         return bool(operator(left, right)) if operator else False
@@ -639,7 +640,12 @@ class QuantChatIntentStrategy(Strategy):
             return None
         outputs = by_version.get(str(feature.get("modelVersionId", "")))
         output = str(feature.get("output", "prob_up"))
-        return _extract_model_signal_value(outputs, output)
+        value = _extract_model_signal_value(outputs, output)
+        self.log.info(
+            f"model signal read: ts={ts_event} versions={list(by_version)} "
+            f"outputs={outputs!r} output={output!r} value={value!r}",
+        )
+        return value
 
     def _execute_action(self, action: dict[str, Any], source: str) -> None:
         kind = str(action.get("kind", "")).lower()
