@@ -150,17 +150,17 @@ def _restore_positions(
 
 def run_live_strategy_plan(config: dict[str, Any]) -> None:
     runtime_config = config.get("runtimeBindings", {})
-    parameters = config.get("effectiveParameters", config.get("parameters", {}))
+    parameters = config.get("effectiveParameters", {})
     compiled_plan = config.get("compiledPlan")
     if not isinstance(compiled_plan, dict) or not compiled_plan:
         raise ValueError("compiledPlan is required for live strategy execution")
-    symbol = runtime_config.get("instrumentSymbol") or runtime_config.get("symbol")
+    symbol = runtime_config.get("instrumentSymbol")
     if not symbol:
         raise ValueError("Live runtime is missing instrumentSymbol")
 
     timeframe = runtime_config.get("timeframe", "1m")
     feed_timeframe = runtime_config.get("feedTimeframe", "1m")
-    redis_url = config.get("redisUrl") or config.get("redis_url") or "redis://localhost:6379"
+    redis_url = config["redisUrl"]
 
     provider = QuantChatInstrumentProvider(
         clock=LiveClock(),
@@ -197,11 +197,12 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
     )
 
     strategy = build_intent_strategy(runtime, compiled_plan, parameters)
-    virtual_cash = config.get("virtualCash", config.get("initialCapital", 100000))
-    bot_id = str(config.get("botId", "BOT")).replace("-", "")[:12]
+    virtual_cash = config["virtualCash"]
+    bot_id = str(config.get("botId", ""))
+    trader_suffix = bot_id.replace("-", "")[:12] or "BOT"
 
     node_config = TradingNodeConfig(
-        trader_id=TraderId(f"QUANTCHAT-{bot_id or 'BOT'}"),
+        trader_id=TraderId(f"QUANTCHAT-{trader_suffix}"),
         # Composite bars must match the platform's stored-bar conventions so live decisions
         # reproduce backtests: timestamps are bucket-start and a feed bar stamped at the
         # bucket boundary belongs to the bucket it opens (right-open). The build delay
@@ -243,7 +244,7 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
     )
 
     node = TradingNode(config=node_config)
-    node.trader.add_actor(EventEmitter(EventEmitterConfig(redis_url=redis_url)))
+    node.trader.add_actor(EventEmitter(EventEmitterConfig(bot_id=bot_id, redis_url=redis_url)))
     node.trader.add_strategy(strategy)
     node.add_data_client_factory(QUANTCHAT, QuantChatLiveDataClientFactory)
     node.add_exec_client_factory(QUANTCHAT, QuantChatLiveExecClientFactory)

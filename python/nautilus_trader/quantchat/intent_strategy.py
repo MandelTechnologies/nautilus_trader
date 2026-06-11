@@ -51,11 +51,7 @@ _MODEL_SIGNAL_STORE_MAXLEN = 256
 # Must match adapters.quantchat.constants.MODEL_SIGNAL_TOPIC (the strategy
 # must not import the adapter).
 _MODEL_SIGNAL_TOPIC = "data.quantchat.model_signal"
-_SUPPORTED_RUNTIME_CONTRACTS = {
-    "",
-    "quantchat_strategy_intent_v3",
-    "quantchat_strategy_intent_v4",
-}
+_SUPPORTED_RUNTIME_CONTRACT = "quantchat_strategy_intent_v4"
 
 
 def _extract_model_signal_value(outputs: Any, output: str) -> float | None:
@@ -79,9 +75,10 @@ def _parse_utc_datetime(value: str, field_name: str) -> datetime | None:
 
 def _validate_runtime_contract(compiled_plan: dict[str, Any]) -> None:
     contract = str(compiled_plan.get("runtimeContractVersion", ""))
-    if contract not in _SUPPORTED_RUNTIME_CONTRACTS:
-        supported = ", ".join(sorted(value for value in _SUPPORTED_RUNTIME_CONTRACTS if value))
-        raise ValueError(f"Unsupported runtime contract {contract}; supported: {supported}")
+    if contract != _SUPPORTED_RUNTIME_CONTRACT:
+        raise ValueError(
+            f"Unsupported runtime contract {contract!r}; supported: {_SUPPORTED_RUNTIME_CONTRACT}",
+        )
 
 
 @dataclass(frozen=True)

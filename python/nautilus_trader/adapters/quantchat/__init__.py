@@ -17,8 +17,6 @@ Environment Variables
 ---------------------
 REDIS_URL : str
     Redis connection URL (default: redis://localhost:6379).
-QUANTCHAT_BOT_ID : str
-    Bot ID for event emission (used by EventEmitter actor).
 
 Example
 -------

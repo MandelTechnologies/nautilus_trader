@@ -1,8 +1,8 @@
 """
 Trading Engine entry point for quantchat.
 
-Fetches the compiled strategy plan and config from Redis, sets up credentials as
-environment variables, then executes the plan using Nautilus Trader.
+Fetches the compiled strategy plan and config from Redis, then executes the plan using
+Nautilus Trader.
 
 All output is captured and persisted to Redis before exit so logs are always available
 even after the container is removed.
@@ -46,7 +46,6 @@ class TeeWriter:
 # Global log capture buffer
 _log_buffer = io.StringIO()
 _redis_client: redis.Redis | None = None
-_bot_id: str | None = None
 _log_key: str | None = None
 
 
@@ -106,65 +105,6 @@ def fetch_from_redis(r: redis.Redis, key: str, max_attempts: int = 10) -> str | 
     return None
 
 
-def setup_credentials_env(config: dict) -> None:
-    """
-    Set up environment variables from the config credentials.
-
-    This allows the strategy code to access credentials via standard env vars.
-
-    """
-    credentials = config.get("credentials", {})
-
-    # Provider (e.g., 'alpaca', 'quantchat')
-    provider = credentials.get("provider", "")
-    os.environ["QUANTCHAT_PROVIDER"] = provider
-
-    # Trading mode (paper/live)
-    trading_mode = credentials.get("tradingMode", "paper")
-    os.environ["QUANTCHAT_TRADING_MODE"] = trading_mode
-
-    if provider == "quantchat":
-        # Local paper trading with quantchat adapter
-        # No external credentials needed - uses Redis for market data
-        os.environ["QUANTCHAT_ADAPTER"] = "local"
-        os.environ["QUANTCHAT_REDIS_URL"] = os.environ.get("REDIS_URL", "redis://localhost:6379")
-        log("Using quantchat local adapter for paper trading")
-
-    elif provider == "alpaca":
-        # Alpaca external broker
-        os.environ["QUANTCHAT_ADAPTER"] = "alpaca"
-
-        # API Key authentication
-        if "apiKey" in credentials:
-            os.environ["APCA_API_KEY_ID"] = credentials["apiKey"]
-            os.environ["APCA_API_SECRET_KEY"] = credentials["apiSecret"]
-        # OAuth authentication
-        elif "accessToken" in credentials:
-            os.environ["APCA_API_ACCESS_TOKEN"] = credentials["accessToken"]
-
-        # Set paper trading flag
-        is_paper = trading_mode == "paper"
-        os.environ["APCA_API_BASE_URL"] = (
-            "https://paper-api.alpaca.markets" if is_paper else "https://api.alpaca.markets"
-        )
-
-    # Capital settings
-    os.environ["QUANTCHAT_INITIAL_CAPITAL"] = str(config.get("initialCapital", 100000))
-    os.environ["QUANTCHAT_VIRTUAL_CASH"] = str(config.get("virtualCash", 100000))
-
-    # Membership tier feature flag - PRO/ELITE users can access tick data
-    can_access_tick_data = config.get("canAccessTickData", False)
-    os.environ["QUANTCHAT_CAN_ACCESS_TICK_DATA"] = "true" if can_access_tick_data else "false"
-    if can_access_tick_data:
-        log("Tick data access: enabled (PRO/ELITE membership)")
-    else:
-        log("Tick data access: disabled (HOBBYIST membership - upgrade for tick data)")
-
-    positions = config.get("positions", [])
-    if positions:
-        log(f"Restart state: {len(positions)} position(s) to restore into the engine")
-
-
 def _read_launch_config() -> LaunchConfig | None:
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
     run_mode = os.environ.get("QUANTCHAT_RUN_MODE", "live").lower()
@@ -197,38 +137,27 @@ def _read_launch_config() -> LaunchConfig | None:
     )
 
 
-def _activate_runtime(config: LaunchConfig) -> None:
-    if config.run_mode == "backtest":
-        log(f"Starting backtest {config.backtest_id}...")
-        os.environ["QUANTCHAT_BACKTEST_ID"] = config.backtest_id or ""
-    else:
-        log(f"Starting strategy for bot {config.bot_id}...")
-        os.environ["QUANTCHAT_BOT_ID"] = config.bot_id or ""
-
-
 def _redis_key(config: LaunchConfig, suffix: str) -> str:
     if config.run_mode == "backtest":
         return f"backtest:{config.backtest_id}:{config.deploy_secret}:{suffix}"
     return f"bot:{config.bot_id}:{config.deploy_secret}:{suffix}"
 
 
-def _load_runtime_config(r: redis.Redis, launch: LaunchConfig) -> dict:
+def _load_runtime_config(r: redis.Redis, launch: LaunchConfig) -> dict | None:
     log("Fetching config from Redis...")
     config_json = fetch_from_redis(r, _redis_key(launch, "config"))
 
     if not config_json:
-        log("Warning: No config found, running without credentials")
-        return {}
+        log("Error: No runtime config found in Redis")
+        return None
 
     try:
         loaded = json.loads(config_json)
     except json.JSONDecodeError as e:
-        log(f"Warning: Failed to parse config JSON: {e}")
-        return {}
+        log(f"Error: Failed to parse config JSON: {e}")
+        return None
 
-    if launch.run_mode != "backtest":
-        setup_credentials_env(loaded)
-    log("Credentials and config loaded")
+    log("Runtime config loaded")
     return loaded
 
 
@@ -274,15 +203,17 @@ def _execute_strategy(
 
 
 def _run() -> int:
-    global _redis_client, _bot_id, _log_key
+    global _redis_client, _log_key
 
     launch = _read_launch_config()
     if launch is None:
         return 1
 
-    _bot_id = launch.bot_id
     _log_key = launch.log_key
-    _activate_runtime(launch)
+    if launch.run_mode == "backtest":
+        log(f"Starting backtest {launch.backtest_id}...")
+    else:
+        log(f"Starting strategy for bot {launch.bot_id}...")
 
     try:
         _redis_client = redis.from_url(launch.redis_url, decode_responses=True)
@@ -291,6 +222,8 @@ def _run() -> int:
         return 1
 
     config = _load_runtime_config(_redis_client, launch)
+    if config is None:
+        return 1
     if not config.get("compiledPlan"):
         log("Error: compiledPlan missing from runtime config")
         return 1

@@ -11,7 +11,6 @@ from datetime import UTC
 from datetime import datetime
 from decimal import Decimal
 import json
-import os
 import threading
 from typing import Any
 
@@ -63,8 +62,8 @@ class EventEmitter(Actor):
 
     def __init__(self, config: EventEmitterConfig) -> None:
         super().__init__(config)
-        self._bot_id = config.bot_id or os.environ.get("QUANTCHAT_BOT_ID", "")
-        self._redis_url = config.redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379")
+        self._bot_id = config.bot_id
+        self._redis_url = config.redis_url
         self._redis: redis.Redis | None = None
         self._stream = "engine:events"
         self._pending: deque[str] = deque(maxlen=_PENDING_MAXLEN)
