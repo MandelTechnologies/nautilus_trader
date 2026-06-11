@@ -631,6 +631,11 @@ class QuantChatIntentStrategy(Strategy):
         ts_event = int(self._bars[idx]["ts_event"])
         by_version = self._model_signals.get(ts_event)
         if not isinstance(by_version, dict):
+            self.log.warning(
+                f"model signal lookup miss: ts={ts_event} idx={idx} bars={len(self._bars)} "
+                f"store={len(self._model_signals)} "
+                f"store_range={[min(self._model_signals), max(self._model_signals)] if self._model_signals else []}",
+            )
             return None
         outputs = by_version.get(str(feature.get("modelVersionId", "")))
         output = str(feature.get("output", "prob_up"))
