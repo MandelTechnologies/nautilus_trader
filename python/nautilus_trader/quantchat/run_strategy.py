@@ -244,7 +244,9 @@ def _execute_strategy(
         if launch.run_mode == "backtest":
             result = run_backtest_plan(config)
             result_key = f"backtest:{launch.backtest_id}:result"
-            r.setex(result_key, 86400, json.dumps(result))
+            # allow_nan=False: a stray NaN/Infinity would serialize as a bare
+            # literal that is not JSON — fail here, loudly, not in the backend.
+            r.setex(result_key, 86400, json.dumps(result, allow_nan=False))
             log(f"Backtest result persisted to {result_key}")
             return 0
         if not config.get("runtimeBindings"):

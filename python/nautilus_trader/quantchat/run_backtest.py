@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import ROUND_DOWN
 from decimal import Decimal
 from itertools import pairwise
+from math import isfinite
 from typing import Any
 
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
@@ -58,12 +59,16 @@ def _dataframe_records(value: Any) -> list[dict[str, Any]]:
 
 def _jsonable_value(value: Any) -> Any:
     if isinstance(value, Decimal):
-        return float(value)
-    if hasattr(value, "as_double"):
-        return value.as_double()
+        value = float(value)
+    elif hasattr(value, "as_double"):
+        value = value.as_double()
+    if isinstance(value, float):
+        # Pandas reports use NaN for not-applicable cells (e.g. duration_ns of an
+        # open position); json.dumps would emit a bare NaN, which is not JSON.
+        return value if isfinite(value) else None
     if isinstance(value, list):
         return [_jsonable_value(item) for item in value]
-    if isinstance(value, (str, int, float, bool, type(None))):
+    if isinstance(value, (str, int, bool, type(None))):
         return value
     return str(value)
 
