@@ -133,7 +133,6 @@ class QuantChatDataClient(LiveMarketDataClient):
         self._log.info("QuantChat data client disconnected")
 
     def _on_message(self, channel: str, data: str) -> None:
-        self._log.info(f"pubsub message channel={channel!r} bytes={len(data)}")
         payload = json.loads(data)
         if channel in self._bar_types:
             self._handle_bar_message(channel, payload)

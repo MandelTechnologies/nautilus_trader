@@ -81,28 +81,23 @@ class ResilientPubSub:
         self._channels.clear()
 
     async def subscribe(self, *channels: str) -> None:
+        # Only track the change here: the listen loop owns the PubSub object and
+        # applies channel changes between polls. Issuing SUBSCRIBE from this task
+        # can race the loop's own connection setup — two concurrent commands on a
+        # not-yet-connected PubSub split onto two connections, and messages for
+        # the losing channels land on a connection nobody polls.
         new = [channel for channel in channels if channel not in self._channels]
         if not new:
             return
         self._channels.update(new)
         self._channels_changed.set()
-        if self._pubsub:
-            try:
-                await self._pubsub.subscribe(*new)
-            except Exception as e:
-                # The listen loop reconnects and re-subscribes everything tracked.
-                self._log.debug(f"Deferred subscribe to reconnect: {e}")
 
     async def unsubscribe(self, *channels: str) -> None:
         tracked = [channel for channel in channels if channel in self._channels]
         if not tracked:
             return
         self._channels.difference_update(tracked)
-        if self._pubsub:
-            try:
-                await self._pubsub.unsubscribe(*tracked)
-            except Exception as e:
-                self._log.debug(f"Unsubscribe failed (connection resetting): {e}")
+        self._channels_changed.set()
 
     async def _run(self) -> None:
         backoff = _INITIAL_BACKOFF_SECS
@@ -112,20 +107,21 @@ class ResilientPubSub:
                 await self._channels_changed.wait()
                 continue
 
+            self._channels_changed.clear()
             try:
-                pubsub = self._redis.pubsub(ignore_subscribe_messages=False)
+                pubsub = self._redis.pubsub(ignore_subscribe_messages=True)
                 self._pubsub = pubsub
                 await pubsub.subscribe(*self._channels)
                 self._log.info(f"Redis pub/sub subscribed: {sorted(self._channels)}")
                 backoff = _INITIAL_BACKOFF_SECS
 
-                while True:
+                # Poll until the tracked channel set changes, then rebuild the
+                # subscription from scratch (changes only happen around startup).
+                while not self._channels_changed.is_set():
                     # Bounded poll instead of a blocking listen() so a quiet channel is
                     # indistinguishable from a healthy one regardless of socket timeouts;
                     # get_message returns None when the poll window elapses.
                     message = await pubsub.get_message(timeout=_POLL_TIMEOUT_SECS)
-                    if message is not None:
-                        self._log.info(f"pubsub raw: {message!r}"[:300])
                     if message is None or message["type"] != "message":
                         continue
                     try:
@@ -134,6 +130,7 @@ class ResilientPubSub:
                         self._log.error(
                             f"Error handling message on {message['channel']}: {e}",
                         )
+                await self._close_pubsub()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
