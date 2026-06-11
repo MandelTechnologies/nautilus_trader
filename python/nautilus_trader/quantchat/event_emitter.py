@@ -12,6 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 import json
 import os
+import threading
 from typing import Any
 
 import redis
@@ -67,6 +68,11 @@ class EventEmitter(Actor):
         self._redis: redis.Redis | None = None
         self._stream = "engine:events"
         self._pending: deque[str] = deque(maxlen=_PENDING_MAXLEN)
+        # Live engines dispatch msgbus handlers from multiple threads, and xadd
+        # releases the GIL during socket I/O — without mutual exclusion two
+        # flushes interleave on the deque (peek/popleft race -> IndexError that
+        # kills the ExecEngine event queue).
+        self._flush_lock = threading.Lock()
 
     def on_start(self) -> None:
         """
@@ -135,22 +141,23 @@ class EventEmitter(Actor):
         """
         if not self._redis:
             return
-        while self._pending:
-            payload = self._pending[0]
-            try:
-                self._redis.xadd(
-                    self._stream,
-                    {"payload": payload},
-                    maxlen=_STREAM_MAXLEN,
-                    approximate=True,
-                )
-            except Exception as e:
-                self._log.error(
-                    f"Failed to append engine event ({len(self._pending)} pending): {e}",
-                )
-                return
-            self._pending.popleft()
-            self._log.info(f"Appended engine event to {self._stream}")
+        with self._flush_lock:
+            while self._pending:
+                payload = self._pending[0]
+                try:
+                    self._redis.xadd(
+                        self._stream,
+                        {"payload": payload},
+                        maxlen=_STREAM_MAXLEN,
+                        approximate=True,
+                    )
+                except Exception as e:
+                    self._log.error(
+                        f"Failed to append engine event ({len(self._pending)} pending): {e}",
+                    )
+                    return
+                self._pending.popleft()
+                self._log.info(f"Appended engine event to {self._stream}")
 
     @staticmethod
     def _json_default(obj: Any) -> Any:
