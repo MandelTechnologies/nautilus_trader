@@ -113,7 +113,7 @@ class ResilientPubSub:
                 continue
 
             try:
-                pubsub = self._redis.pubsub(ignore_subscribe_messages=True)
+                pubsub = self._redis.pubsub(ignore_subscribe_messages=False)
                 self._pubsub = pubsub
                 await pubsub.subscribe(*self._channels)
                 self._log.info(f"Redis pub/sub subscribed: {sorted(self._channels)}")
@@ -124,6 +124,8 @@ class ResilientPubSub:
                     # indistinguishable from a healthy one regardless of socket timeouts;
                     # get_message returns None when the poll window elapses.
                     message = await pubsub.get_message(timeout=_POLL_TIMEOUT_SECS)
+                    if message is not None:
+                        self._log.info(f"pubsub raw: {message!r}"[:300])
                     if message is None or message["type"] != "message":
                         continue
                     try:
