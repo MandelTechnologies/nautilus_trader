@@ -63,6 +63,23 @@ def _parse_warmup_bars(payload: Any) -> list[dict[str, float]]:
     return bars
 
 
+def _parse_model_signals(payload: Any) -> dict[str, Any]:
+    """
+    Convert the deploy config's `modelSignals` preload ({rfc3339: {modelVersionId:
+
+    outputs}}) into the ts_event-nanosecond-keyed seed for the strategy's evaluation-
+    time signal store.
+
+    """
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(dt_to_unix_nanos(_parse_time(timestamp))): outputs
+        for timestamp, outputs in payload.items()
+        if isinstance(outputs, dict)
+    }
+
+
 def _restore_positions(
     node: TradingNode,
     strategy: Any,
@@ -171,6 +188,7 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
         start_time=runtime_config.get("startTime", ""),
         end_time=runtime_config.get("endTime", ""),
         market_calendar=runtime_config.get("marketCalendar", {}),
+        model_signals=_parse_model_signals(config.get("modelSignals")),
         # The paper venue slips fill prices by this; sizing reserves the headroom.
         cost_bps=DEFAULT_SLIPPAGE_BPS,
         startup_actions_completed=bool(runtime_config.get("startupActionsCompleted", False)),
@@ -204,6 +222,10 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
                 redis_url=redis_url,
                 symbols=[symbol],
                 can_access_tick_data=bool(config.get("canAccessTickData", False)),
+                model_version_ids=[
+                    str(version_id)
+                    for version_id in runtime_config.get("requiredModelVersions") or []
+                ],
                 instrument_provider=InstrumentProviderConfig(
                     load_ids=frozenset([instrument.id]),
                 ),

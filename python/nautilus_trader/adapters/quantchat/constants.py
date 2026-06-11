@@ -21,6 +21,13 @@ QUANTCHAT_PAPER_ACCOUNT_ID = AccountId("QUANTCHAT-PAPER-001")
 # Default Redis channel prefixes
 REDIS_BAR_CHANNEL_PREFIX = "market:bar:"
 REDIS_QUOTE_CHANNEL_PREFIX = "market:quote:"
+# Model predictions published by the backend signal worker, one channel per
+# model version: model:signal:{modelVersionId}.
+REDIS_MODEL_SIGNAL_CHANNEL_PREFIX = "model:signal:"
+
+# Local msgbus topic the data client republishes model signals on; the intent
+# strategy subscribes and feeds its evaluation-time signal store.
+MODEL_SIGNAL_TOPIC = "data.quantchat.model_signal"
 
 # Default configuration values
 DEFAULT_REDIS_URL = "redis://localhost:6379"

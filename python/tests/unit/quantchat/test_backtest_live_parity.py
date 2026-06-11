@@ -49,6 +49,7 @@ WINDOW_BARS = 300
 COST_BPS = 5.0
 INITIAL_CAPITAL = 100_000.0
 START = datetime(2026, 1, 1, tzinfo=UTC)
+MODEL_VERSION_ID = "6b1f8d6e-0000-4000-8000-1234567890ab"
 
 PLAN = {
     "runtimeContractVersion": "quantchat_strategy_intent_v4",
@@ -66,6 +67,13 @@ PLAN = {
             "band": "upper",
         },
         {"id": "hi_50", "kind": "rolling_high", "field": "close", "period": 50},
+        {
+            "id": "sig",
+            "kind": "model_signal",
+            "modelVersionId": MODEL_VERSION_ID,
+            "output": "prob_up",
+            "lag": 1,
+        },
     ],
     "startupActions": [{"kind": "buy_fixed_notional", "amount": 5000}],
     "rules": [
@@ -98,6 +106,23 @@ PLAN = {
                 },
             ],
             "actions": [{"kind": "exit_position"}],
+        },
+        {
+            "id": "signal_buy",
+            "trigger": {"kind": "bar_close"},
+            "conditions": [
+                {
+                    "kind": "compare",
+                    "op": ">",
+                    "left": {"kind": "feature", "featureId": "sig"},
+                    "right": {"kind": "constant", "value": 0.75},
+                },
+                {
+                    "kind": "position_state",
+                    "state": "flat",
+                },
+            ],
+            "actions": [{"kind": "buy_fixed_notional", "amount": 500}],
         },
         {
             "id": "breakout",
@@ -143,9 +168,21 @@ def _bar_records() -> list[dict[str, float]]:
     return records
 
 
+def _signal_records(records: list[dict[str, float]]) -> dict[str, dict]:
+    # Deterministic prob_up oscillating through the 0.75 entry threshold; keyed
+    # by ts_event nanoseconds like the runtime store.
+    return {
+        str(int(record["ts_event"])): {
+            MODEL_VERSION_ID: {"prob_up": round(0.5 + 0.4 * math.sin(index / 13.0), 6)},
+        }
+        for index, record in enumerate(records)
+    }
+
+
 def _run_session(
     stream_records: list[dict[str, float]],
     warmup_records: list[dict[str, float]],
+    model_signals: dict[str, dict],
 ) -> dict:
     provider = QuantChatInstrumentProvider(
         clock=LiveClock(),
@@ -204,6 +241,7 @@ def _run_session(
         symbol="BTC/USD",
         timeframe="1m",
         start_time=window_start.isoformat(),
+        model_signals=model_signals,
         cost_bps=COST_BPS,
         warmup_bars=warmup_records,
     )
@@ -239,11 +277,17 @@ def _run_session(
 
 def test_streamed_warmup_and_seeded_warmup_make_identical_decisions() -> None:
     records = _bar_records()
+    signals = _signal_records(records)
 
-    backtest_shaped = _run_session(stream_records=records, warmup_records=[])
+    backtest_shaped = _run_session(
+        stream_records=records,
+        warmup_records=[],
+        model_signals=signals,
+    )
     live_shaped = _run_session(
         stream_records=records[WARMUP_BARS:],
         warmup_records=records[:WARMUP_BARS],
+        model_signals=signals,
     )
 
     assert backtest_shaped["events"] == live_shaped["events"]
@@ -255,4 +299,5 @@ def test_streamed_warmup_and_seeded_warmup_make_identical_decisions() -> None:
     decisions = [e for e in backtest_shaped["events"] if e.get("type") == "decision_evaluated"]
     assert any(e["rule_id"] == "enter" and e["result"] for e in decisions)
     assert any(e["rule_id"] == "exit" and e["result"] for e in decisions)
+    assert any(e["rule_id"] == "signal_buy" and e["result"] for e in decisions)
     assert [e for e in backtest_shaped["events"] if e.get("type") == "startup_actions_completed"]

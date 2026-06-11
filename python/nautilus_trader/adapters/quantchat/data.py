@@ -11,7 +11,9 @@ import json
 from typing import Any
 
 from nautilus_trader.adapters.quantchat.config import QuantChatDataClientConfig
+from nautilus_trader.adapters.quantchat.constants import MODEL_SIGNAL_TOPIC
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
+from nautilus_trader.adapters.quantchat.constants import REDIS_MODEL_SIGNAL_CHANNEL_PREFIX
 from nautilus_trader.adapters.quantchat.constants import REDIS_QUOTE_CHANNEL_PREFIX
 from nautilus_trader.adapters.quantchat.constants import bar_channel
 from nautilus_trader.adapters.quantchat.constants import bar_spec_timeframe
@@ -113,6 +115,10 @@ class QuantChatDataClient(LiveMarketDataClient):
 
         self._pubsub = ResilientPubSub(self._redis_url, self._on_message, self._log)
         await self._pubsub.start()
+        for model_version_id in self._config.model_version_ids or []:
+            channel = f"{REDIS_MODEL_SIGNAL_CHANNEL_PREFIX}{model_version_id}"
+            await self._pubsub.subscribe(channel)
+            self._log.info(f"Subscribed to model signals on {channel}")
         self._log.info("QuantChat data client connected", LogColor.GREEN)
 
     async def _disconnect(self) -> None:
@@ -130,9 +136,34 @@ class QuantChatDataClient(LiveMarketDataClient):
         payload = json.loads(data)
         if channel in self._bar_types:
             self._handle_bar_message(channel, payload)
+        elif channel.startswith(REDIS_MODEL_SIGNAL_CHANNEL_PREFIX):
+            self._handle_model_signal_message(channel, payload)
         elif channel.startswith(REDIS_QUOTE_CHANNEL_PREFIX):
             symbol = channel[len(REDIS_QUOTE_CHANNEL_PREFIX) :]
             self._handle_quote_message(symbol, payload)
+
+    def _handle_model_signal_message(self, channel: str, data: dict[str, Any]) -> None:
+        """
+        Republish a model prediction on the local msgbus for the intent strategy's
+        evaluation-time signal store.
+        """
+        try:
+            model_version_id = str(data["modelVersionId"])
+            ts_event = _parse_bar_timestamp(data["timestamp"])
+            outputs = data["outputs"]
+            if not isinstance(outputs, dict):
+                raise ValueError("outputs must be an object")
+        except (KeyError, ValueError) as e:
+            self._log.error(f"Dropping malformed model signal on {channel}: {e}")
+            return
+        self._msgbus.publish(
+            MODEL_SIGNAL_TOPIC,
+            {
+                "modelVersionId": model_version_id,
+                "ts_event": ts_event,
+                "outputs": outputs,
+            },
+        )
 
     def _handle_bar_message(self, channel: str, data: dict[str, Any]) -> None:
         bar_type = self._bar_types.get(channel)

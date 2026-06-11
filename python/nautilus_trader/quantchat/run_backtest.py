@@ -307,11 +307,8 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
     engine.add_instrument(instrument)
 
     bars: list[Bar] = []
-    model_signals: dict[str, Any] = {}
     for item in bars_payload:
         ts = dt_to_unix_nanos(_parse_time(item["timestamp"]))
-        if isinstance(item.get("modelSignals"), dict):
-            model_signals[str(ts)] = item["modelSignals"]
         bars.append(
             Bar(
                 bar_type=bar_type,
@@ -325,6 +322,13 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
             ),
         )
     engine.add_data(bars)
+
+    # Predictions ride beside the bars ({rfc3339: {modelVersionId: outputs}});
+    # the strategy's store keys on bar ts_event nanoseconds.
+    model_signals = {
+        str(dt_to_unix_nanos(_parse_time(timestamp))): outputs
+        for timestamp, outputs in (config.get("modelSignals") or {}).items()
+    }
 
     runtime = QuantChatRuntime(
         instrument_id=instrument.id,

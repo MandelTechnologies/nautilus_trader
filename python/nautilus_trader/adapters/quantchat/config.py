@@ -28,6 +28,9 @@ class QuantChatDataClientConfig(LiveDataClientConfig, frozen=True):
         List of symbols to subscribe to on startup.
     can_access_tick_data : bool, default False
         Whether the user's membership tier allows tick data access (PRO/ELITE only).
+    model_version_ids : list[str], optional
+        Model versions whose signal channels (model:signal:{id}) to subscribe to;
+        payloads are republished on the local MODEL_SIGNAL_TOPIC.
 
     """
 
@@ -35,6 +38,7 @@ class QuantChatDataClientConfig(LiveDataClientConfig, frozen=True):
     redis_url: str = DEFAULT_REDIS_URL
     symbols: list[str] | None = None
     can_access_tick_data: bool = False
+    model_version_ids: list[str] | None = None
 
 
 class QuantChatExecClientConfig(LiveExecClientConfig, frozen=True):

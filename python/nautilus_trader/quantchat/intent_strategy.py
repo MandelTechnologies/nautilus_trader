@@ -43,6 +43,14 @@ _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
 # last price/timestamp. A fixed bound keeps memory flat regardless of uptime and
 # makes a restarted strategy's reachable state identical to a fresh boot's.
 _BAR_HISTORY_MAXLEN = 64
+# Model signals are stored per bar timestamp; lookups reach back at most
+# lag (<= 10) + cross offset bars, so this comfortably out-sizes the deploy
+# preload while keeping memory flat.
+_MODEL_SIGNAL_STORE_MAXLEN = 256
+# Local msgbus topic carrying live model predictions from the data client.
+# Must match adapters.quantchat.constants.MODEL_SIGNAL_TOPIC (the strategy
+# must not import the adapter).
+_MODEL_SIGNAL_TOPIC = "data.quantchat.model_signal"
 _SUPPORTED_RUNTIME_CONTRACTS = {
     "",
     "quantchat_strategy_intent_v3",
@@ -50,14 +58,11 @@ _SUPPORTED_RUNTIME_CONTRACTS = {
 }
 
 
-def _extract_model_signal_value(payload: Any, output: str) -> float | None:
-    if not isinstance(payload, dict):
+def _extract_model_signal_value(outputs: Any, output: str) -> float | None:
+    if not isinstance(outputs, dict):
         return None
-    value = payload.get("value")
-    if isinstance(value, dict):
-        value = value.get(output)
     try:
-        numeric = float(value)
+        numeric = float(outputs.get(output))
     except (TypeError, ValueError):
         return None
     return numeric if isfinite(numeric) else None
@@ -89,6 +94,9 @@ class QuantChatRuntime:
     start_time: str = ""
     end_time: str = ""
     market_calendar: dict[str, Any] | None = None
+    # Seed for the evaluation-time signal store: {ts_event_ns_str: {modelVersionId:
+    # outputs}}. The backtest covers its whole window; live deploys preload recent
+    # predictions and live messages extend the store.
     model_signals: dict[str, Any] | None = None
     # Total transaction cost in basis points the runtime charges on fills (paper:
     # price slippage; backtest: taker commission). Sizing reserves this headroom.
@@ -151,6 +159,14 @@ class QuantChatIntentStrategy(Strategy):
         self._bars: deque[dict[str, Any]] = deque(maxlen=_BAR_HISTORY_MAXLEN)
         self._startup_done = bool(config.startup_actions_completed)
         self._feature_states = self._build_feature_states()
+        # Evaluation-time signal store: ts_event_ns -> {modelVersionId: outputs}.
+        # Consulted when conditions evaluate, so a signal arriving after its bar
+        # (but before the lagged evaluation) is still seen — bars never snapshot
+        # signals. Missing entries evaluate as condition-false.
+        self._model_signals: dict[int, dict[str, Any]] = {}
+        for ts_key, outputs_by_version in (config.model_signals or {}).items():
+            if isinstance(outputs_by_version, dict):
+                self._model_signals[int(ts_key)] = dict(outputs_by_version)
         self._trades_today: dict[str, int] = {}
         self._last_event_ts_ns: int | None = None
         self._run_start_utc_value = (
@@ -171,6 +187,10 @@ class QuantChatIntentStrategy(Strategy):
         self._seed_warmup_bars()
         self._seed_trades_today()
         self.subscribe_bars(self.config.bar_type)
+        if any(
+            str(feature.get("kind", "")).lower() == "model_signal" for feature in self._features()
+        ):
+            self.msgbus.subscribe(_MODEL_SIGNAL_TOPIC, self._on_model_signal)
         self._setup_wall_clock_triggers()
         self.log.info(
             "QuantChat intent strategy started "
@@ -223,7 +243,7 @@ class QuantChatIntentStrategy(Strategy):
 
         """
         for bar in self.config.warmup_bars:
-            self._append_bar({**bar, "modelSignals": {}})
+            self._append_bar(dict(bar))
 
     def _seed_trades_today(self) -> None:
         """
@@ -242,7 +262,6 @@ class QuantChatIntentStrategy(Strategy):
                 "close": float(bar.close),
                 "volume": float(bar.volume),
                 "ts_event": float(bar.ts_event),
-                "modelSignals": self._model_signals_for_ts(int(bar.ts_event)),
             },
         )
         self._last_event_ts_ns = None
@@ -581,24 +600,40 @@ class QuantChatIntentStrategy(Strategy):
             return self._bar_field(str(feature.get("field", "close")).lower(), offset)
         return None
 
-    def _model_signals_for_ts(self, ts_event: int) -> dict[str, Any]:
-        signals = self.config.model_signals
-        if not isinstance(signals, dict):
-            return {}
-        return signals.get(str(ts_event), {})
+    def _on_model_signal(self, payload: Any) -> None:
+        """
+        Insert a live model prediction into the evaluation-time store.
+        """
+        if not isinstance(payload, dict):
+            return
+        try:
+            ts_event = int(payload["ts_event"])
+            model_version_id = str(payload["modelVersionId"])
+            outputs = payload["outputs"]
+        except (KeyError, TypeError, ValueError):
+            self.log.warning(f"Dropping malformed model signal payload: {payload}")
+            return
+        if not isinstance(outputs, dict):
+            self.log.warning("Dropping model signal payload without outputs object")
+            return
+        self._model_signals.setdefault(ts_event, {})[model_version_id] = outputs
+        while len(self._model_signals) > _MODEL_SIGNAL_STORE_MAXLEN:
+            del self._model_signals[min(self._model_signals)]
 
     def _model_signal_value(self, feature: dict[str, Any], offset: int) -> float | None:
-        lag = int(self._number(feature.get("lag"), 0.0))
-        idx = len(self._bars) - 1 - offset - max(0, lag)
+        # The signal for bar T only exists after T closes, so evaluation reads the
+        # signal stamped lag bars back (compiler enforces lag >= 1).
+        lag = max(1, int(self._number(feature.get("lag"), 1.0)))
+        idx = len(self._bars) - 1 - offset - lag
         if idx < 0:
             return None
-        signals = self._bars[idx].get("modelSignals")
-        if not isinstance(signals, dict):
+        ts_event = int(self._bars[idx]["ts_event"])
+        by_version = self._model_signals.get(ts_event)
+        if not isinstance(by_version, dict):
             return None
-        feature_id = str(feature.get("id", ""))
-        payload = signals.get(feature_id)
+        outputs = by_version.get(str(feature.get("modelVersionId", "")))
         output = str(feature.get("output", "prob_up"))
-        return _extract_model_signal_value(payload, output)
+        return _extract_model_signal_value(outputs, output)
 
     def _execute_action(self, action: dict[str, Any], source: str) -> None:
         kind = str(action.get("kind", "")).lower()
