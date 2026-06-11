@@ -190,10 +190,11 @@ def _summary_metrics(
         window_start,
     )
 
-    # The account is multi-currency (rows per currency per event); ending cash is
-    # the engine's last quote-currency balance.
+    # The account is multi-currency (one row per currency per event, with the
+    # currency in its own column); ending cash is the engine's last quote-currency
+    # balance, falling back to the replayed cash if the report is empty.
     ending_cash = cash
-    cash_rows = [row for row in account if str(row.get("total", "")).endswith(f" {quote_currency}")]
+    cash_rows = [row for row in account if str(row.get("currency", "")) == quote_currency]
     if cash_rows:
         ending_cash = _money_amount(cash_rows[-1]["total"])
     ending_equity = ending_cash + (qty * last_close if last_close is not None else 0.0)

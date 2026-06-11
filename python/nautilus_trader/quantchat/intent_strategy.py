@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
-from itertools import pairwise
 from math import isfinite
 from operator import eq
 from operator import ge
@@ -13,7 +13,6 @@ from operator import gt
 from operator import le
 from operator import lt
 from operator import ne
-from statistics import pstdev
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -24,6 +23,8 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.quantchat.indicators import FeatureState
+from nautilus_trader.quantchat.indicators import build_feature_state
 from nautilus_trader.quantchat.wall_clock_schedule import next_wall_clock_fire_time
 from nautilus_trader.trading.strategy import Strategy
 
@@ -37,6 +38,11 @@ _COMPARE_OPERATORS = {
     "!=": ne,
 }
 _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
+# Indicators are incremental, so raw bar history only serves bar_field refs at
+# cross offsets (<= 1), model_signal lags (<= 10, compiler-enforced), and the
+# last price/timestamp. A fixed bound keeps memory flat regardless of uptime and
+# makes a restarted strategy's reachable state identical to a fresh boot's.
+_BAR_HISTORY_MAXLEN = 64
 _SUPPORTED_RUNTIME_CONTRACTS = {
     "",
     "quantchat_strategy_intent_v3",
@@ -142,9 +148,9 @@ def build_intent_strategy(
 class QuantChatIntentStrategy(Strategy):
     def __init__(self, config: QuantChatIntentStrategyConfig) -> None:
         super().__init__(config)
-        self._bars: list[dict[str, float]] = []
+        self._bars: deque[dict[str, Any]] = deque(maxlen=_BAR_HISTORY_MAXLEN)
         self._startup_done = bool(config.startup_actions_completed)
-        self._feature_cache: dict[tuple[str, int], float | None] = {}
+        self._feature_states = self._build_feature_states()
         self._trades_today: dict[str, int] = {}
         self._last_event_ts_ns: int | None = None
         self._run_start_utc_value = (
@@ -174,6 +180,40 @@ class QuantChatIntentStrategy(Strategy):
             f"startup_done={self._startup_done}",
         )
 
+    def _build_feature_states(self) -> dict[str, FeatureState]:
+        """
+        Build one incremental indicator state per plan feature.
+
+        Bad settings (unknown kind, out-of-range period) fail here — loudly, at boot —
+        never silently mid-run.
+
+        """
+        states: dict[str, FeatureState] = {}
+        for feature in self._features():
+            kind = str(feature.get("kind", "")).lower()
+            if kind in {"price", "model_signal"}:
+                continue  # Read straight from bar history; no derived state.
+            states[str(feature.get("id"))] = build_feature_state(
+                kind=kind,
+                field=str(feature.get("field", "close")).lower(),
+                period=self._number(feature.get("period"), 1.0),
+                std_dev=self._number(feature.get("stdDev"), 2.0),
+                band=str(feature.get("band", "middle")).lower(),
+            )
+        return states
+
+    def _append_bar(self, record: dict[str, Any]) -> None:
+        """
+        Ingest one bar into history and every indicator state.
+
+        Warmup seeding and live bars both flow through here, so indicator state in a
+        freshly booted strategy is built exactly as it would have been bar by bar.
+
+        """
+        self._bars.append(record)
+        for state in self._feature_states.values():
+            state.update(record)
+
     def _seed_warmup_bars(self) -> None:
         """
         Seed bar history from the deploy config so indicators are warm from the first
@@ -183,7 +223,7 @@ class QuantChatIntentStrategy(Strategy):
 
         """
         for bar in self.config.warmup_bars:
-            self._bars.append({**bar, "modelSignals": {}})
+            self._append_bar({**bar, "modelSignals": {}})
 
     def _seed_trades_today(self) -> None:
         """
@@ -194,7 +234,7 @@ class QuantChatIntentStrategy(Strategy):
             self._trades_today[day] = self.config.trades_today
 
     def on_bar(self, bar: Bar) -> None:
-        self._bars.append(
+        self._append_bar(
             {
                 "open": float(bar.open),
                 "high": float(bar.high),
@@ -206,7 +246,6 @@ class QuantChatIntentStrategy(Strategy):
             },
         )
         self._last_event_ts_ns = None
-        self._feature_cache.clear()
 
         if not self._in_run_window():
             return
@@ -524,49 +563,22 @@ class QuantChatIntentStrategy(Strategy):
         return None
 
     def _bar_field(self, field: str, offset: int) -> float | None:
-        idx = len(self._bars) - 1 - offset
-        if idx < 0:
+        if offset < 0 or offset >= len(self._bars):
             return None
-        return self._bars[idx].get(field)
+        return self._bars[-1 - offset].get(field)
 
     def _feature_value(self, feature_id: str, offset: int) -> float | None:
-        key = (feature_id, offset)
-        if key in self._feature_cache:
-            return self._feature_cache[key]
+        state = self._feature_states.get(feature_id)
+        if state is not None:
+            return state.value_at(offset)
         feature = next((item for item in self._features() if item.get("id") == feature_id), None)
         if feature is None:
-            self._feature_cache[key] = None
             return None
-        value = self._compute_feature(feature, offset)
-        self._feature_cache[key] = value
-        return value
-
-    def _compute_feature(self, feature: dict[str, Any], offset: int) -> float | None:
         kind = str(feature.get("kind", "")).lower()
         if kind == "model_signal":
             return self._model_signal_value(feature, offset)
-
-        field = str(feature.get("field", "close")).lower()
         if kind == "price":
-            return self._bar_field(field, offset)
-
-        period = max(1, int(self._number(feature.get("period"), 1)))
-        values = self._series(field, offset, period + 1 if kind == "rsi" else period)
-        if len(values) < (period + 1 if kind == "rsi" else period):
-            return None
-
-        if kind == "sma":
-            return sum(values[-period:]) / period
-        if kind == "ema":
-            return self._ema(field, period, offset)
-        if kind == "rsi":
-            return self._rsi(values[-(period + 1) :], period)
-        if kind == "bollinger":
-            return self._bollinger(feature, values[-period:], period)
-        if kind == "rolling_high":
-            return max(values[-period:])
-        if kind == "rolling_low":
-            return min(values[-period:])
+            return self._bar_field(str(feature.get("field", "close")).lower(), offset)
         return None
 
     def _model_signals_for_ts(self, ts_event: int) -> dict[str, Any]:
@@ -587,58 +599,6 @@ class QuantChatIntentStrategy(Strategy):
         payload = signals.get(feature_id)
         output = str(feature.get("output", "prob_up"))
         return _extract_model_signal_value(payload, output)
-
-    def _bollinger(
-        self,
-        feature: dict[str, Any],
-        values: list[float],
-        period: int,
-    ) -> float | None:
-        middle = sum(values) / period
-        std_dev = pstdev(values) if len(values) > 1 else 0.0
-        width = self._number(feature.get("stdDev"), 2.0) * std_dev
-        band = str(feature.get("band", "middle")).lower()
-        if band == "upper":
-            return middle + width
-        if band == "lower":
-            return middle - width
-        return middle
-
-    def _series(self, field: str, offset: int, count: int) -> list[float]:
-        end = len(self._bars) - offset
-        if end <= 0:
-            return []
-        start = max(0, end - count)
-        return [float(bar[field]) for bar in self._bars[start:end] if field in bar]
-
-    def _ema(self, field: str, period: int, offset: int) -> float | None:
-        end = len(self._bars) - offset
-        if end < period:
-            return None
-        values = [float(bar[field]) for bar in self._bars[:end] if field in bar]
-        if len(values) < period:
-            return None
-        ema = sum(values[:period]) / period
-        alpha = 2.0 / (period + 1.0)
-        for value in values[period:]:
-            ema = (value * alpha) + (ema * (1.0 - alpha))
-        return ema
-
-    def _rsi(self, values: list[float], period: int) -> float | None:
-        if len(values) < period + 1:
-            return None
-        gains: list[float] = []
-        losses: list[float] = []
-        for prev, current in pairwise(values):
-            change = current - prev
-            gains.append(max(change, 0.0))
-            losses.append(abs(min(change, 0.0)))
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        if avg_loss == 0:
-            return 100.0
-        rs = avg_gain / avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
 
     def _execute_action(self, action: dict[str, Any], source: str) -> None:
         kind = str(action.get("kind", "")).lower()
