@@ -149,8 +149,6 @@ class QuantChatInstrumentProvider(InstrumentProvider):
             lot_size=Quantity.from_str("1"),
             max_quantity=None,
             min_quantity=Quantity.from_str("1"),
-            max_price=None,
-            min_price=Price.from_str("0.01"),
             margin_init=Decimal("0"),
             margin_maint=Decimal("0"),
             maker_fee=maker_fee,
