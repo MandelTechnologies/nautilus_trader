@@ -92,7 +92,10 @@ class QuantChatExecutionClient(LiveExecutionClient):
             oms_type=OmsType.NETTING,
             instrument_provider=instrument_provider,
             account_type=AccountType.CASH,
-            base_currency=Currency.from_str("USD"),
+            # Spot CurrencyPair cash accounts must be wallet-based. The account
+            # still starts with USD, but Nautilus tracks USD and base-asset
+            # balances separately so all-in buys use the actual remaining cash.
+            base_currency=None,
             msgbus=msgbus,
             cache=cache,
             clock=clock,

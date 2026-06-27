@@ -83,3 +83,25 @@ async def test_connect_registers_account_before_emitting_account_state(event_loo
     fake_pubsub.unsubscribe.assert_awaited_once()
     fake_pubsub.close.assert_awaited_once()
     fake_redis.close.assert_awaited_once()
+
+
+def test_execution_client_uses_multi_currency_cash_account(event_loop):
+    clock = LiveClock()
+    msgbus = MessageBus(
+        trader_id=TestIdStubs.trader_id(),
+        clock=clock,
+    )
+    cache = TestComponentStubs.cache()
+    provider = QuantChatInstrumentProvider(clock=clock, config=InstrumentProviderConfig())
+
+    client = QuantChatExecutionClient(
+        loop=event_loop,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        instrument_provider=provider,
+        config=QuantChatExecClientConfig(),
+        name=None,
+    )
+
+    assert client.base_currency is None

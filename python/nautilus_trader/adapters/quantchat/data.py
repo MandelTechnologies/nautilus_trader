@@ -212,6 +212,14 @@ class QuantChatDataClient(LiveMarketDataClient):
             return
         self._last_bar_ts[channel] = ts_event
 
+        # Market-order risk checks only consult quote/trade ticks, not bars. Seed
+        # the cache from the finalized close before the strategy receives the bar
+        # and can submit an order from it.
+        self._handle_price_tick(
+            instrument_id=bar_type.instrument_id,
+            price=bar.close,
+            ts_event=ts_event,
+        )
         self._handle_data(bar)
 
     def _handle_quote_message(self, symbol: str, data: dict[str, Any]) -> None:
@@ -223,25 +231,37 @@ class QuantChatDataClient(LiveMarketDataClient):
         price = data.get("price", 0)
         ts_event = self._parse_timestamp_ms(data.get("timestamp", 0))
 
-        # Create a quote tick with bid/ask spread around the price
-        # For simplicity, use the same price for bid/ask (no spread)
+        self._handle_price_tick(
+            instrument_id=instrument_id,
+            price=Price.from_str(str(price)),
+            size=Quantity.from_str(str(data.get("volume", 1))),
+            ts_event=ts_event,
+        )
+
+    def _handle_price_tick(
+        self,
+        instrument_id: InstrumentId,
+        price: Price,
+        ts_event: int,
+        size: Quantity | None = None,
+    ) -> None:
+        size = size or Quantity.from_int(1)
         quote = QuoteTick(
             instrument_id=instrument_id,
-            bid_price=Price.from_str(str(price)),
-            ask_price=Price.from_str(str(price)),
-            bid_size=Quantity.from_str(str(data.get("volume", 1))),
-            ask_size=Quantity.from_str(str(data.get("volume", 1))),
+            bid_price=price,
+            ask_price=price,
+            bid_size=size,
+            ask_size=size,
             ts_event=ts_event,
             ts_init=self._clock.timestamp_ns(),
         )
 
         self._handle_data(quote)
 
-        # Also create a trade tick from the quote
         trade = TradeTick(
             instrument_id=instrument_id,
-            price=Price.from_str(str(price)),
-            size=Quantity.from_str(str(data.get("volume", 1))),
+            price=price,
+            size=size,
             aggressor_side=AggressorSide.NO_AGGRESSOR,
             trade_id=TradeId(str(UUID4())),
             ts_event=ts_event,

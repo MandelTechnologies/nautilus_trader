@@ -339,6 +339,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         start_time=runtime_config.get("startTime", ""),
         end_time=runtime_config.get("endTime", ""),
         market_calendar=runtime_config.get("marketCalendar", {}),
+        catalyst_calendar=runtime_config.get("catalystCalendar", {}),
         model_signals=model_signals,
         cost_bps=fees_bps + slippage_bps,
     )

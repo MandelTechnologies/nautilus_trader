@@ -204,6 +204,8 @@ class EventEmitter(Actor):
         if event_type not in {
             "wall_clock_scheduled",
             "wall_clock_fired",
+            "event_rule_scheduled",
+            "event_rule_fired",
             "decision_evaluated",
             "startup_actions_completed",
         }:

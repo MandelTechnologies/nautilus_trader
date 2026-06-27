@@ -51,7 +51,10 @@ _MODEL_SIGNAL_STORE_MAXLEN = 256
 # Must match adapters.quantchat.constants.MODEL_SIGNAL_TOPIC (the strategy
 # must not import the adapter).
 _MODEL_SIGNAL_TOPIC = "data.quantchat.model_signal"
-_SUPPORTED_RUNTIME_CONTRACT = "quantchat_strategy_intent_v4"
+_SUPPORTED_RUNTIME_CONTRACTS = {
+    "quantchat_strategy_intent_v4",
+    "quantchat_strategy_intent_v5",
+}
 
 
 def _extract_model_signal_value(outputs: Any, output: str) -> float | None:
@@ -75,10 +78,64 @@ def _parse_utc_datetime(value: str, field_name: str) -> datetime | None:
 
 def _validate_runtime_contract(compiled_plan: dict[str, Any]) -> None:
     contract = str(compiled_plan.get("runtimeContractVersion", ""))
-    if contract != _SUPPORTED_RUNTIME_CONTRACT:
+    if contract not in _SUPPORTED_RUNTIME_CONTRACTS:
         raise ValueError(
-            f"Unsupported runtime contract {contract!r}; supported: {_SUPPORTED_RUNTIME_CONTRACT}",
+            "Unsupported runtime contract "
+            f"{contract!r}; supported: {', '.join(sorted(_SUPPORTED_RUNTIME_CONTRACTS))}",
         )
+
+
+def _parse_event_datetime(value: Any, field_name: str) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError as exc:
+        raise ValueError(f"runtimeBindings.catalystCalendar.{field_name} is invalid") from exc
+
+
+def _event_day_start(value: datetime) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=UTC)
+
+
+def _event_day_end(value: datetime) -> datetime:
+    return _event_day_start(value) + timedelta(days=1, microseconds=-1)
+
+
+def _event_active_at(event: dict[str, Any], current: datetime) -> bool:
+    event_date = _parse_event_datetime(event.get("eventDate"), "events[].eventDate")
+    if event_date is None:
+        return False
+    end_date = _parse_event_datetime(event.get("endDate"), "events[].endDate") or event_date
+    return _event_day_start(event_date) <= current.astimezone(UTC) <= _event_day_end(end_date)
+
+
+def _selector_matches_event(selector: dict[str, Any], event: dict[str, Any]) -> bool:
+    if not isinstance(selector, dict) or not isinstance(event, dict):
+        return False
+    catalyst_type = str(selector.get("type", "")).upper()
+    symbol = str(selector.get("symbol", "")).upper()
+    if catalyst_type and catalyst_type != str(event.get("type", "")).upper():
+        return False
+    if symbol and symbol != str(event.get("symbol", "")).upper():
+        return False
+
+    details = selector.get("details") or {}
+    event_details = event.get("details") or {}
+    if not isinstance(details, dict) or not isinstance(event_details, dict):
+        return False
+    for key, expected in details.items():
+        actual = event_details.get(str(key))
+        if actual is None:
+            return False
+        actual_value = str(actual).lower()
+        if isinstance(expected, list):
+            allowed = {str(item).lower() for item in expected}
+        else:
+            allowed = {str(expected).lower()}
+        if actual_value not in allowed:
+            return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -91,6 +148,7 @@ class QuantChatRuntime:
     start_time: str = ""
     end_time: str = ""
     market_calendar: dict[str, Any] | None = None
+    catalyst_calendar: dict[str, Any] | None = None
     # Seed for the evaluation-time signal store: {ts_event_ns_str: {modelVersionId:
     # outputs}}. The backtest covers its whole window; live deploys preload recent
     # predictions and live messages extend the store.
@@ -114,6 +172,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     start_time: str
     end_time: str
     market_calendar: dict[str, Any]
+    catalyst_calendar: dict[str, Any]
     model_signals: dict[str, Any]
     compiled_plan: dict[str, Any]
     parameters: dict[str, Any]
@@ -139,6 +198,7 @@ def build_intent_strategy(
             start_time=runtime.start_time,
             end_time=runtime.end_time,
             market_calendar=runtime.market_calendar or {},
+            catalyst_calendar=runtime.catalyst_calendar or {},
             model_signals=runtime.model_signals or {},
             compiled_plan=compiled_plan,
             parameters=parameters,
@@ -164,6 +224,7 @@ class QuantChatIntentStrategy(Strategy):
         for ts_key, outputs_by_version in (config.model_signals or {}).items():
             if isinstance(outputs_by_version, dict):
                 self._model_signals[int(ts_key)] = dict(outputs_by_version)
+        self._catalyst_events = self._load_catalyst_events()
         self._trades_today: dict[str, int] = {}
         self._last_event_ts_ns: int | None = None
         self._run_start_utc_value = (
@@ -178,6 +239,8 @@ class QuantChatIntentStrategy(Strategy):
             raise ValueError("runtimeBindings.endTime must be greater than or equal to startTime")
         self._last_wall_clock_fire_at: dict[str, datetime] = {}
         self._next_wall_clock_fire_at: dict[str, datetime] = {}
+        self._last_event_rule_fire_at: dict[str, datetime] = {}
+        self._next_event_rule_fire_at: dict[str, datetime] = {}
 
     def on_start(self) -> None:
         self._validate_wall_clock_calendars()
@@ -189,6 +252,7 @@ class QuantChatIntentStrategy(Strategy):
         ):
             self.msgbus.subscribe(_MODEL_SIGNAL_TOPIC, self._on_model_signal)
         self._setup_wall_clock_triggers()
+        self._setup_event_triggers()
         self.log.info(
             "QuantChat intent strategy started "
             f"start_time={self._run_start_utc().isoformat()} "
@@ -249,6 +313,25 @@ class QuantChatIntentStrategy(Strategy):
         if self.config.trades_today > 0:
             day = self.clock.utc_now().astimezone(UTC).strftime("%Y-%m-%d")
             self._trades_today[day] = self.config.trades_today
+
+    def _load_catalyst_events(self) -> list[dict[str, Any]]:
+        calendar = self.config.catalyst_calendar
+        if not isinstance(calendar, dict):
+            raise ValueError("runtimeBindings.catalystCalendar must be an object")
+        raw_events = calendar.get("events", [])
+        if not isinstance(raw_events, list):
+            raise ValueError("runtimeBindings.catalystCalendar.events must be an array")
+        events: list[dict[str, Any]] = []
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                raise ValueError("runtimeBindings.catalystCalendar.events entries must be objects")
+            event = dict(raw)
+            details = event.get("details") or {}
+            event["details"] = details if isinstance(details, dict) else {}
+            if _parse_event_datetime(event.get("eventDate"), "events[].eventDate") is not None:
+                events.append(event)
+        events.sort(key=lambda event: str(event.get("eventDate", "")))
+        return events
 
     def on_bar(self, bar: Bar) -> None:
         self._append_bar(
@@ -318,6 +401,49 @@ class QuantChatIntentStrategy(Strategy):
                 f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
             )
         self._schedule_next_wall_clock(rule, self._event_datetime_utc(event))
+
+    def _setup_event_triggers(self) -> None:
+        after = self._run_start_utc()
+        if not self.config.end_time:
+            after = max(after, self.clock.utc_now().astimezone(UTC))
+        after -= timedelta(microseconds=1)
+        for rule in self._plan_list("rules"):
+            if self._trigger_kind(rule) == "event_occurs":
+                self._schedule_next_event_rule(rule, after)
+
+    def _on_event_rule(self, rule_id: str, event_id: str, event: TimeEvent) -> None:
+        self._last_event_ts_ns = int(event.ts_event)
+        fired_at = self._event_datetime_utc(event)
+        self._last_event_rule_fire_at[rule_id] = fired_at
+        self.log.info(
+            "event_occurs fired "
+            f"rule={rule_id} event_id={event_id} event_time={fired_at.isoformat()}",
+        )
+        self._emit_runtime_event(
+            "event_rule_fired",
+            {
+                "rule_id": rule_id,
+                "event_id": event_id,
+                "fired_at": fired_at.isoformat(),
+            },
+            fired_at,
+        )
+        rule = next((item for item in self._plan_list("rules") if item.get("id") == rule_id), None)
+        if rule is None:
+            self.log.warning(f"Event rule not found: {rule_id}")
+            return
+        if self._in_run_window():
+            self._evaluate_rule(rule, "event_occurs")
+        else:
+            self._decision(
+                rule_id,
+                False,
+                "outside run window "
+                f"event_time={fired_at.isoformat()} "
+                f"start_time={self._run_start_utc().isoformat()} "
+                f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            )
+        self._schedule_next_event_rule(rule, fired_at)
 
     def _evaluate_rule(self, rule: dict[str, Any], source: str) -> None:
         rule_id = str(rule.get("id", "rule"))
@@ -393,11 +519,80 @@ class QuantChatIntentStrategy(Strategy):
             self._wall_clock_calendar_allows,
         )
 
+    def _schedule_next_event_rule(self, rule: dict[str, Any], after_utc: datetime) -> None:
+        trigger = rule.get("trigger")
+        if not isinstance(trigger, dict):
+            return
+        rule_id = str(rule.get("id", "rule"))
+        event = self._next_catalyst_event(trigger, after_utc)
+        if event is None:
+            self._next_event_rule_fire_at.pop(rule_id, None)
+            self.log.info(
+                "event_occurs exhausted "
+                f"rule={rule_id} after={after_utc.isoformat()} trigger={trigger}",
+            )
+            return
+        next_time = _parse_event_datetime(event.get("eventDate"), "events[].eventDate")
+        if next_time is None:
+            return
+        if not self._within_end_time(next_time):
+            self._next_event_rule_fire_at.pop(rule_id, None)
+            self.log.info(
+                "event_occurs exhausted "
+                f"rule={rule_id} next_fire_at={next_time.isoformat()} "
+                f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            )
+            return
+        self._next_event_rule_fire_at[rule_id] = next_time
+        event_id = str(event.get("id", ""))
+        self.log.info(
+            "event_occurs scheduled "
+            f"rule={rule_id} event_id={event_id} next_fire_at={next_time.isoformat()}",
+        )
+        self._emit_runtime_event(
+            "event_rule_scheduled",
+            {
+                "rule_id": rule_id,
+                "event_id": event_id,
+                "next_fire_at": next_time.isoformat(),
+            },
+        )
+        alert_name = f"quantchat:event:{rule_id}:{event_id}:{int(next_time.timestamp())}"
+        self.clock.set_time_alert(
+            alert_name,
+            next_time,
+            lambda time_event, rule_id=rule_id, event_id=event_id: self._on_event_rule(
+                rule_id,
+                event_id,
+                time_event,
+            ),
+            allow_past=False,
+        )
+
+    def _next_catalyst_event(
+        self,
+        trigger: dict[str, Any],
+        after_utc: datetime,
+    ) -> dict[str, Any] | None:
+        selector = trigger.get("selector")
+        if not isinstance(selector, dict):
+            return None
+        for event in self._catalyst_events:
+            event_time = _parse_event_datetime(event.get("eventDate"), "events[].eventDate")
+            if event_time is None or event_time <= after_utc:
+                continue
+            if not _selector_matches_event(selector, event):
+                continue
+            if not self._event_calendar_allows(event_time, trigger):
+                continue
+            return event
+        return None
+
     def _validate_wall_clock_calendars(self) -> None:
         calendars = {
             str(rule.get("trigger", {}).get("calendar", "24/7")).upper()
             for rule in self._plan_list("rules")
-            if self._trigger_kind(rule) == "wall_clock"
+            if self._trigger_kind(rule) in {"wall_clock", "event_occurs"}
         }
         for calendar in calendars:
             if calendar == "24/7":
@@ -443,6 +638,13 @@ class QuantChatIntentStrategy(Strategy):
             "closesAt",
         )
         return opens_at <= candidate_utc <= closes_at
+
+    def _event_calendar_allows(self, candidate_utc: datetime, trigger: dict[str, Any]) -> bool:
+        calendar = str(trigger.get("calendar", "24/7")).upper()
+        if calendar == "24/7":
+            return True
+        candidate_day = candidate_utc.astimezone(ZoneInfo("America/New_York")).date()
+        return self._wall_clock_calendar_allows(candidate_day, candidate_utc, trigger)
 
     def _calendar_sessions(self, calendar: str) -> dict[str, Any]:
         market_calendar = self.config.market_calendar
@@ -515,6 +717,7 @@ class QuantChatIntentStrategy(Strategy):
             "crosses_below": self._condition_cross,
             "compare": self._condition_compare,
             "position_state": self._condition_position_state,
+            "event_active": self._condition_event_active,
         }
         if handler := handlers.get(kind):
             return handler(condition, offset)
@@ -563,6 +766,17 @@ class QuantChatIntentStrategy(Strategy):
         if state == "long":
             return qty > 0
         return False
+
+    def _condition_event_active(self, condition: dict[str, Any], offset: int) -> bool:
+        del offset
+        selector = condition.get("selector")
+        if not isinstance(selector, dict):
+            return False
+        current = self._current_datetime_utc() or self.clock.utc_now().astimezone(UTC)
+        return any(
+            _selector_matches_event(selector, event) and _event_active_at(event, current)
+            for event in self._catalyst_events
+        )
 
     def _value(self, ref: Any, offset: int) -> float | None:
         if not isinstance(ref, dict):
@@ -640,6 +854,8 @@ class QuantChatIntentStrategy(Strategy):
 
     def _execute_action(self, action: dict[str, Any], source: str) -> None:
         kind = str(action.get("kind", "")).lower()
+        if self._is_entry_action(action) and not self._entry_guards_allow(source):
+            return
         if not self._can_trade_today():
             self._decision(source, False, "max trades per day reached")
             return
@@ -651,6 +867,31 @@ class QuantChatIntentStrategy(Strategy):
             self._buy_notional(self._number(action.get("amount")), source)
         elif kind == "exit_position":
             self._exit_position(source)
+
+    def _entry_guards_allow(self, source: str) -> bool:
+        for guard in self._plan_list("entryGuards"):
+            if str(guard.get("appliesTo", "entries")).lower() != "entries":
+                continue
+            condition = guard.get("condition")
+            if isinstance(condition, dict) and not self._condition(condition, offset=0):
+                guard_id = str(guard.get("id", "entry_guard"))
+                self._decision(source, False, f"entry guard blocked: {guard_id}")
+                return False
+        return True
+
+    def _is_entry_action(self, action: dict[str, Any]) -> bool:
+        kind = str(action.get("kind", "")).lower()
+        if kind in {"buy_available_cash_pct", "buy_fixed_notional"}:
+            return True
+        if kind != "set_target_weight":
+            return False
+        target = max(0.0, min(self._number(action.get("weight")), self._max_position_weight()))
+        price = self._last_price()
+        equity = self._equity_estimate()
+        current_weight = (
+            (self._position_qty() * price / equity) if price > 0 and equity > 0 else 0.0
+        )
+        return target > current_weight
 
     def _set_target_weight(self, weight: float, source: str) -> None:
         weight = max(0.0, min(weight, self._max_position_weight()))
