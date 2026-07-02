@@ -45,6 +45,16 @@ RUN uv build --wheel
 RUN uv pip install --system dist/*.whl
 RUN find /usr/local/lib/python3.13/site-packages -name "*.pyc" -exec rm -f {} \;
 
+# QuantChat signal engine wheel (abi3). Sources are staged into the build
+# context from quantchat-backend-rs by the build-trading-node workflow;
+# local image builds must stage external/backend-rs/crates the same way.
+COPY external/backend-rs/crates /opt/signal-engine
+RUN pip install --no-cache-dir "maturin>=1.5,<2" && \
+    maturin build --release --locked \
+      --manifest-path /opt/signal-engine/signal-engine-py/Cargo.toml \
+      --out /tmp/signal-wheels && \
+    uv pip install --system /tmp/signal-wheels/*.whl
+
 # Copy QuantChat custom modules into installed package
 COPY python/nautilus_trader/quantchat /usr/local/lib/python3.13/site-packages/nautilus_trader/quantchat
 COPY python/nautilus_trader/adapters/quantchat /usr/local/lib/python3.13/site-packages/nautilus_trader/adapters/quantchat
