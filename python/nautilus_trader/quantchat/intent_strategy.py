@@ -6,6 +6,7 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
+import json
 from math import isfinite
 from operator import eq
 from operator import ge
@@ -16,6 +17,8 @@ from operator import ne
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from signal_engine import SignalEngine
+
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import Bar
@@ -23,8 +26,6 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
-from nautilus_trader.quantchat.indicators import FeatureState
-from nautilus_trader.quantchat.indicators import build_feature_state
 from nautilus_trader.quantchat.wall_clock_schedule import next_wall_clock_fire_time
 from nautilus_trader.trading.strategy import Strategy
 
@@ -38,10 +39,11 @@ _COMPARE_OPERATORS = {
     "!=": ne,
 }
 _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
-# Indicators are incremental, so raw bar history only serves bar_field refs at
-# cross offsets (<= 1), model_signal lags (<= 10, compiler-enforced), and the
-# last price/timestamp. A fixed bound keeps memory flat regardless of uptime and
-# makes a restarted strategy's reachable state identical to a fresh boot's.
+# Derived series live in the signal engine, so raw bar history only serves
+# bar_field refs at cross offsets (<= 1), the previous bar's timestamp for
+# model-signal feeds, and the last price. A fixed bound keeps memory flat
+# regardless of uptime and makes a restarted strategy's reachable state
+# identical to a fresh boot's.
 _BAR_HISTORY_MAXLEN = 64
 # Model signals are stored per bar timestamp; lookups reach back at most
 # lag (<= 10) + cross offset bars, so this comfortably out-sizes the deploy
@@ -215,7 +217,8 @@ class QuantChatIntentStrategy(Strategy):
         super().__init__(config)
         self._bars: deque[dict[str, Any]] = deque(maxlen=_BAR_HISTORY_MAXLEN)
         self._startup_done = bool(config.startup_actions_completed)
-        self._feature_states = self._build_feature_states()
+        self._engine = self._build_signal_engine()
+        self._model_signal_keys = self._build_model_signal_keys()
         # Evaluation-time signal store: ts_event_ns -> {modelVersionId: outputs}.
         # Consulted when conditions evaluate, so a signal arriving after its bar
         # (but before the lagged evaluation) is still seen — bars never snapshot
@@ -261,39 +264,80 @@ class QuantChatIntentStrategy(Strategy):
             f"startup_done={self._startup_done}",
         )
 
-    def _build_feature_states(self) -> dict[str, FeatureState]:
+    def _build_signal_engine(self) -> SignalEngine:
         """
-        Build one incremental indicator state per plan feature.
+        Compile every plan feature (indicators, price fields, model signals) into one
+        signal-engine graph.
 
-        Bad settings (unknown kind, out-of-range period) fail here — loudly, at boot —
-        never silently mid-run.
+        The engine owns all derived-series state behind the same offset-read contract
+        the legacy per-feature states exposed, with batched and incremental evaluation
+        guaranteed bit-identical. Bad settings (unknown kind, out-of-range period) fail
+        here — loudly, at boot — never silently mid-run.
 
         """
-        states: dict[str, FeatureState] = {}
+        params = {
+            str(name): float(value)
+            for name, value in self._params().items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        return SignalEngine.from_legacy_features(json.dumps(self._features()), params)
+
+    def _build_model_signal_keys(self) -> dict[str, tuple[str, str]]:
+        """
+        External-stream keys the engine's model-signal graphs read, mapped to
+        (modelVersionId, output) for store lookups at feed time.
+        """
+        keys: dict[str, tuple[str, str]] = {}
         for feature in self._features():
-            kind = str(feature.get("kind", "")).lower()
-            if kind in {"price", "model_signal"}:
-                continue  # Read straight from bar history; no derived state.
-            states[str(feature.get("id"))] = build_feature_state(
-                kind=kind,
-                field=str(feature.get("field", "close")).lower(),
-                period=self._number(feature.get("period"), 1.0),
-                std_dev=self._number(feature.get("stdDev"), 2.0),
-                band=str(feature.get("band", "middle")).lower(),
-            )
-        return states
+            if str(feature.get("kind", "")).lower() != "model_signal":
+                continue
+            model_version_id = str(feature.get("modelVersionId", ""))
+            output = str(feature.get("output", "prob_up"))
+            keys[f"model_signal:{model_version_id}:{output}"] = (model_version_id, output)
+        return keys
+
+    def _model_signal_externals(self) -> dict[str, float] | None:
+        """
+        External samples for the bar being appended.
+
+        The freshest prediction that can exist when a bar closes is the one stamped at
+        the previous bar, so that is what feeds the engine each bar; the translated
+        model-signal graphs encode deeper lags as lag nodes. Missing predictions are
+        simply absent (the engine reads undefined).
+
+        """
+        if not self._model_signal_keys or len(self._bars) < 2:
+            return None
+        ts_event = self._bars[-2].get("ts_event")
+        if ts_event is None:
+            return None
+        by_version = self._model_signals.get(int(ts_event))
+        if not isinstance(by_version, dict):
+            return None
+        externals: dict[str, float] = {}
+        for key, (model_version_id, output) in self._model_signal_keys.items():
+            value = _extract_model_signal_value(by_version.get(model_version_id), output)
+            if value is not None:
+                externals[key] = value
+        return externals or None
 
     def _append_bar(self, record: dict[str, Any]) -> None:
         """
-        Ingest one bar into history and every indicator state.
+        Ingest one bar into history and the signal engine.
 
-        Warmup seeding and live bars both flow through here, so indicator state in a
+        Warmup seeding and live bars both flow through here, so engine state in a
         freshly booted strategy is built exactly as it would have been bar by bar.
 
         """
         self._bars.append(record)
-        for state in self._feature_states.values():
-            state.update(record)
+        self._engine.step(
+            float(record["open"]),
+            float(record["high"]),
+            float(record["low"]),
+            float(record["close"]),
+            float(record["volume"]),
+            self._model_signal_externals(),
+        )
 
     def _seed_warmup_bars(self) -> None:
         """
@@ -798,18 +842,12 @@ class QuantChatIntentStrategy(Strategy):
         return self._bars[-1 - offset].get(field)
 
     def _feature_value(self, feature_id: str, offset: int) -> float | None:
-        state = self._feature_states.get(feature_id)
-        if state is not None:
-            return state.value_at(offset)
-        feature = next((item for item in self._features() if item.get("id") == feature_id), None)
-        if feature is None:
+        if offset < 0:
             return None
-        kind = str(feature.get("kind", "")).lower()
-        if kind == "model_signal":
-            return self._model_signal_value(feature, offset)
-        if kind == "price":
-            return self._bar_field(str(feature.get("field", "close")).lower(), offset)
-        return None
+        try:
+            return self._engine.output(feature_id, offset)
+        except ValueError:
+            return None  # Unknown feature id: legacy reads resolved to None.
 
     def _on_model_signal(self, payload: Any) -> None:
         """
@@ -831,26 +869,6 @@ class QuantChatIntentStrategy(Strategy):
         while len(self._model_signals) > _MODEL_SIGNAL_STORE_MAXLEN:
             del self._model_signals[min(self._model_signals)]
         self.log.info(f"Model signal stored: version={model_version_id} ts_event={ts_event}")
-
-    def _model_signal_value(self, feature: dict[str, Any], offset: int) -> float | None:
-        # The signal for bar T only exists after T closes, so evaluation reads the
-        # signal stamped lag bars back (compiler enforces lag >= 1).
-        lag = max(1, int(self._number(feature.get("lag"), 1.0)))
-        idx = len(self._bars) - 1 - offset - lag
-        if idx < 0:
-            return None
-        ts_event = int(self._bars[idx]["ts_event"])
-        by_version = self._model_signals.get(ts_event)
-        if not isinstance(by_version, dict):
-            self.log.warning(
-                f"model signal lookup miss: ts={ts_event} idx={idx} bars={len(self._bars)} "
-                f"store={len(self._model_signals)} "
-                f"store_range={[min(self._model_signals), max(self._model_signals)] if self._model_signals else []}",
-            )
-            return None
-        outputs = by_version.get(str(feature.get("modelVersionId", "")))
-        output = str(feature.get("output", "prob_up"))
-        return _extract_model_signal_value(outputs, output)
 
     def _execute_action(self, action: dict[str, Any], source: str) -> None:
         kind = str(action.get("kind", "")).lower()

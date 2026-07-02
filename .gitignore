@@ -124,3 +124,10 @@ tests/test_data/**/backtest/**
 !tests/test_data/nautilus/*/**.parquet
 !tests/integration_tests/adapters/betfair/responses/*.log
 !/nautilus_core/adapters/src/databento/test_data/*
+external/
+# Local dev grafts of the QuantChat modules into the v1 package (mirrors the
+# Dockerfile site-packages COPY; create with:
+#   ln -sfn ../python/nautilus_trader/quantchat nautilus_trader/quantchat
+#   ln -sfn ../../python/nautilus_trader/adapters/quantchat nautilus_trader/adapters/quantchat
+/nautilus_trader/quantchat
+/nautilus_trader/adapters/quantchat
