@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC
+from datetime import date
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
@@ -18,6 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from signal_engine import SignalEngine
+from signal_engine import adjustment_factors
 
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
@@ -41,6 +44,15 @@ _COMPARE_OPERATORS = {
     "!=": ne,
 }
 _UNBOUNDED_START_UTC = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _bar_civil_date(record: dict[str, Any]) -> date:
+    """
+    UTC civil date of a bar record, for ex-date boundary checks.
+    """
+    return datetime.fromtimestamp(float(record["ts_event"]) / 1_000_000_000, UTC).date()
+
+
 # Derived series live in the signal engine, so raw bar history only serves
 # bar_field refs at cross offsets (<= 1), the previous bar's timestamp for
 # model-signal feeds, and the last price. A fixed bound keeps memory flat
@@ -174,6 +186,10 @@ class QuantChatRuntime:
     startup_actions_completed: bool = False
     trades_today: int = 0
     warmup_bars: list[dict[str, float]] | None = None
+    # Splits and dividends for the bound instrument over the fed series
+    # ({exDate, kind, factor|amount, payDate?}). Present (possibly empty) only
+    # for plans that requested the dual-series bar policy (§8.1).
+    corporate_actions: list[dict[str, Any]] | None = None
 
 
 class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
@@ -194,6 +210,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     startup_actions_completed: bool
     trades_today: int
     warmup_bars: list[dict[str, float]]
+    corporate_actions: list[dict[str, Any]]
 
 
 def build_intent_strategy(
@@ -221,6 +238,7 @@ def build_intent_strategy(
             startup_actions_completed=runtime.startup_actions_completed,
             trades_today=runtime.trades_today,
             warmup_bars=runtime.warmup_bars or [],
+            corporate_actions=runtime.corporate_actions or [],
         ),
     )
 
@@ -241,6 +259,12 @@ class QuantChatIntentStrategy(Strategy):
             if isinstance(outputs_by_version, dict):
                 self._model_signals[int(ts_key)] = dict(outputs_by_version)
         self._catalyst_events = self._load_catalyst_events()
+        self._corporate_actions = self._load_corporate_actions()
+        self._applied_ca_count = 0
+        # Rebuilding the engine at an ex-date needs every bar ever fed (EMA-family
+        # state has unbounded memory), so full history is retained exactly when
+        # corporate actions exist for the run — zero overhead otherwise.
+        self._fed_history: list[tuple[dict[str, Any], dict[str, float] | None]] = []
         self._trades_today: dict[str, int] = {}
         self._last_event_ts_ns: int | None = None
         self._run_start_utc_value = (
@@ -341,15 +365,85 @@ class QuantChatIntentStrategy(Strategy):
         Warmup seeding and live bars both flow through here, so engine state in a
         freshly booted strategy is built exactly as it would have been bar by bar.
 
+        Dual-series bar policy (§8.1): indicator math runs on the back-adjusted series.
+        Between corporate actions the newest bars are their own adjusted values (factor
+        1.0), so bars feed straight through; when a bar first crosses an ex-date the
+        engine is rebuilt over the full adjusted history — batched and incremental
+        evaluation are bit-identical, so the rebuild is exact, and runs without
+        corporate actions are byte-identical to the raw feed.
+
         """
         self._bars.append(record)
+        externals = self._model_signal_externals()
+        if self._corporate_actions:
+            self._fed_history.append((record, externals))
+            if self._crossed_ex_date(record):
+                self._rebuild_engine_adjusted()
+                return
         self._engine.step(
             float(record["open"]),
             float(record["high"]),
             float(record["low"]),
             float(record["close"]),
             float(record["volume"]),
-            self._model_signal_externals(),
+            externals,
+        )
+
+    def _crossed_ex_date(self, record: dict[str, Any]) -> bool:
+        """
+        Advance past every corporate action whose ex-date this bar reaches; true when
+        the bar opens a new adjustment regime.
+        """
+        crossed = False
+        bar_date = _bar_civil_date(record)
+        while (
+            self._applied_ca_count < len(self._corporate_actions)
+            and self._corporate_actions[self._applied_ca_count]["ex_date"] <= bar_date
+        ):
+            self._applied_ca_count += 1
+            crossed = True
+        return crossed
+
+    def _rebuild_engine_adjusted(self) -> None:
+        """
+        Re-run a fresh engine over the back-adjusted full history.
+
+        The adjustment convention (and its single implementation) is shared with the
+        backend preview path via the signal-engine wheel; each action scales all bars
+        strictly before its effective bar (first bar at or after the ex-date), so the
+        current bar always feeds its raw values.
+
+        """
+        dates = [_bar_civil_date(record) for record, _ in self._fed_history]
+        closes = [float(record["close"]) for record, _ in self._fed_history]
+        events = [
+            (
+                bisect_left(dates, action["ex_date"]),
+                action["kind"],
+                action["value"],
+            )
+            for action in self._corporate_actions[: self._applied_ca_count]
+        ]
+        price_factors, volume_factors = adjustment_factors(closes, events)
+        engine = self._build_signal_engine()
+        for (record, externals), price, volume in zip(
+            self._fed_history,
+            price_factors,
+            volume_factors,
+            strict=True,
+        ):
+            engine.step(
+                float(record["open"]) * price,
+                float(record["high"]) * price,
+                float(record["low"]) * price,
+                float(record["close"]) * price,
+                float(record["volume"]) * volume,
+                externals,
+            )
+        self._engine = engine
+        self.log.info(
+            f"Signal engine rebuilt on adjusted history: bars={len(self._fed_history)} "
+            f"actions_applied={self._applied_ca_count}",
         )
 
     def _seed_warmup_bars(self) -> None:
@@ -389,6 +483,37 @@ class QuantChatIntentStrategy(Strategy):
                 events.append(event)
         events.sort(key=lambda event: str(event.get("eventDate", "")))
         return events
+
+    def _load_corporate_actions(self) -> list[dict[str, Any]]:
+        """
+        Validate the corporateActions runtime binding into `{ex_date, kind, value,
+        pay_date}` entries sorted by ex-date.
+
+        The backend controls the shape, so malformed entries fail the boot loudly rather
+        than silently dropping an adjustment.
+
+        """
+        raw = self.config.corporate_actions
+        if not isinstance(raw, list):
+            raise ValueError("runtimeBindings.corporateActions must be an array")
+        actions: list[dict[str, Any]] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                raise ValueError("runtimeBindings.corporateActions entries must be objects")
+            kind = str(entry.get("kind", ""))
+            try:
+                ex_date = date.fromisoformat(str(entry.get("exDate", "")))
+                if kind == "split":
+                    value = float(entry["factor"])
+                elif kind == "dividend":
+                    value = float(entry["amount"])
+                else:
+                    raise ValueError(f"unknown kind: {kind!r}")
+            except (KeyError, TypeError, ValueError) as err:
+                raise ValueError(f"invalid corporateActions entry {entry!r}: {err}") from err
+            actions.append({"ex_date": ex_date, "kind": kind, "value": value})
+        actions.sort(key=lambda action: action["ex_date"])
+        return actions
 
     def on_bar(self, bar: Bar) -> None:
         self._append_bar(

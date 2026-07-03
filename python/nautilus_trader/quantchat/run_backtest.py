@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC
+from datetime import date
 from datetime import datetime
 from decimal import ROUND_DOWN
 from decimal import Decimal
@@ -107,18 +108,101 @@ def _parse_fill_events(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return events
 
 
+def _parse_corporate_actions(payload: Any) -> list[dict[str, Any]]:
+    """
+    Validate the corporateActions runtime binding into ledger events sorted by ex-date.
+
+    The backend controls the shape; malformed entries fail the run loudly.
+
+    """
+    if not isinstance(payload, list):
+        raise ValueError("runtimeBindings.corporateActions must be an array")
+    actions: list[dict[str, Any]] = []
+    for entry in payload:
+        kind = str(entry.get("kind", ""))
+        try:
+            ex_date = date.fromisoformat(str(entry.get("exDate", "")))
+            value = float(entry["factor"] if kind == "split" else entry["amount"])
+            if kind not in ("split", "dividend"):
+                raise ValueError(f"unknown kind: {kind!r}")
+        except (KeyError, TypeError, ValueError) as err:
+            raise ValueError(f"invalid corporateActions entry {entry!r}: {err}") from err
+        pay_date = None
+        if kind == "dividend" and entry.get("payDate"):
+            pay_date = date.fromisoformat(str(entry["payDate"]))
+        actions.append({"ex_date": ex_date, "kind": kind, "value": value, "pay_date": pay_date})
+    actions.sort(key=lambda action: action["ex_date"])
+    return actions
+
+
+class _CorporateActionLedger:
+    """
+    Applies split and dividend ledger effects as bars cross ex-dates.
+    """
+
+    def __init__(self, actions: list[dict[str, Any]]) -> None:
+        self._actions = actions
+        self._index = 0
+        self._pending: list[tuple[date, float]] = []
+        self.applied = False
+
+    def apply(self, bar_date: date, qty: float, cash: float) -> tuple[float, float]:
+        """
+        Cross every action whose ex-date this bar reaches and pay dividends that came
+        due; returns the updated (qty, cash).
+        """
+        while (
+            self._index < len(self._actions) and self._actions[self._index]["ex_date"] <= bar_date
+        ):
+            action = self._actions[self._index]
+            self._index += 1
+            if action["kind"] == "split":
+                if qty != 0.0:
+                    qty *= action["value"]
+                    self.applied = True
+            elif qty > 0.0:
+                entitlement = qty * action["value"]
+                pay_date = action["pay_date"]
+                if pay_date is None or pay_date <= action["ex_date"]:
+                    cash += entitlement
+                else:
+                    self._pending.append((pay_date, entitlement))
+                self.applied = True
+        due = [amount for pay_date, amount in self._pending if pay_date <= bar_date]
+        if due:
+            cash += sum(due)
+            self._pending = [d for d in self._pending if d[0] > bar_date]
+        return qty, cash
+
+    def settle_remaining(self, cash: float) -> float:
+        """
+        Credit entitlements whose pay date falls beyond the series — they still belong
+        to the run.
+        """
+        return cash + sum(amount for _, amount in self._pending)
+
+
 def _equity_curve(
     initial_capital: float,
     bars: list[dict[str, Any]],
     events: list[dict[str, Any]],
     window_start: datetime,
-) -> tuple[list[tuple[datetime, float]], float, float, float | None]:
+    corporate_actions: list[dict[str, Any]] | None = None,
+) -> tuple[list[tuple[datetime, float]], float, float, float | None, bool]:
     """
     Replay fill events against the bar series, marking equity as cash + position * close
     on every bar in the requested window.
 
-    Returns the curve plus the replayed ending cash, position quantity, and the last in-
-    window close.
+    Corporate actions apply as ledger events (§8.1 accounting plane, on the raw series):
+    at a split's ex-date the position quantity multiplies by the ratio; a dividend's
+    entitlement is the quantity held entering the ex-date bar and credits cash at the
+    pay date (immediately when absent; at series end when the pay date falls beyond the
+    window — the entitlement was earned in-window). The venue itself is corporate-
+    action-blind, so a strategy that exits after a split under-sells (the venue's book
+    still holds the pre-split quantity); the curve reports the economic holding.
+
+    Returns the curve plus the replayed ending cash, position quantity, the last in-
+    window close, and whether any corporate-action ledger effect applied.
 
     """
     cash = initial_capital
@@ -126,8 +210,10 @@ def _equity_curve(
     curve: list[tuple[datetime, float]] = []
     index = 0
     last_close = None
+    ledger = _CorporateActionLedger(corporate_actions or [])
     for bar in bars:
         bar_ts = _parse_time(str(bar["timestamp"]))
+        qty, cash = ledger.apply(bar_ts.date(), qty, cash)
         while index < len(events) and events[index]["ts"] <= bar_ts:
             event = events[index]
             notional = event["qty"] * event["px"]
@@ -141,7 +227,8 @@ def _equity_curve(
         if bar_ts >= window_start:
             last_close = float(bar["close"])
             curve.append((bar_ts, cash + qty * last_close))
-    return curve, cash, qty, last_close
+    cash = ledger.settle_remaining(cash)
+    return curve, cash, qty, last_close, ledger.applied
 
 
 def _annualized_ratios(
@@ -179,20 +266,23 @@ def _summary_metrics(
     account: list[dict[str, Any]],
     window_start: datetime,
     quote_currency: str,
+    corporate_actions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Compute summary metrics from a bar-close equity curve.
 
     The curve replays the engine's own fills (quantities, prices, and commissions), so
     it matches the engine's accounting. Ending cash prefers the engine's account report,
-    making ending equity exact; the curve feeds the return-based metrics.
+    making ending equity exact — except when corporate-action ledger effects applied,
+    which the engine's account cannot know about; then the replayed cash is the truth.
 
     """
-    curve, cash, qty, last_close = _equity_curve(
+    curve, cash, qty, last_close, ca_applied = _equity_curve(
         initial_capital,
         bars,
         _parse_fill_events(fills),
         window_start,
+        corporate_actions,
     )
 
     # The account is multi-currency (one row per currency per event, with the
@@ -200,7 +290,7 @@ def _summary_metrics(
     # balance, falling back to the replayed cash if the report is empty.
     ending_cash = cash
     cash_rows = [row for row in account if str(row.get("currency", "")) == quote_currency]
-    if cash_rows:
+    if cash_rows and not ca_applied:
         ending_cash = _money_amount(cash_rows[-1]["total"])
     ending_equity = ending_cash + (qty * last_close if last_close is not None else 0.0)
 
@@ -343,6 +433,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         catalyst_calendar=runtime_config.get("catalystCalendar", {}),
         model_signals=model_signals,
         cost_bps=fees_bps + slippage_bps,
+        corporate_actions=runtime_config.get("corporateActions", []),
     )
     strategy = build_intent_strategy(runtime, compiled_plan, parameters)
     engine.add_strategy(strategy)
@@ -370,6 +461,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         account,
         window_start,
         base_currency.code,
+        _parse_corporate_actions(runtime_config.get("corporateActions", [])),
     )
     engine.dispose()
 

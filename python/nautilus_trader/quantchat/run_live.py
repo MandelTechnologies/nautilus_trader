@@ -190,6 +190,7 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
         end_time=runtime_config.get("endTime", ""),
         market_calendar=runtime_config.get("marketCalendar", {}),
         catalyst_calendar=runtime_config.get("catalystCalendar", {}),
+        corporate_actions=runtime_config.get("corporateActions", []),
         model_signals=_parse_model_signals(config.get("modelSignals")),
         # The paper venue slips fill prices by this; sizing reserves the headroom.
         cost_bps=DEFAULT_SLIPPAGE_BPS,

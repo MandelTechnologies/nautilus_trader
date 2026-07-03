@@ -303,6 +303,17 @@ warn_unused_ignores = true
 mypy_path = ["."]
 exclude = "(^python/examples/|^examples/)"
 
+# The quantchat runtime sources live under python/ (excluded from the mypy
+# hook by design); the v1-tree quantchat tests import them through the
+# quantchat symlink, so silence follow-import errors the same way.
+[[tool.mypy.overrides]]
+ignore_errors = true
+module = [
+  "nautilus_trader.quantchat.*",
+  "nautilus_trader.adapters.quantchat.*",
+  "tests.unit_tests.quantchat.*",
+]
+
 [[tool.mypy.overrides]]
 strict_optional = false
 module = [
