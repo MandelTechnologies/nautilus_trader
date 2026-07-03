@@ -26,6 +26,7 @@ from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.quantchat.event_relative_schedule import next_event_relative_fire
 from nautilus_trader.quantchat.wall_clock_schedule import next_wall_clock_fire_time
 from nautilus_trader.trading.strategy import Strategy
 
@@ -56,7 +57,12 @@ _MODEL_SIGNAL_TOPIC = "data.quantchat.model_signal"
 _SUPPORTED_RUNTIME_CONTRACTS = {
     "quantchat_strategy_intent_v4",
     "quantchat_strategy_intent_v5",
+    "quantchat_strategy_intent_v6",
 }
+
+# Selector symbol placeholder resolved to the run's catalyst symbol (the
+# underlying's symbol, which per-symbol catalysts are keyed by).
+_INSTRUMENT_PLACEHOLDER = "$INSTRUMENT"
 
 
 def _extract_model_signal_value(outputs: Any, output: str) -> float | None:
@@ -146,6 +152,10 @@ class QuantChatRuntime:
     bar_type: BarType
     symbol: str
     timeframe: str
+    # The underlying's symbol, which per-symbol catalysts are keyed by
+    # (differs from `symbol` for crypto pairs). Resolves $instrument event
+    # selectors.
+    catalyst_symbol: str = ""
     base_currency: str = "USD"
     start_time: str = ""
     end_time: str = ""
@@ -170,6 +180,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     bar_type: BarType
     symbol: str
     timeframe: str
+    catalyst_symbol: str
     base_currency: str
     start_time: str
     end_time: str
@@ -196,6 +207,7 @@ def build_intent_strategy(
             bar_type=runtime.bar_type,
             symbol=runtime.symbol,
             timeframe=runtime.timeframe,
+            catalyst_symbol=runtime.catalyst_symbol,
             base_currency=runtime.base_currency,
             start_time=runtime.start_time,
             end_time=runtime.end_time,
@@ -452,8 +464,25 @@ class QuantChatIntentStrategy(Strategy):
             after = max(after, self.clock.utc_now().astimezone(UTC))
         after -= timedelta(microseconds=1)
         for rule in self._plan_list("rules"):
-            if self._trigger_kind(rule) == "event_occurs":
+            kind = self._trigger_kind(rule)
+            if kind == "event_occurs":
                 self._schedule_next_event_rule(rule, after)
+            elif kind == "event_relative":
+                self._schedule_next_event_relative_rule(rule, after)
+
+    def _resolved_selector(self, selector: dict[str, Any]) -> dict[str, Any]:
+        """
+        Plan selectors may bind the run's instrument via the $instrument placeholder;
+        events always carry concrete symbols.
+        """
+        if str(selector.get("symbol", "")).upper() != _INSTRUMENT_PLACEHOLDER:
+            return selector
+        if not self.config.catalyst_symbol:
+            raise ValueError(
+                "Plan uses the $instrument event selector but the deploy "
+                "carries no catalystSymbol runtime binding",
+            )
+        return {**selector, "symbol": self.config.catalyst_symbol.upper()}
 
     def _on_event_rule(self, rule_id: str, event_id: str, event: TimeEvent) -> None:
         self._last_event_ts_ns = int(event.ts_event)
@@ -613,6 +642,98 @@ class QuantChatIntentStrategy(Strategy):
             allow_past=False,
         )
 
+    def _schedule_next_event_relative_rule(
+        self,
+        rule: dict[str, Any],
+        after_utc: datetime,
+    ) -> None:
+        trigger = rule.get("trigger")
+        if not isinstance(trigger, dict):
+            return
+        rule_id = str(rule.get("id", "rule"))
+        selector = trigger.get("selector")
+        if not isinstance(selector, dict):
+            return
+        resolved = self._resolved_selector(selector)
+        matched = [
+            event for event in self._catalyst_events if _selector_matches_event(resolved, event)
+        ]
+        calendar = str(trigger.get("calendar", "24/7")).upper()
+        sessions = self._calendar_sessions(calendar) if calendar != "24/7" else {}
+        fire = next_event_relative_fire(trigger, matched, sessions, after_utc)
+        if fire is None or not self._within_end_time(fire.fire_at):
+            self._next_event_rule_fire_at.pop(rule_id, None)
+            self.log.info(
+                "event_relative exhausted "
+                f"rule={rule_id} after={after_utc.isoformat()} trigger={trigger}",
+            )
+            return
+        # Live boots compute `after` from now, but belt-and-suspenders: a
+        # past alert would hard-crash the clock (allow_past=False).
+        now = self.clock.utc_now().astimezone(UTC)
+        if fire.fire_at <= now:
+            self._schedule_next_event_relative_rule(rule, now)
+            return
+        self._next_event_rule_fire_at[rule_id] = fire.fire_at
+        self.log.info(
+            "event_relative scheduled "
+            f"rule={rule_id} event_id={fire.event_id} "
+            f"next_fire_at={fire.fire_at.isoformat()}",
+        )
+        self._emit_runtime_event(
+            "event_rule_scheduled",
+            {
+                "rule_id": rule_id,
+                "event_id": fire.event_id,
+                "next_fire_at": fire.fire_at.isoformat(),
+            },
+        )
+        alert_name = (
+            f"quantchat:event_relative:{rule_id}:{fire.event_id}:{int(fire.fire_at.timestamp())}"
+        )
+        self.clock.set_time_alert(
+            alert_name,
+            fire.fire_at,
+            lambda time_event, rule_id=rule_id, event_id=fire.event_id: (
+                self._on_event_relative_rule(rule_id, event_id, time_event)
+            ),
+            allow_past=False,
+        )
+
+    def _on_event_relative_rule(self, rule_id: str, event_id: str, event: TimeEvent) -> None:
+        self._last_event_ts_ns = int(event.ts_event)
+        fired_at = self._event_datetime_utc(event)
+        self._last_event_rule_fire_at[rule_id] = fired_at
+        self.log.info(
+            "event_relative fired "
+            f"rule={rule_id} event_id={event_id} fire_time={fired_at.isoformat()}",
+        )
+        self._emit_runtime_event(
+            "event_rule_fired",
+            {
+                "rule_id": rule_id,
+                "event_id": event_id,
+                "fired_at": fired_at.isoformat(),
+            },
+            fired_at,
+        )
+        rule = next((item for item in self._plan_list("rules") if item.get("id") == rule_id), None)
+        if rule is None:
+            self.log.warning(f"Event-relative rule not found: {rule_id}")
+            return
+        if self._in_run_window():
+            self._evaluate_rule(rule, "event_relative")
+        else:
+            self._decision(
+                rule_id,
+                False,
+                "outside run window "
+                f"fire_time={fired_at.isoformat()} "
+                f"start_time={self._run_start_utc().isoformat()} "
+                f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            )
+        self._schedule_next_event_relative_rule(rule, fired_at)
+
     def _next_catalyst_event(
         self,
         trigger: dict[str, Any],
@@ -621,6 +742,7 @@ class QuantChatIntentStrategy(Strategy):
         selector = trigger.get("selector")
         if not isinstance(selector, dict):
             return None
+        selector = self._resolved_selector(selector)
         for event in self._catalyst_events:
             event_time = _parse_event_datetime(event.get("eventDate"), "events[].eventDate")
             if event_time is None or event_time <= after_utc:
@@ -636,7 +758,7 @@ class QuantChatIntentStrategy(Strategy):
         calendars = {
             str(rule.get("trigger", {}).get("calendar", "24/7")).upper()
             for rule in self._plan_list("rules")
-            if self._trigger_kind(rule) in {"wall_clock", "event_occurs"}
+            if self._trigger_kind(rule) in {"wall_clock", "event_occurs", "event_relative"}
         }
         for calendar in calendars:
             if calendar == "24/7":
@@ -816,6 +938,7 @@ class QuantChatIntentStrategy(Strategy):
         selector = condition.get("selector")
         if not isinstance(selector, dict):
             return False
+        selector = self._resolved_selector(selector)
         current = self._current_datetime_utc() or self.clock.utc_now().astimezone(UTC)
         return any(
             _selector_matches_event(selector, event) and _event_active_at(event, current)

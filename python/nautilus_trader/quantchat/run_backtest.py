@@ -335,6 +335,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         bar_type=bar_type,
         symbol=symbol,
         timeframe=timeframe,
+        catalyst_symbol=runtime_config.get("catalystSymbol", ""),
         base_currency=runtime_config.get("baseCurrency", "USD"),
         start_time=runtime_config.get("startTime", ""),
         end_time=runtime_config.get("endTime", ""),
