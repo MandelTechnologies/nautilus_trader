@@ -24,15 +24,36 @@ from signal_engine import adjustment_factors
 
 from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.config import StrategyConfig
+from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
+from nautilus_trader.model.enums import ContingencyType
 from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.enums import TrailingOffsetType
+from nautilus_trader.model.enums import TriggerType
+from nautilus_trader.model.events import OrderFilled
+from nautilus_trader.model.events import OrderRejected
+from nautilus_trader.model.events import PositionClosed
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.orders import LimitOrder
+from nautilus_trader.model.orders import Order
+from nautilus_trader.model.orders import StopMarketOrder
 from nautilus_trader.quantchat.event_relative_schedule import next_event_relative_fire
 from nautilus_trader.quantchat.event_relative_schedule import next_session_anchor_fire
 from nautilus_trader.quantchat.wall_clock_schedule import next_wall_clock_fire_time
 from nautilus_trader.trading.strategy import Strategy
+
+
+_TIME_IN_FORCE = {
+    "gtc": TimeInForce.GTC,
+    "day": TimeInForce.DAY,
+    "ioc": TimeInForce.IOC,
+    "fok": TimeInForce.FOK,
+}
 
 
 _COMPARE_OPERATORS = {
@@ -71,7 +92,11 @@ _SUPPORTED_RUNTIME_CONTRACTS = {
     "quantchat_strategy_intent_v4",
     "quantchat_strategy_intent_v5",
     "quantchat_strategy_intent_v6",
+    "quantchat_strategy_intent_v7",
 }
+
+# Closed set an `ActionDefV1.orderType` may take (backend-rs mod.rs ORDER_TYPES).
+_ORDER_TYPES = {"market", "limit", "stop", "stop_limit", "bracket", "trailing_stop"}
 
 # Selector symbol placeholder resolved to the run's catalyst symbol (the
 # underlying's symbol, which per-symbol catalysts are keyed by).
@@ -281,6 +306,15 @@ class QuantChatIntentStrategy(Strategy):
         self._next_wall_clock_fire_at: dict[str, datetime] = {}
         self._last_event_rule_fire_at: dict[str, datetime] = {}
         self._next_event_rule_fire_at: dict[str, datetime] = {}
+        # Bracket specs deferred to PositionOpened (market-type entries whose
+        # stop/target prices are expressed relative to the realized fill, not
+        # known at submission time). Keyed by the entry order's client_order_id
+        # so on_event can match the fill that should trigger leg submission.
+        self._pending_brackets: dict[str, dict[str, Any]] = {}
+        # Client order IDs of resting stop/target legs per instrument, so a
+        # position close (e.g. an opposite signal) cancels the sibling leg
+        # instead of leaving an orphaned resting order.
+        self._bracket_order_ids: set[str] = set()
 
     def on_start(self) -> None:
         self._validate_wall_clock_calendars()
@@ -300,6 +334,139 @@ class QuantChatIntentStrategy(Strategy):
             f"warmup_bars={len(self._bars)} "
             f"startup_done={self._startup_done}",
         )
+
+    def on_event(self, event: Any) -> None:
+        """
+        Submit deferred bracket legs once the entry that spawned them fills (PINNED
+        semantic: stop/target prices on a market-type bracket entry are relative to
+        the realized fill, so they cannot be computed at submission time), cancel any
+        resting bracket leg orphaned by a position close, and report order rejections
+        that would otherwise be silent (e.g. `reject_stop_orders` firing because a
+        stop's trigger is already through the current market on submission).
+
+        """
+        if isinstance(event, OrderFilled):
+            if not self._pending_brackets or event.instrument_id != self.config.instrument_id:
+                return
+            spec = self._pending_brackets.pop(event.client_order_id.value, None)
+            if spec is not None:
+                self._submit_bracket_legs(spec, event.position_id)
+        elif isinstance(event, PositionClosed):
+            if event.instrument_id == self.config.instrument_id:
+                self._cancel_bracket_orders()
+        elif isinstance(event, OrderRejected):
+            self._decision(
+                "order_rejected",
+                False,
+                f"order {event.client_order_id.value} rejected: {event.reason}",
+            )
+
+    def _submit_bracket_legs(self, spec: dict[str, Any], position_id: Any) -> None:
+        """
+        Evaluate stopPrice/targetPrice THEN (position.avgCost is live from the realized
+        fill) and submit the OCO stop(+target) pair against the just-opened position.
+
+        A stop-only bracket (no targetPrice) is a legal degenerate case: just the stop
+        order, no OCO linkage needed.
+
+        """
+        action = spec["action"]
+        entry_side = spec["side"]
+        quantity = spec["quantity"]
+        instrument = self.cache.instrument(self.config.instrument_id)
+        if instrument is None:
+            return
+        exit_side = OrderSide.SELL if entry_side == OrderSide.BUY else OrderSide.BUY
+
+        stop_price = self._price_from_expr(instrument, action.get("stopPrice"))
+        if stop_price is None:
+            self.log.warning(
+                "Bracket stopPrice did not evaluate to a usable price; no exit submitted",
+            )
+            return
+        target_price = self._price_from_expr(instrument, action.get("targetPrice"))
+
+        time_in_force = _TIME_IN_FORCE.get(
+            str(action.get("timeInForce", "gtc")).lower(),
+            TimeInForce.GTC,
+        )
+
+        if target_price is None:
+            # Stop-only bracket: a plain resting stop, no OCO sibling.
+            stop_order: Order = self.order_factory.stop_market(
+                instrument_id=self.config.instrument_id,
+                order_side=exit_side,
+                quantity=quantity,
+                trigger_price=stop_price,
+                time_in_force=time_in_force,
+                reduce_only=True,
+            )
+            self._bracket_order_ids.add(stop_order.client_order_id.value)
+            self.submit_order(stop_order, position_id=position_id)
+            self.log.info(f"Bracket stop-only leg submitted: trigger={stop_price}")
+            return
+
+        # Stop + target: OCO pair, mirroring order_factory.bracket()'s internal
+        # linkage (the factory itself can't be used here because the entry already
+        # filled — this pair attaches to an already-open position).
+        stop_client_order_id = self.order_factory.generate_client_order_id()
+        target_client_order_id = self.order_factory.generate_client_order_id()
+
+        stop_order = StopMarketOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.id,
+            instrument_id=self.config.instrument_id,
+            client_order_id=stop_client_order_id,
+            order_side=exit_side,
+            quantity=quantity,
+            trigger_price=stop_price,
+            trigger_type=TriggerType.DEFAULT,
+            init_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            time_in_force=time_in_force,
+            reduce_only=True,
+            contingency_type=ContingencyType.OCO,
+            linked_order_ids=[target_client_order_id],
+            tags=["STOP_LOSS"],
+        )
+        target_order = LimitOrder(
+            trader_id=self.trader_id,
+            strategy_id=self.id,
+            instrument_id=self.config.instrument_id,
+            client_order_id=target_client_order_id,
+            order_side=exit_side,
+            quantity=quantity,
+            price=target_price,
+            init_id=UUID4(),
+            ts_init=self.clock.timestamp_ns(),
+            time_in_force=time_in_force,
+            reduce_only=True,
+            contingency_type=ContingencyType.OCO,
+            linked_order_ids=[stop_client_order_id],
+            tags=["TAKE_PROFIT"],
+        )
+        self._bracket_order_ids.add(stop_client_order_id.value)
+        self._bracket_order_ids.add(target_client_order_id.value)
+        self.submit_order(stop_order, position_id=position_id)
+        self.submit_order(target_order, position_id=position_id)
+        self.log.info(
+            f"Bracket OCO legs submitted: stop={stop_price} target={target_price}",
+        )
+
+    def _cancel_bracket_orders(self) -> None:
+        """
+        Cancel any still-resting bracket leg once its position closes (either the OCO
+        sibling filled, in which case the venue already canceled this one and
+        `cancel_order` is a no-op, or an opposite signal exited the position out from
+        under a still-resting stop/target).
+        """
+        if not self._bracket_order_ids:
+            return
+        for raw_client_order_id in list(self._bracket_order_ids):
+            order = self.cache.order(ClientOrderId(raw_client_order_id))
+            if order is not None and order.is_open:
+                self.cancel_order(order)
+        self._bracket_order_ids.clear()
 
     def _build_signal_engine(self) -> SignalEngine:
         """
@@ -1078,6 +1245,97 @@ class QuantChatIntentStrategy(Strategy):
             return default
         return numeric if isfinite(numeric) else default
 
+    def _sizing_value(self, expr: Any, offset: int = 0) -> float:
+        """
+        Evaluate a `SizingExprV1` (backend-rs mod.rs) to a scalar.
+
+        Strategy-layer only: this walks account/position streams, engine features,
+        params, and constants. It never runs inside the Rust signal engine, which stays
+        pure market data (spec Sec6.3). Bare numbers and `{"param": ...}` are the legacy
+        `NumberExprV1` shape and pass straight through to `_number` so every plan
+        compiled before this expression tree existed evaluates unchanged.
+
+        """
+        if isinstance(expr, (int, float)) or (isinstance(expr, dict) and "param" in expr):
+            return self._number(expr)
+        if not isinstance(expr, dict):
+            return 0.0
+        kind = str(expr.get("kind", "")).lower()
+        if kind == "constant":
+            return self._number(expr.get("value"))
+        if kind == "param":
+            return self._number(self._params().get(str(expr.get("name"))))
+        if kind == "feature_ref":
+            return self._feature_value(str(expr.get("featureId")), offset) or 0.0
+        if kind == "account_field":
+            return self._account_field(str(expr.get("field")))
+        if kind == "binary_op":
+            return self._sizing_binary_op(expr, offset)
+        if kind == "clamp":
+            return self._sizing_clamp(expr, offset)
+        return 0.0
+
+    def _sizing_binary_op(self, expr: dict[str, Any], offset: int) -> float:
+        left = self._sizing_value(expr.get("left"), offset)
+        right = self._sizing_value(expr.get("right"), offset)
+        ops = {
+            "add": lambda: left + right,
+            "sub": lambda: left - right,
+            "mul": lambda: left * right,
+            "div": lambda: (left / right) if right else 0.0,
+        }
+        compute = ops.get(str(expr.get("op")))
+        return compute() if compute else 0.0
+
+    def _sizing_clamp(self, expr: dict[str, Any], offset: int) -> float:
+        value = self._sizing_value(expr.get("expr"), offset)
+        bound = self._sizing_value(expr.get("bound"), offset)
+        return min(value, bound) if str(expr.get("op")) == "min" else max(value, bound)
+
+    def _account_field(self, field: str) -> float:
+        if field == "account.equity":
+            return self._equity_estimate()
+        if field == "account.cash":
+            return self._available_cash()
+        if field == "position.quantity":
+            return self._position_qty()
+        if field == "position.avgCost":
+            return self._position_avg_cost()
+        if field == "position.unrealizedPnl":
+            return self._position_unrealized_pnl()
+        return 0.0
+
+    def _position_avg_cost(self) -> float:
+        """
+        Quantity-weighted average open price across every open position on the bound
+        instrument (there is at most one under NETTING OMS, but this stays correct if
+        that ever changes).
+        """
+        positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+        total_qty = 0.0
+        weighted = 0.0
+        for position in positions:
+            qty = abs(float(getattr(position, "signed_qty", 0.0)))
+            if qty <= 0.0:
+                continue
+            total_qty += qty
+            weighted += qty * float(getattr(position, "avg_px_open", 0.0))
+        return weighted / total_qty if total_qty > 0.0 else 0.0
+
+    def _position_unrealized_pnl(self) -> float:
+        positions = self.cache.positions_open(instrument_id=self.config.instrument_id)
+        instrument = self.cache.instrument(self.config.instrument_id)
+        last_price = self._last_price()
+        if instrument is None or last_price <= 0.0:
+            return 0.0
+        price = instrument.make_price(last_price)
+        total = 0.0
+        for position in positions:
+            money = position.unrealized_pnl(price)
+            if money is not None:
+                total += float(money.as_double())
+        return total
+
     def _condition(self, condition: dict[str, Any], offset: int) -> bool:
         kind = str(condition.get("kind", "")).lower()
         handlers = {
@@ -1206,11 +1464,15 @@ class QuantChatIntentStrategy(Strategy):
             self._decision(source, False, "max trades per day reached")
             return
         if kind == "set_target_weight":
-            self._set_target_weight(self._number(action.get("weight")), source)
+            self._set_target_weight(self._sizing_value(action.get("weight")), action, source)
         elif kind == "buy_available_cash_pct":
-            self._buy_notional(self._available_cash() * self._number(action.get("percent")), source)
+            self._buy_notional(
+                self._available_cash() * self._sizing_value(action.get("percent")),
+                action,
+                source,
+            )
         elif kind == "buy_fixed_notional":
-            self._buy_notional(self._number(action.get("amount")), source)
+            self._buy_notional(self._sizing_value(action.get("amount")), action, source)
         elif kind == "exit_position":
             self._exit_position(source)
 
@@ -1231,7 +1493,10 @@ class QuantChatIntentStrategy(Strategy):
             return True
         if kind != "set_target_weight":
             return False
-        target = max(0.0, min(self._number(action.get("weight")), self._max_position_weight()))
+        target = max(
+            0.0,
+            min(self._sizing_value(action.get("weight")), self._max_position_weight()),
+        )
         price = self._last_price()
         equity = self._equity_estimate()
         current_weight = (
@@ -1239,7 +1504,7 @@ class QuantChatIntentStrategy(Strategy):
         )
         return target > current_weight
 
-    def _set_target_weight(self, weight: float, source: str) -> None:
+    def _set_target_weight(self, weight: float, action: dict[str, Any], source: str) -> None:
         weight = max(0.0, min(weight, self._max_position_weight()))
         price = self._last_price()
         if price <= 0:
@@ -1250,11 +1515,11 @@ class QuantChatIntentStrategy(Strategy):
         target_notional = self._equity_estimate() * weight
         delta = target_notional - current_notional
         if delta > 0:
-            self._buy_notional(delta, source)
+            self._buy_notional(delta, action, source)
         elif delta < 0:
             self._sell_quantity(abs(delta) / price, source)
 
-    def _buy_notional(self, notional: float, source: str) -> None:
+    def _buy_notional(self, notional: float, action: dict[str, Any], source: str) -> None:
         cash = max(0.0, self._available_cash() - self._cash_reserve())
         price = self._last_price()
         if price <= 0:
@@ -1280,7 +1545,7 @@ class QuantChatIntentStrategy(Strategy):
         if notional <= 0:
             self._decision(source, False, "max position weight reached")
             return
-        self._submit_market(OrderSide.BUY, notional / price, source)
+        self._submit_order(OrderSide.BUY, notional / price, action, source)
 
     def _exit_position(self, source: str) -> None:
         self._sell_quantity(self._position_qty(), source)
@@ -1290,9 +1555,25 @@ class QuantChatIntentStrategy(Strategy):
         if quantity <= 0:
             self._decision(source, False, "no position to sell")
             return
-        self._submit_market(OrderSide.SELL, quantity, source)
+        self._submit_order(OrderSide.SELL, quantity, {}, source)
 
-    def _submit_market(self, side: OrderSide, quantity_value: float, source: str) -> None:
+    def _submit_order(
+        self,
+        side: OrderSide,
+        quantity_value: float,
+        action: dict[str, Any],
+        source: str,
+    ) -> None:
+        """
+        Dispatch on `action.orderType` (default "market").
+
+        Every path submits the entry
+        leg now; a `bracket` whose stop/target prices are relative to the entry fill
+        (the common case for a market-type entry) defers stop/target submission to
+        `on_event`'s `PositionOpened` handler, once `position.avgCost` is live (see
+        `SizingExprV1`'s pinned semantic doc in backend-rs mod.rs).
+
+        """
         instrument = self.cache.instrument(self.config.instrument_id)
         if instrument is None:
             self.log.warning("No instrument in cache; skipping order")
@@ -1302,14 +1583,150 @@ class QuantChatIntentStrategy(Strategy):
         if quantity.as_double() == 0.0:
             self._decision(source, False, "quantity rounded to zero")
             return
+
+        order_type = str(action.get("orderType", "market")).lower()
+        time_in_force = _TIME_IN_FORCE.get(
+            str(action.get("timeInForce", "gtc")).lower(),
+            TimeInForce.GTC,
+        )
+        builders = {
+            "market": self._build_market_order,
+            "limit": self._build_limit_order,
+            "stop": self._build_stop_order,
+            "stop_limit": self._build_stop_limit_order,
+            "trailing_stop": self._build_trailing_stop_order,
+            "bracket": self._build_bracket_entry,
+        }
+        builder = builders.get(order_type)
+        if builder is None:
+            self._decision(source, False, f"unsupported order type: {order_type}")
+            return
+
+        order = builder(instrument, side, quantity, time_in_force, action, source)
+        if order is None:
+            return  # The builder already recorded a decision (bad price, or a
+            # bracket submitted directly as an order list).
+
+        self.submit_order(order)
+        self._record_trade_today()
+        self._decision(source, True, f"submitted {order_type} {side.name} {quantity}")
+
+    def _build_market_order(self, instrument, side, quantity, time_in_force, action, source):
+        del instrument, action, source
+        return self.order_factory.market(
+            instrument_id=self.config.instrument_id,
+            order_side=side,
+            quantity=quantity,
+            time_in_force=time_in_force,
+        )
+
+    def _build_limit_order(self, instrument, side, quantity, time_in_force, action, source):
+        price = self._price_from_expr(instrument, action.get("limitPrice"))
+        if price is None:
+            self._decision(source, False, "limitPrice did not evaluate to a usable price")
+            return None
+        return self.order_factory.limit(
+            instrument_id=self.config.instrument_id,
+            order_side=side,
+            quantity=quantity,
+            price=price,
+            time_in_force=time_in_force,
+        )
+
+    def _build_stop_order(self, instrument, side, quantity, time_in_force, action, source):
+        price = self._price_from_expr(instrument, action.get("stopPrice"))
+        if price is None:
+            self._decision(source, False, "stopPrice did not evaluate to a usable price")
+            return None
+        return self.order_factory.stop_market(
+            instrument_id=self.config.instrument_id,
+            order_side=side,
+            quantity=quantity,
+            trigger_price=price,
+            time_in_force=time_in_force,
+        )
+
+    def _build_stop_limit_order(self, instrument, side, quantity, time_in_force, action, source):
+        limit_price = self._price_from_expr(instrument, action.get("limitPrice"))
+        trigger_price = self._price_from_expr(instrument, action.get("stopPrice"))
+        if limit_price is None or trigger_price is None:
+            self._decision(source, False, "limitPrice/stopPrice did not evaluate to usable prices")
+            return None
+        return self.order_factory.stop_limit(
+            instrument_id=self.config.instrument_id,
+            order_side=side,
+            quantity=quantity,
+            price=limit_price,
+            trigger_price=trigger_price,
+            time_in_force=time_in_force,
+        )
+
+    def _build_trailing_stop_order(self, instrument, side, quantity, time_in_force, action, source):
+        del instrument
+        offset = self._sizing_value(action.get("trailingOffset"))
+        if offset <= 0:
+            self._decision(source, False, "trailingOffset did not evaluate to a positive offset")
+            return None
+        return self.order_factory.trailing_stop_market(
+            instrument_id=self.config.instrument_id,
+            order_side=side,
+            quantity=quantity,
+            trailing_offset=Decimal(str(offset)),
+            trailing_offset_type=TrailingOffsetType.PRICE,
+            time_in_force=time_in_force,
+        )
+
+    def _build_bracket_entry(self, instrument, side, quantity, time_in_force, action, source):
+        """
+        Submit a `bracket` action's entry: either nautilus's native single-call bracket
+        (entry price known at submission time, both stop and target present) or a plain
+        entry order with stop/target deferred to `on_event`'s `OrderFilled` handling,
+        once `position.avgCost` is live from the realized fill (PINNED semantic — the
+        common case for a market-type entry, and for a stop-only bracket regardless of
+        entry type).
+        """
+        entry_price = self._price_from_expr(instrument, action.get("limitPrice"))
+        target_price = self._price_from_expr(instrument, action.get("targetPrice"))
+        if entry_price is not None and target_price is not None:
+            stop_price = self._price_from_expr(instrument, action.get("stopPrice"))
+            if stop_price is None:
+                self._decision(source, False, "stopPrice did not evaluate to a usable price")
+                return None
+            order_list = self.order_factory.bracket(
+                instrument_id=self.config.instrument_id,
+                order_side=side,
+                quantity=quantity,
+                time_in_force=time_in_force,
+                entry_order_type=OrderType.LIMIT,
+                entry_price=entry_price,
+                sl_trigger_price=stop_price,
+                tp_price=target_price,
+            )
+            self.submit_order_list(order_list)
+            self._record_trade_today()
+            self._decision(source, True, f"submitted bracket (limit entry) {side.name} {quantity}")
+            return None
+
         order = self.order_factory.market(
             instrument_id=self.config.instrument_id,
             order_side=side,
             quantity=quantity,
+            time_in_force=time_in_force,
         )
-        self.submit_order(order)
-        self._record_trade_today()
-        self._decision(source, True, f"submitted {side.name} {quantity}")
+        self._pending_brackets[order.client_order_id.value] = {
+            "action": action,
+            "side": side,
+            "quantity": quantity,
+        }
+        return order
+
+    def _price_from_expr(self, instrument: Any, expr: Any) -> Any:
+        if expr is None:
+            return None
+        value = self._sizing_value(expr)
+        if value <= 0 or not isfinite(value):
+            return None
+        return instrument.make_price(value)
 
     def _last_price(self) -> float:
         return self._bar_field("close", 0) or 0.0

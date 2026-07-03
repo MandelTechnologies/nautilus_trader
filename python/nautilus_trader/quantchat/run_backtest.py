@@ -88,6 +88,23 @@ def _money_amount(value: Any) -> float:
         return 0.0
 
 
+def _orders_report(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Normalize `Trader.generate_orders_report()` records for the artifact manifest.
+
+    The report's per-order dict uses Nautilus's own field name `type` for the order
+    type (e.g. "STOP_MARKET"); this is renamed to `orderType` to match the compiled
+    plan's own vocabulary so the manifest reads consistently end to end.
+
+    """
+    orders = []
+    for record in records:
+        order = dict(record)
+        order["orderType"] = order.pop("type", None)
+        orders.append(order)
+    return orders
+
+
 def _parse_fill_events(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Convert filled-order report records into replayable fill events sorted by time.
@@ -386,6 +403,13 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
     # borrowing are impossible, and ending equity is cash + open position value.
     # The account is multi-currency (base_currency=None) because Nautilus requires
     # it for spot CurrencyPair instruments; quote-currency flows are identical.
+    #
+    # bar_execution/bar_adaptive_high_low_ordering are pinned explicitly (matching
+    # nautilus's own defaults today) rather than left implicit: order-type dispatch
+    # (limit/stop/stop_limit/bracket/trailing_stop) depends on the venue synthesizing
+    # trade ticks from L1 bars in a fixed O->H->L->C order, and a future nautilus
+    # upgrade changing its own defaults must not silently change fill semantics
+    # underneath this contract (see intrabarFillPolicy below).
     engine.add_venue(
         venue=QUANTCHAT_VENUE,
         oms_type=OmsType.NETTING,
@@ -393,6 +417,8 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         base_currency=None,
         starting_balances=[Money(initial_capital, base_currency)],
         fee_model=MakerTakerFeeModel(),
+        bar_execution=True,
+        bar_adaptive_high_low_ordering=False,
     )
     engine.add_instrument(instrument)
 
@@ -449,6 +475,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
             "see engine logs for the cause (e.g. an account balance violation)",
         )
 
+    orders = _orders_report(_dataframe_records(engine.trader.generate_orders_report()))
     fills = _dataframe_records(engine.trader.generate_order_fills_report())
     positions = _dataframe_records(engine.trader.generate_positions_report())
     account = _dataframe_records(engine.trader.generate_account_report(QUANTCHAT_VENUE))
@@ -468,7 +495,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "summaryMetrics": summary,
         "artifactManifest": {
-            "orders": [],
+            "orders": orders,
             "fills": fills,
             "positions": positions,
             "account": account,
@@ -483,6 +510,11 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
                 "costApplication": (
                     "fees and slippage charged as taker commission; market orders "
                     "cross a one-tick spread around the bar close"
+                ),
+                "intrabarFillPolicy": (
+                    "resolution rule: fixed O->H->L->C (nautilus default); this is "
+                    "conservative for short brackets and optimistic for long brackets "
+                    "when a single bar spans both levels"
                 ),
             },
         },
