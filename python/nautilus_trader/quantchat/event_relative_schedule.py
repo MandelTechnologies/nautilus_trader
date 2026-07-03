@@ -239,3 +239,36 @@ def next_event_relative_fire(
         if best is None or fire < best.fire_at:
             best = EventRelativeFire(fire_at=fire, event_id=str(event.get("id", "")))
     return best
+
+
+def next_session_anchor_fire(
+    anchor: str,
+    offset_minutes: int,
+    sessions: dict[str, Any],
+    after: datetime,
+) -> datetime | None:
+    """
+    Return the earliest session open/close bound plus `offset_minutes`, strictly after
+    `after` (UTC), across the session map — or None when the map holds nothing upcoming.
+
+    MARKET_CLOSED days simply do not occur; an early-close day's close bound is the
+    early close, which is the whole point of anchoring to the session instead of a wall-
+    clock time.
+
+    """
+    key = "opensAt" if anchor == "open" else "closesAt"
+    best: datetime | None = None
+    for session in sessions.values():
+        if not isinstance(session, dict):
+            continue
+        if str(session.get("status", "")).upper() not in {"OPEN", "EARLY_CLOSE"}:
+            continue
+        bound = _parse_utc(session.get(key))
+        if bound is None:
+            continue
+        fire = bound + timedelta(minutes=offset_minutes)
+        if fire <= after:
+            continue
+        if best is None or fire < best:
+            best = fire
+    return best

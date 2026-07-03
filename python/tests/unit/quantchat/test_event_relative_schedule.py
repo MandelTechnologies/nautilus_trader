@@ -202,3 +202,56 @@ def test_earliest_upcoming_fire_wins_and_after_cursor_excludes_past() -> None:
     # One trading day before Wed 07-14 is Tue 07-13.
     assert after_first.fire_at == datetime(2027, 7, 13, 17, 0, tzinfo=UTC)
     assert after_first.event_id == "ev-2027-07-14"
+
+
+next_session_anchor_fire = event_relative_schedule.next_session_anchor_fire
+
+
+def test_session_open_anchor_skips_closed_days_and_honors_offsets() -> None:
+    sessions = _xnys_sessions()
+    # After Thursday's open: the next open is Friday 13:30Z.
+    fire = next_session_anchor_fire(
+        "open",
+        0,
+        sessions,
+        datetime(2027, 7, 8, 14, 0, tzinfo=UTC),
+    )
+    assert fire == datetime(2027, 7, 9, 13, 30, tzinfo=UTC)
+    # After Friday's open: the weekend does not occur; Monday opens next.
+    fire = next_session_anchor_fire(
+        "open",
+        0,
+        sessions,
+        datetime(2027, 7, 9, 14, 0, tzinfo=UTC),
+    )
+    assert fire == datetime(2027, 7, 12, 13, 30, tzinfo=UTC)
+    # 30 minutes before Monday's open.
+    fire = next_session_anchor_fire(
+        "open",
+        -30,
+        sessions,
+        datetime(2027, 7, 9, 14, 0, tzinfo=UTC),
+    )
+    assert fire == datetime(2027, 7, 12, 13, 0, tzinfo=UTC)
+
+
+def test_session_close_anchor_fires_at_the_early_close() -> None:
+    sessions = _xnys_sessions()
+    # Friday 2027-07-09 is an early close (17:00Z): anchoring to the close
+    # tracks it — the calendar-awareness a wall-clock time cannot give.
+    fire = next_session_anchor_fire(
+        "close",
+        0,
+        sessions,
+        datetime(2027, 7, 9, 0, 0, tzinfo=UTC),
+    )
+    assert fire == datetime(2027, 7, 9, 17, 0, tzinfo=UTC)
+    # Strictly-after cursor: at the early close itself, the next close is
+    # Monday's full-day close.
+    fire = next_session_anchor_fire(
+        "close",
+        0,
+        sessions,
+        datetime(2027, 7, 9, 17, 0, tzinfo=UTC),
+    )
+    assert fire == datetime(2027, 7, 12, 20, 0, tzinfo=UTC)

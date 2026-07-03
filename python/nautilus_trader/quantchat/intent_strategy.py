@@ -27,6 +27,7 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.quantchat.event_relative_schedule import next_event_relative_fire
+from nautilus_trader.quantchat.event_relative_schedule import next_session_anchor_fire
 from nautilus_trader.quantchat.wall_clock_schedule import next_wall_clock_fire_time
 from nautilus_trader.trading.strategy import Strategy
 
@@ -469,6 +470,85 @@ class QuantChatIntentStrategy(Strategy):
                 self._schedule_next_event_rule(rule, after)
             elif kind == "event_relative":
                 self._schedule_next_event_relative_rule(rule, after)
+            elif kind in {"session_open", "session_close"}:
+                self._schedule_next_session_rule(rule, after)
+
+    def _schedule_next_session_rule(self, rule: dict[str, Any], after_utc: datetime) -> None:
+        trigger = rule.get("trigger")
+        if not isinstance(trigger, dict):
+            return
+        rule_id = str(rule.get("id", "rule"))
+        kind = self._trigger_kind(rule)
+        anchor = "open" if kind == "session_open" else "close"
+        session_name = str(trigger.get("session", "")).upper()
+        # Named session windows serialize under marketCalendar like venue
+        # calendars; a missing map fails loudly at boot.
+        sessions = self._calendar_sessions(session_name)
+        offset_minutes = int(self._number(trigger.get("offsetMinutes"), 0.0))
+        fire_at = next_session_anchor_fire(anchor, offset_minutes, sessions, after_utc)
+        if fire_at is None or not self._within_end_time(fire_at):
+            self._next_event_rule_fire_at.pop(rule_id, None)
+            self.log.info(
+                f"{kind} exhausted rule={rule_id} after={after_utc.isoformat()} "
+                f"session={session_name}",
+            )
+            return
+        now = self.clock.utc_now().astimezone(UTC)
+        if fire_at <= now:
+            self._schedule_next_session_rule(rule, now)
+            return
+        self._next_event_rule_fire_at[rule_id] = fire_at
+        self.log.info(
+            f"{kind} scheduled rule={rule_id} session={session_name} "
+            f"next_fire_at={fire_at.isoformat()}",
+        )
+        self._emit_runtime_event(
+            "event_rule_scheduled",
+            {
+                "rule_id": rule_id,
+                "event_id": session_name,
+                "next_fire_at": fire_at.isoformat(),
+            },
+        )
+        alert_name = f"quantchat:session:{rule_id}:{int(fire_at.timestamp())}"
+        self.clock.set_time_alert(
+            alert_name,
+            fire_at,
+            lambda time_event, rule_id=rule_id: self._on_session_rule(rule_id, time_event),
+            allow_past=False,
+        )
+
+    def _on_session_rule(self, rule_id: str, event: TimeEvent) -> None:
+        self._last_event_ts_ns = int(event.ts_event)
+        fired_at = self._event_datetime_utc(event)
+        self._last_event_rule_fire_at[rule_id] = fired_at
+        rule = next((item for item in self._plan_list("rules") if item.get("id") == rule_id), None)
+        if rule is None:
+            self.log.warning(f"Session rule not found: {rule_id}")
+            return
+        kind = self._trigger_kind(rule)
+        self.log.info(f"{kind} fired rule={rule_id} fire_time={fired_at.isoformat()}")
+        self._emit_runtime_event(
+            "event_rule_fired",
+            {
+                "rule_id": rule_id,
+                "event_id": str(rule.get("trigger", {}).get("session", "")),
+                "fired_at": fired_at.isoformat(),
+            },
+            fired_at,
+        )
+        if self._in_run_window():
+            self._evaluate_rule(rule, kind)
+        else:
+            self._decision(
+                rule_id,
+                False,
+                "outside run window "
+                f"fire_time={fired_at.isoformat()} "
+                f"start_time={self._run_start_utc().isoformat()} "
+                f"end_time={self._run_end_utc().isoformat() if self._run_end_utc() else 'none'}",
+            )
+        self._schedule_next_session_rule(rule, fired_at)
 
     def _resolved_selector(self, selector: dict[str, Any]) -> dict[str, Any]:
         """
