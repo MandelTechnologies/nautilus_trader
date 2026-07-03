@@ -460,6 +460,7 @@ def run_backtest_plan(config: dict[str, Any]) -> dict[str, Any]:
         model_signals=model_signals,
         cost_bps=fees_bps + slippage_bps,
         corporate_actions=runtime_config.get("corporateActions", []),
+        signal_graph=runtime_config.get("signalGraph"),
     )
     strategy = build_intent_strategy(runtime, compiled_plan, parameters)
     engine.add_strategy(strategy)

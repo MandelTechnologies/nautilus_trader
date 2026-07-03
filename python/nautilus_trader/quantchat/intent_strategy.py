@@ -215,6 +215,13 @@ class QuantChatRuntime:
     # ({exDate, kind, factor|amount, payDate?}). Present (possibly empty) only
     # for plans that requested the dual-series bar policy (§8.1).
     corporate_actions: list[dict[str, Any]] | None = None
+    # Composable-signals Phase 4 chunk 2: the flattened, fully-resolved
+    # signal_graph_v1 Graph JSON for strategies composing module_ref
+    # features (backend `algorithm_version.signal_graph_json`, plumbed
+    # through runtimeBindings.signalGraph). `None` for legacy-only plans —
+    # `_build_signal_engine` falls back to `SignalEngine.from_legacy_features`
+    # exactly as before. ADDITIVE: no runtime contract bump.
+    signal_graph: dict[str, Any] | None = None
 
 
 class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
@@ -236,6 +243,7 @@ class QuantChatIntentStrategyConfig(StrategyConfig, frozen=True):
     trades_today: int
     warmup_bars: list[dict[str, float]]
     corporate_actions: list[dict[str, Any]]
+    signal_graph: dict[str, Any] | None = None
 
 
 def build_intent_strategy(
@@ -264,6 +272,7 @@ def build_intent_strategy(
             trades_today=runtime.trades_today,
             warmup_bars=runtime.warmup_bars or [],
             corporate_actions=runtime.corporate_actions or [],
+            signal_graph=runtime.signal_graph,
         ),
     )
 
@@ -478,12 +487,24 @@ class QuantChatIntentStrategy(Strategy):
         guaranteed bit-identical. Bad settings (unknown kind, out-of-range period) fail
         here — loudly, at boot — never silently mid-run.
 
+        Composable-signals Phase 4 chunk 2: when the config carries a flattened
+        `signal_graph` (a strategy composing module_ref features), it is already one
+        complete, fully-resolved `signal_graph_v1` graph — construct the engine
+        directly from it via the native constructor rather than translating
+        `compiled_plan.features` through `from_legacy_features`. Both paths produce the
+        same `SignalEngine` object; this is purely which translation ran server-side vs.
+        which graph is fed to the constructor. Every feature id native to this plan
+        (including each module_ref's own feature id, aliased server-side to the
+        module's primary output — see `_feature_value`) resolves identically either way.
+
         """
         params = {
             str(name): float(value)
             for name, value in self._params().items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
+        if self.config.signal_graph:
+            return SignalEngine(json.dumps(self.config.signal_graph), params)
         return SignalEngine.from_legacy_features(json.dumps(self._features()), params)
 
     def _build_model_signal_keys(self) -> dict[str, tuple[str, str]]:

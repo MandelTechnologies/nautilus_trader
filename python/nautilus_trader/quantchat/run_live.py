@@ -197,6 +197,7 @@ def run_live_strategy_plan(config: dict[str, Any]) -> None:
         startup_actions_completed=bool(runtime_config.get("startupActionsCompleted", False)),
         trades_today=int(runtime_config.get("tradesToday", 0)),
         warmup_bars=_parse_warmup_bars(config.get("warmupBars")),
+        signal_graph=runtime_config.get("signalGraph"),
     )
 
     strategy = build_intent_strategy(runtime, compiled_plan, parameters)
