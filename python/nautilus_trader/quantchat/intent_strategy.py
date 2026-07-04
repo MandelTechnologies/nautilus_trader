@@ -215,12 +215,11 @@ class QuantChatRuntime:
     # ({exDate, kind, factor|amount, payDate?}). Present (possibly empty) only
     # for plans that requested the dual-series bar policy (§8.1).
     corporate_actions: list[dict[str, Any]] | None = None
-    # Composable-signals Phase 4 chunk 2: the flattened, fully-resolved
-    # signal_graph_v1 Graph JSON for strategies composing module_ref
-    # features (backend `algorithm_version.signal_graph_json`, plumbed
-    # through runtimeBindings.signalGraph). `None` for legacy-only plans —
-    # `_build_signal_engine` falls back to `SignalEngine.from_legacy_features`
-    # exactly as before. ADDITIVE: no runtime contract bump.
+    # The flattened, fully-parameterized signal_graph_v1 Graph JSON (backend
+    # `algorithm_version.signal_graph_json`, or translated on read for older
+    # rows), plumbed through runtimeBindings.signalGraph. Delivery always
+    # provides it; the runtime is signal-graph-only and never re-translates
+    # `compiled_plan.features` at boot.
     signal_graph: dict[str, Any] | None = None
 
 
@@ -487,15 +486,14 @@ class QuantChatIntentStrategy(Strategy):
         guaranteed bit-identical. Bad settings (unknown kind, out-of-range period) fail
         here — loudly, at boot — never silently mid-run.
 
-        Composable-signals Phase 4 chunk 2: when the config carries a flattened
-        `signal_graph` (a strategy composing module_ref features), it is already one
-        complete, fully-resolved `signal_graph_v1` graph — construct the engine
-        directly from it via the native constructor rather than translating
-        `compiled_plan.features` through `from_legacy_features`. Both paths produce the
-        same `SignalEngine` object; this is purely which translation ran server-side vs.
-        which graph is fed to the constructor. Every feature id native to this plan
-        (including each module_ref's own feature id, aliased server-side to the
-        module's primary output — see `_feature_value`) resolves identically either way.
+        The config's `signal_graph` is one complete `signal_graph_v1` graph, fully
+        parameterized: the backend stores it at compile time (or translates it on
+        read for pre-universal-storage versions), and the engine resolves the run's
+        effective parameter bindings at instantiation. Every feature id native to
+        this plan (including each module_ref's own feature id, aliased server-side
+        to the module's primary output — see `_feature_value`) is a named graph
+        output. A missing graph is a delivery-contract violation and fails the
+        boot loudly.
 
         """
         params = {
@@ -503,9 +501,12 @@ class QuantChatIntentStrategy(Strategy):
             for name, value in self._params().items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }
-        if self.config.signal_graph:
-            return SignalEngine(json.dumps(self.config.signal_graph), params)
-        return SignalEngine.from_legacy_features(json.dumps(self._features()), params)
+        if not self.config.signal_graph:
+            raise ValueError(
+                "runtimeBindings.signalGraph is missing: the backend always delivers "
+                "the execution graph; refusing to boot without one",
+            )
+        return SignalEngine(json.dumps(self.config.signal_graph), params)
 
     def _build_model_signal_keys(self) -> dict[str, tuple[str, str]]:
         """

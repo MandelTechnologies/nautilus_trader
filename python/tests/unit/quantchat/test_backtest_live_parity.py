@@ -15,12 +15,15 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
+import json
 import math
 
 import pytest
 
 
 pytest.importorskip("nautilus_trader.backtest.engine", reason="requires built nautilus core")
+
+from signal_engine import SignalEngine
 
 from nautilus_trader.adapters.quantchat.constants import QUANTCHAT_VENUE
 from nautilus_trader.adapters.quantchat.providers import QuantChatInstrumentProvider
@@ -235,6 +238,11 @@ def _run_session(
     )
 
     window_start = START + timedelta(minutes=WARMUP_BARS)
+    # Delivery always carries the execution graph; tests translate the plan's
+    # features exactly as the backend does at compile time.
+    signal_graph = json.loads(
+        SignalEngine.translate_legacy_features(json.dumps(PLAN["features"])),
+    )
     runtime = QuantChatRuntime(
         instrument_id=instrument.id,
         bar_type=bar_type,
@@ -244,6 +252,7 @@ def _run_session(
         model_signals=model_signals,
         cost_bps=COST_BPS,
         warmup_bars=warmup_records,
+        signal_graph=signal_graph,
     )
     strategy = build_intent_strategy(runtime, PLAN, {})
     engine.add_strategy(strategy)
