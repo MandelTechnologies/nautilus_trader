@@ -118,6 +118,13 @@ class QuantChatExecutionClient(LiveExecutionClient):
         self._latest_prices: dict[str, Decimal] = {}
         self._latest_price_ts: dict[str, int] = {}
 
+        # Venue-side cash book. This client IS the venue, so it owns balance
+        # truth and reports it after every fill — sizing against
+        # balances_free() then always sees post-fill cash, never the seeded
+        # starting balance (the frozen-balance bug that let "buy 100% of
+        # cash" overdraw on the second buy).
+        self._balances: dict[Currency, Decimal] = {}
+
         # Track subscribed symbols
         self._subscribed_symbols: set[str] = set()
 
@@ -174,15 +181,15 @@ class QuantChatExecutionClient(LiveExecutionClient):
         for instrument in self._instrument_provider.get_all().values():
             await self._subscribe_to_symbol(instrument.id.symbol.value)
 
-        # Initialize account state with starting balance
-        balances = self._parse_starting_balance()
-        if balances:
-            self.generate_account_state(
-                balances=balances,
-                margins=[],
-                reported=True,
-                ts_event=self._clock.timestamp_ns(),
-            )
+        # Initialize the venue cash book with the starting balance (on
+        # redeploys the backend passes the node's authoritative cash) and
+        # report it.
+        self._balances = {
+            balance.total.currency: balance.total.as_decimal()
+            for balance in self._parse_starting_balance()
+        }
+        if self._balances:
+            self._report_account_state()
             self._log.info(f"Initialized account with balances: {self._config.starting_balance}")
 
         self._log.info(
@@ -252,26 +259,56 @@ class QuantChatExecutionClient(LiveExecutionClient):
 
         return None
 
+    def _report_account_state(self) -> None:
+        """
+        Report the venue cash book as the authoritative account state.
+        """
+        balances = [
+            AccountBalance(
+                total=Money(amount, currency),
+                locked=Money(0, currency),
+                free=Money(amount, currency),
+            )
+            for currency, amount in self._balances.items()
+        ]
+        self.generate_account_state(
+            balances=balances,
+            margins=[],
+            reported=True,
+            ts_event=self._clock.timestamp_ns(),
+        )
+
+    def _apply_fill_to_balances(
+        self,
+        side: OrderSide,
+        fill_qty: Quantity,
+        fill_price: Price,
+        quote_currency: Currency,
+    ) -> None:
+        """
+        Apply a fill's cash movement to the venue book and report the new state.
+        """
+        notional = fill_qty.as_decimal() * fill_price.as_decimal()
+        delta = -notional if side == OrderSide.BUY else notional
+        self._balances[quote_currency] = self._balances.get(quote_currency, Decimal(0)) + delta
+        self._report_account_state()
+
     def _affordable_buy_qty(
         self,
         instrument_id: InstrumentId,
         fill_price: Price,
     ) -> Quantity | None:
         """
-        Return the maximum quantity the account's free USD balance can pay for at the
-        given fill price, rounded down to the instrument's size precision.
+        Return the maximum quantity the venue's free USD cash can pay for at the given
+        fill price, rounded down to the instrument's size precision.
 
-        Returns ``None`` (no cap) when the account or instrument is unavailable.
+        Returns ``None`` (no cap) when the instrument is unavailable.
 
         """
-        account = self._cache.account(self.account_id)
         instrument = self._instrument_provider.find(instrument_id)
-        if account is None or instrument is None:
+        if instrument is None:
             return None
-        free = account.balances_free().get(Currency.from_str("USD"))
-        if free is None:
-            return None
-        cash = max(Decimal(0), free.as_decimal())
+        cash = max(Decimal(0), self._balances.get(Currency.from_str("USD"), Decimal(0)))
         return instrument.make_qty(cash / fill_price.as_decimal(), round_down=True)
 
     # -- Order submission ----
@@ -364,6 +401,13 @@ class QuantChatExecutionClient(LiveExecutionClient):
                 commission=Money(0, Currency.from_str("USD")),
                 liquidity_side=LiquiditySide.TAKER,
                 ts_event=self._clock.timestamp_ns(),
+            )
+
+            self._apply_fill_to_balances(
+                side=order.side,
+                fill_qty=fill_qty,
+                fill_price=fill_result.fill_price,
+                quote_currency=Currency.from_str("USD"),
             )
 
             self._log.info(
