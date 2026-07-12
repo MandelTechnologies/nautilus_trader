@@ -95,7 +95,7 @@ _SUPPORTED_RUNTIME_CONTRACTS = {
     "quantchat_strategy_intent_v7",
 }
 
-# Closed set an `ActionDefV1.orderType` may take (backend-rs mod.rs ORDER_TYPES).
+# Closed set an `ActionDefV1.orderType` may take (backend mod.rs ORDER_TYPES).
 _ORDER_TYPES = {"market", "limit", "stop", "stop_limit", "bracket", "trailing_stop"}
 
 # Selector symbol placeholder resolved to the run's catalyst symbol (the
@@ -1269,7 +1269,7 @@ class QuantChatIntentStrategy(Strategy):
 
     def _sizing_value(self, expr: Any, offset: int = 0) -> float:
         """
-        Evaluate a `SizingExprV1` (backend-rs mod.rs) to a scalar.
+        Evaluate a `SizingExprV1` (backend mod.rs) to a scalar.
 
         Strategy-layer only: this walks account/position streams, engine features,
         params, and constants. It never runs inside the Rust signal engine, which stays
@@ -1593,7 +1593,7 @@ class QuantChatIntentStrategy(Strategy):
         leg now; a `bracket` whose stop/target prices are relative to the entry fill
         (the common case for a market-type entry) defers stop/target submission to
         `on_event`'s `PositionOpened` handler, once `position.avgCost` is live (see
-        `SizingExprV1`'s pinned semantic doc in backend-rs mod.rs).
+        `SizingExprV1`'s pinned semantic doc in backend mod.rs).
 
         """
         instrument = self.cache.instrument(self.config.instrument_id)

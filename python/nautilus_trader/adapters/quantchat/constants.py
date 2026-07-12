@@ -58,7 +58,7 @@ def bar_channel(symbol: str, timeframe: str) -> str:
     Redis pub/sub channel carrying finalized bars for a symbol and timeframe.
 
     Must match the channel format published by the backend market-data writer
-    (backend-rs `publish_bars_to_redis`).
+    (backend `publish_bars_to_redis`).
 
     """
     return f"{REDIS_BAR_CHANNEL_PREFIX}{symbol}:{timeframe}"
